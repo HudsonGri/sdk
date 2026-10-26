@@ -180,12 +180,14 @@ impl AgentControls {
     }
 }
 
-/// An interrupted exchange is distinct from a definitive host refusal. The
-/// caller's borrowed invocation remains available with its exact original intent.
+/// Session failures are distinct from decoded host control results. The caller's
+/// borrowed invocation remains available with its exact original intent.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentExchangeError {
-    #[error("agent exchange interrupted: {0}")]
-    Interrupted(StreamError),
+    /// Original session admission, authorization, transport or framing failure.
+    /// This is not a decoded agent refusal or proof of mutation settlement.
+    #[error("agent session failed: {0}")]
+    Session(StreamError),
     #[error(transparent)]
     Command(#[from] CommandError),
     #[error(transparent)]
@@ -312,13 +314,22 @@ mod tests {
             Err(CommandError::Invalid)
         ));
     }
+
+    #[test]
+    fn exchange_preserves_every_session_failure_code_and_cause() {
+        for cause in StreamError::ALL {
+            let error = AgentExchangeError::Session(cause.clone());
+            assert_eq!(error.code(), cause.code());
+            assert!(matches!(error, AgentExchangeError::Session(original) if original == cause));
+        }
+    }
 }
 
 impl AgentExchangeError {
     /// Stable classification without flattening an owned uncertain request.
     pub fn code(&self) -> &str {
         match self {
-            Self::Interrupted(_) => "agent_exchange_interrupted",
+            Self::Session(cause) => cause.code(),
             Self::Command(cause) => cause.code(),
             Self::Control(cause) => cause.code(),
             Self::ActorStatus(_) => "actor_invocation_refused",
@@ -367,7 +378,7 @@ impl<'a> PreparedAgentInvocation<'a> {
                 acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
             )
             .await
-            .map_err(AgentExchangeError::Interrupted)?;
+            .map_err(AgentExchangeError::Session)?;
         let response =
             wire::InvokeActorResponse::decode(bytes.as_ref()).map_err(|_| CommandError::Invalid)?;
         if response.encode_to_vec().as_slice() != bytes.as_ref() {

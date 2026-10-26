@@ -23,6 +23,7 @@ export {
   type ChildDone,
   type WasmAgentFileRef as AgentFileRef,
   type WasmUnknownAgentError as UnknownAgentError,
+  type WasmAgentSessionError as AgentSessionError,
   WasmWireSession as WireSession,
   WasmStream,
   WasmSessionAuthority,

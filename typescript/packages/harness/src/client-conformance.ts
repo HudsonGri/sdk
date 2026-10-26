@@ -103,7 +103,7 @@ export async function verifyClientToolOutput(stream: WasmStream, credential: num
 
 const cases = ["root", "prompt", "cancel", "prompt_after_cancel", "spawn", "children_page",
   "approvals_page", "approval_decision", "typed_refusal", "unknown_custody"] as const;
-type Outcome = {value: unknown} | {error: {name: string; request?: Uint8Array; status?: number}};
+type Outcome = {value: unknown} | {error: {name: string; source?: string; request?: Uint8Array; status?: number}};
 function bytes(value: readonly unknown[], maximum: number): Uint8Array {
   if (!Array.isArray(value) || value.length > maximum || value.some(n =>
     typeof n === "bigint" ? n < 0n || n > 255n : typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 255)) {
@@ -113,13 +113,14 @@ function bytes(value: readonly unknown[], maximum: number): Uint8Array {
 }
 function failed(error: unknown): Outcome {
   if (!(error instanceof Error)) throw error;
-  return {error: error as Error & {request?: Uint8Array; status?: number}};
+  return {error: error as Error & {source?: string; request?: Uint8Array; status?: number}};
 }
 function same(left: Outcome, right: Outcome): boolean {
   if ("value" in left && "value" in right) {
     return exactJson(left.value) === exactJson(right.value);
   }
-  if (!("error" in left) || !("error" in right) || left.error.name !== right.error.name) return false;
+  if (!("error" in left) || !("error" in right) || left.error.name !== right.error.name
+    || left.error.source !== right.error.source) return false;
   if (left.error.name === "agent_unknown") {
     const a = left.error.request, b = right.error.request;
     return a instanceof Uint8Array && b instanceof Uint8Array && a.length === b.length && a.every((n, i) => n === b[i]);
@@ -163,7 +164,8 @@ export async function verifyClientControls(stream: WasmStream, credential: numbe
         if (encoded) {
           try { expected = {value: command.reply(encoded)}; } catch (error) {
             expected = failed(error);
-            if ("error" in expected && ["invalid_client_command", "client_command_capacity", "agent_exchange_interrupted"].includes(expected.error.name)) throw error;
+            if ("error" in expected && (expected.error.source === "session"
+              || ["invalid_client_command", "client_command_capacity"].includes(expected.error.name))) throw error;
           }
         } else {
           if (vector.expected.kind !== "actor_status" || vector.case !== "typed_refusal"
@@ -203,8 +205,8 @@ export async function verifyClientControls(stream: WasmStream, credential: numbe
       let actual: Outcome;
       try { actual = {value: await vector.invocation.execute()}; }
       catch (error) { actual = failed(error); }
-      if ("error" in actual && actual.error.name === "agent_exchange_interrupted") {
-        throw new Error(`CLIENT_CONFORMANCE ${vector.name}: interrupted exchange; not retried`);
+      if ("error" in actual && actual.error.source === "session") {
+        throw new Error(`CLIENT_CONFORMANCE ${vector.name}: session ${actual.error.name}; not retried`);
       }
       if (!same(vector.expected, actual)) throw new Error(`CLIENT_CONFORMANCE ${vector.name}: public result differs; not retried`);
       passed.push(vector.name);

@@ -17,6 +17,18 @@ fn command_error(cause: CommandError) -> JsValue {
 
 fn exchange_error(cause: AgentExchangeError) -> JsValue {
     match cause {
+        AgentExchangeError::Session(cause) => {
+            let error = js_sys::Error::new(&cause.to_string());
+            error.set_name(cause.code());
+            if let Err(cause) = js_sys::Reflect::set(
+                error.as_ref(),
+                &JsValue::from_str("source"),
+                &JsValue::from_str("session"),
+            ) {
+                return cause;
+            }
+            error.into()
+        }
         AgentExchangeError::Control(AgentControlFailure::Unknown(request)) => {
             super::agent_client::actor_error(crate::agent::Error::Unknown(request))
         }
@@ -39,6 +51,16 @@ fn exchange_error(cause: AgentExchangeError) -> JsValue {
         }
     }
 }
+
+#[wasm_bindgen(typescript_custom_section)]
+const SESSION_FAILURE: &str = r#"
+/** No agent result was decoded. The prepared invocation remains caller-owned.
+ * The name is the original canonical session error code, including admission
+ * and authorization refusals; this does not assert mutation settlement. */
+export interface WasmAgentSessionError extends Error {
+    readonly source: 'session';
+}
+"#;
 
 pub(super) fn binding(encoded: &Uint8Array) -> Result<AgentBinding, JsValue> {
     let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
