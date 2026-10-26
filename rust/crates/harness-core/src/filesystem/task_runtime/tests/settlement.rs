@@ -13,6 +13,10 @@ async fn native_context_owner_rechecks_task_runtime_fence_ledger_and_revocation(
     let (lease, custody) = fixture.native_lease(&runtime, &work).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
+    runtime
+        .task_host()
+        .start_task(&lease, &mut Some(&mut io.history_io()))
+        .await?;
     let context = runtime
         .task_context_for_original_owner_with_native_work(task, &fence, true, &work)
         .await?;
