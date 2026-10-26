@@ -1,0 +1,569 @@
+bb2run: streams at 3c6e213240 (snapshot of 4686ca56fb + worktree)
+CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9616568320,"afterAllocatedBytes":9616568320,"beforeApparentBytes":9558769646,"afterApparentBytes":9558769640,"incrementalUnits":1,"ageUnits":0,"capUnits":0,"elapsedSeconds":0.331837234}
+    Checking acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 11.82s
+   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+    Finished `test` profile [optimized + debuginfo] target(s) in 40.66s
+
+     Running unittests src/lib.rs (/home/var/targets/cx-streams/debug/deps/acyclic_stream-288fcc65addba3c5)
+running 381 tests
+test changes::native::tests::invalid_native_changes_are_rejected_before_allocating ... ok
+test changes::native::tests::every_native_allocation_denial_retires_completed_storage ... ok
+test changes::native::tests::native_encoding_matches_the_contract_and_keeps_key_views_paid ... ok
+test changes::tests::canonical_change_validation_rejects_wire_malleability ... ok
+test changes::tests::malformed_typed_lists_never_disagree_with_the_immutable_index ... ok
+test error_code_tests::session_close_codes_keep_refusals_typed ... ok
+test changes::tests::memory_prepared_commit_rejects_a_forged_change_index_before_publication ... ok
+test error_code_tests::wire_codes_are_pinned_and_round_trip ... ok
+test filtered_follow_tests::memory_filters_before_waking_and_resumes_across_skipped_records ... ok
+test filtered_follow_tests::memory_filtered_progress_orders_skips_matches_and_checked_resume ... ok
+test filtered_follow_tests::memory_retry_identity_authenticates_headers_in_every_write_family ... ok
+test follow_filter::tests::any_requested_key_and_every_attribute_must_match ... ok
+test follow_filter::tests::opaque_authority_never_discloses_a_record_with_an_outside_key ... ok
+test filtered_follow_tests::omitted_pushdown_negative_control - should panic ... ok
+test changes::tests::typed_projection_removes_outside_entries_while_opaque_mixed_keys_are_denied ... ok
+test changes::tests::memory_projects_both_history_and_live_checked_follows ... ok
+test conformance::tests::memory_provider_passes_the_public_suite ... ok
+test follow_filter::tests::provider_hops_preserve_requested_any_keys_and_all_authority_ceilings ... ok
+test follow_filter::tests::canonical_ranges_and_values_have_one_digest ... ok
+test follow_filter::tests::malformed_filters_fail_closed ... ok
+test follow_index::tests::unrelated_publications_never_notify_filtered_interests ... ok
+test follow_tests::checked_registration_never_waits_for_a_missing_or_reused_anchor ... ok
+test follow_tests::checked_delivery_rejects_history_loss_after_registration_or_while_waiting ... ok
+test grpc::credential_tests::credential_provider_renews_each_physical_retry_without_changing_the_body ... ok
+test grpc::credential_tests::session_request_authorization_is_fresh_sensitive_and_has_no_stale_fallback ... ok
+test grpc::tests::canonical_status_round_trip_preserves_every_stream_error ... ok
+test http_validation::tests::hosted_http_validation_accepts_empty_record_values ... ok
+test http_codec::tests::commit_projection_preserves_deadline_without_losing_uint64_precision ... ok
+test http_validation::tests::hosted_http_validation_checks_children_page_continuations ... ok
+test http_validation::tests::hosted_http_validation_covers_receipts_and_tagged_conflicts ... ok
+test http_validation::tests::hosted_http_validation_rejects_bad_ids_paths_and_decimal_widths ... ok
+test grpc::tests::follow_resumes_after_a_clean_end_of_stream ... ok
+test journal::tests::current_writer_roundtrips_and_rejects_noncanonical_payloads ... ok
+test journal::tests::native_journal_matches_the_browser_correspondence_fixture ... ok
+test grpc::tests::a_denied_follow_reports_access_denied_once_and_then_ends ... ok
+test local::snapshot_ready::negative_control_reintroduces_per_record_boxing - should panic ... ok
+test local::tests::native::prepared_frames_withhold_and_refund_codec_allowance ... ok
+test local::tests::native::prepared_partial_write_stops_at_exact_accepted_boundary ... ok
+test memory::snapshot::tests::current_codec_rejects_duplicate_entries_and_impossible_history ... ok
+test memory::snapshot::tests::current_codec_rejects_duplicate_retry_identity_and_unknown_wire_fields ... ok
+test memory::tests::command_size_uses_exact_protobuf_encoding ... ok
+test memory::tests::commit_index::every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations ... ok
+test memory::tests::native::cursor_work::appended_follow_reuses_the_cursor_queue_without_scratch_allocations ... ok
+test memory::tests::native::cursor_work::singleton_reads_retain_the_window_inline_without_allocating ... ok
+test memory::tests::native::cursor_work::initial_cursor_visits_each_batch_once_and_rescan_control_fails ... ok
+test memory::tests::native::native_read_differential::reordered_recording_fails_observer_equality_with_unchanged_bytes_and_totals ... ok
+test memory::tests::native::native_read_differential::restoring_unused_native_cursor_fields_fails_the_same_funding_bound ... ok
+test memory::snapshot::tests::malformed_deep_history_releases_without_recursive_drop ... ok
+test memory::tests::path_work::negative_control_existing_parent_does_not_imply_existing_destination - should panic ... ok
+test memory::tests::permanent_path_validation_rejects_ambiguous_names ... ok
+test operation_claim::tests::panicking_admission_preserves_live_ownership_and_retirement ... ok
+test follow_index::tests::interval_index_stays_balanced_and_matches_a_reference_after_removal ... ok
+test operation_claim::tests::release_wakes_a_registered_waiter_without_a_provider_publication ... ok
+test memory::tests::work_custody::the_original_work_ledger_funds_its_complete_shared_allocation ... ok
+test owned_bytes::comparison_work::shared_path_comparison_control_reintroduces_the_physical_comparison ... ok
+test owned_bytes::tests::in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first ... ok
+test owned_bytes::header_tests::every_byte_transfer_funds_arc_counters_and_owner_alignment ... ok
+test native::prepared::tests::prepared_ingress_retains_its_arc_counters_until_the_last_owner ... ok
+test owned_bytes::unique::tests::a_final_capacity_allowance_does_not_authorize_the_relocation_peak ... ok
+test owned_bytes::unique::tests::denied_growth_and_edits_preserve_initialized_bytes_and_their_owner ... ok
+test owned_bytes::tests::ordinary_storage_preserves_capacity_and_rejects_unsafe_recovery ... ok
+test owned_bytes::unique::tests::exclusive_edits_preserve_pointers_and_original_custody_without_allocating ... ok
+test owned_bytes::unique::tests::growth_owns_the_full_relocation_peak_and_retires_all_capacity ... ok
+test owned_bytes::tests::consuming_transfer_failure_retires_payload_before_returning_the_cause ... ok
+test owned_bytes::tests::prepared_storage_freezes_after_cancellation_and_keeps_empty_aliases ... ok
+test memory::tests::path_work::existing_commit_path_planning_scans_each_destination_once ... ok
+test owned_bytes::unique::tests::suffix_edits_copy_only_new_bytes_at_one_to_one_thousand_prefix_bytes ... ok
+test path_text_tests::native::cloned_plain_paths_allocate_once_and_original_storage_fails_the_same_bound ... ok
+test owned_bytes::tests::rejected_preparation_preserves_data_and_original_cause ... ok
+test path_text_tests::native::copying_on_the_real_clone_path_fails_the_same_heap_assertion ... ok
+test memory::tests::path_work::ten_thousand_existing_appends_do_one_path_lookup_each ... ok
+test path_text_tests::native::n_and_two_n_long_paths_and_deep_chains_allocate_one_owner_and_reject_copies ... ok
+test owned_bytes::comparison_work::ordered_prefixes_avoid_general_comparisons_at_n_and_two_n ... ok
+test owned_bytes::unique::tests::aliases_slices_and_borrowed_bytes_cannot_obtain_exclusive_editing ... ok
+test path_text_tests::ancestor_rejects_the_reviewed_invalid_trailing_separator ... ok
+test owned_bytes::unique::tests::a_late_copy_failure_keeps_completed_bytes_funded_until_retirement ... ok
+test preparation::tests::backend_authority_distinguishes_missing_history_from_failed_storage ... ok
+test path_text_tests::path_storage_is_three_words_and_old_storage_fails_the_same_bound ... ok
+test preparation::tests::backend_conditions_exhaust_presence_tail_and_forged_head_without_unneeded_reads ... ok
+test preparation::tests::backend_facts_preserve_precommit_cuts_order_and_record_identity ... ok
+test query_sync::parity::admission_and_cancellation_match_tokio ... ok
+test record_headers::native_tests::native_header_control_funds_its_complete_shared_allocation ... ok
+test persistence::tests::bounds_and_malformed_persistence_fail_closed ... ok
+test record_headers::native_tests::prepared_headers_retain_only_their_original_admission ... ok
+test record_headers::prepared::controls::tests::prepared_page_ranges_preserve_the_ordinary_header_contract_without_late_allocation ... ok
+test record_headers::tests::append_record_wire_roundtrip_preserves_both_indexes ... ok
+test record_headers::prepared::tests::prepared_headers_cover_empty_payloads_unicode_names_and_the_full_payload_bound ... ok
+test record_headers::tests::indexed_header_order_is_canonical_and_unique ... ok
+test record_headers::tests::every_write_family_authenticates_keys_and_attributes_in_retry_identity ... ok
+test record_headers::tests::indexed_headers_share_the_value_payload_bound ... ok
+test record_headers::tests::native::native_header_failure_destroys_values_before_releasing_vector_custody ... ok
+test record_headers::tests::manual_append_and_commit_codecs_match_the_generated_header_contract ... ok
+test record_headers::tests::native::native_header_parts_apply_the_same_canonical_key_checks_before_control_allocation ... ok
+test record_headers::validation::tests::prepared_ingress_rejects_noncanonical_key_order ... ok
+test memory::tests::runtime_shutdown::pending_stream_survives_its_polling_runtime ... ok
+test preparation::tests::backend_identity_and_time_survive_working_set_replacement ... ok
+test session::authority::tests::filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins ... ok
+test session::client::progress::tests::negative_control_strict_consumption_cannot_apply_a_conflated_jump ... ok
+test session::authority::tests::filesystem_context_rejects_forged_expired_and_wrong_audience_credentials ... ok
+test session::client::progress::tests::overflow_and_checked_history_cannot_partially_apply_a_latest_cut ... ok
+test session::client::tests::checked_recovery::negative_control_last_arrival_erases_the_successor_frontier - should panic ... ok
+test session::client::tests::checked_recovery::received_frontier_survives_every_cross_generation_arrival_order ... ok
+test grpc::tests::grpc_transport_passes_the_public_suite ... ok
+test session::authority::tests::rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject ... ok
+test session::client::tests::connections::discovery_and_home_recovery_reuse_the_first_installed_link ... ok
+test session::client::tests::connections::idle_close_resets_home_and_pending_admissions ... ok
+test session::authority::tests::filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure ... ok
+test session::authority::tests::slots_reject_forgery_expiry_wrong_audience_holder_and_widening ... ok
+test memory::tests::pages_neither_skip_nor_repeat ... ok
+test grpc::credential_tests::request_credentials_never_mutate_the_original_client ... ok
+test owned_bytes::comparison_work::word_comparisons_equal_independent_byte_order ... ok
+test session::client::progress::tests::latest_progress_matches_the_consumed_generation_fold ... ok
+test memory::tests::read_hint::finite_read_hint_tracks_the_pinned_remaining_records ... ok
+test path_text_tests::native::native_and_plain_paths_have_identical_key_semantics ... ok
+test path_text_tests::native::native_paths_keep_full_bytes_exact_errors_ordered_admission_and_refunds ... ok
+test memory::tests::path_work::exact_path_fast_path_preserves_creation_and_capacity_accounting ... ok
+test path_text_tests::text_storage_preserves_complete_paths_errors_parents_hashes_and_order ... ok
+test memory::tests::subtree::subtree_cut_and_private_suffix_match_flat_model ... ok
+test changes::tests::local_prepared_commit_rejects_a_forged_change_index_before_publication ... ok
+test session::client::tests::context::withdrawing_a_moved_interest_cancels_only_its_node_dial ... ok
+test head_tests::head_condition_on_a_fork_uses_the_inherited_record_identity ... ok
+test memory::tests::subtree::rejected_conditions_retain_no_key_or_namespace_state ... ok
+test session::client::tests::connections::reconnect_rediscovers_only_the_authenticated_home_endpoint ... ok
+test memory::tests::committed_record_times_never_regress_with_the_clock ... ok
+test persistence::tests::real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts ... ok
+test session::client::pool::filtered_credit_tests::omitted_held_data_negative_control - should panic ... ok
+test grpc::tests::persistent_unknown_expires_at_the_operation_deadline ... ok
+test owned_bytes::comparison_work::shared_bytes_keep_complete_order_equality_and_content ... ok
+test session::client::tests::fixture::observation_tests::interest_notification_publishes_resume_and_guard_together ... ok
+test memory::tests::every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes ... ok
+test session::client::pool::route_searches::redundant_route_search_fails_the_same_contract ... ok
+test memory::tests::native::native_controls::descending_replay_keys_keep_copy_work_and_lookup_depth_bounded ... ok
+test session::client::tests::lifecycle::registration_deadline_also_withdraws_blocked_queue_admission ... ok
+test memory::tests::subtree::page_projection_charges_record_bytes_and_headers ... ok
+test session::client::tests::lifecycle::registration_deadline_removes_only_the_stalled_interest ... ok
+test session::client::tests::connections::reconnect_pushes_a_generation_without_new_records ... ok
+test path_text_tests::ancestors_only_expose_complete_validated_segments ... ok
+test session::client::tests::local::in_process_follow_preserves_history_anchors_and_credit ... ok
+test session::client::tests::lifecycle::negative_control_reports_physical_failures_as_normal_closure ... ok
+test session::client::tests::moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels ... ok
+test session::client::tests::context::reconnect_ignores_cancelled_route_before_queued_removal ... ok
+test session::client::tests::context::negative_control_attributes_reconnect_to_the_cancelled_origin ... ok
+test session::client::tests::context::cached_pool_releases_the_first_request_and_uses_each_session_origin ... ok
+test session::client::pool::route_searches::route_dispatch_paired_measurement ... ok
+test session::client::tests::tenk::quiescence_rejects_extra_deliveries_and_truncated_follow_controls ... ok
+test session::client::tests::lifecycle::traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop ... ok
+test filtered_follow_tests::local_retry_identity_authenticates_headers_in_every_write_family ... ok
+test filtered_follow_tests::local_filtered_progress_orders_skips_matches_and_checked_resume ... ok
+test record_headers::prepared::tests::arbitrary_prepared_header_shapes_keep_exact_utf8_names_and_original_custody ... ok
+test session::client::tests::tenk::unshared_session_control_is_rejected_by_the_same_node_work_counters ... ok
+test session::runtime::context::tests::negative_control_aliases_equal_span_ids_from_different_registries - should panic ... ok
+test session::runtime::context::tests::portable_context_checks_registry_identity ... ok
+test session::sources::tests::every_local_and_global_credit_combination_matches_the_admission_contract ... ok
+test session::sources::tests::negative_control_changes_class_without_moving_the_source ... ok
+test session::sources::tests::queues_preserve_exact_membership_order_and_credit ... ok
+test session::sources::tests::replaced_generation_ignores_a_late_provider_wakeup ... ok
+test filtered_follow_tests::local_filters_before_waking_and_resumes_across_skipped_records ... ok
+test session::tests::backpressure_keeps_one_value_per_key_and_preserves_attention ... ok
+test session::tests::checked_follow_confirms_the_provider_guard_and_refuses_only_a_bad_channel ... ok
+test session::tests::filtered_progress::idle_skips_need_no_credit_and_never_pass_a_queued_match ... ok
+test session::tests::follows_share_one_session_and_credit_is_per_channel ... ok
+test session::tests::malformed_latest_value_closes_only_its_own_channel ... ok
+test session::client::tests::tenk::quiescence_drives_self_wakes_and_rejects_a_third_poll_extra ... ok
+test replay_tests::missing_stream_replays_as_empty ... ok
+test request::tests::provider_digest_matches_retained_observation ... ok
+test session::client::tests::connections::successful_home_recovery_rebinds_discovery_but_moved_nodes_do_not ... ok
+test head_tests::head_condition_checks_identity_under_the_commit_lock_and_binds_retries ... ok
+test memory::tests::native::native_commit::public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay_time ... ok
+test owned_bytes::comparison_work::ordinary_views_do_not_recheck_the_bytes_range ... ok
+test session::client::pool::filtered_credit_tests::skipped_cuts_share_data_credit_and_survive_durability_conflation ... ok
+test memory::tests::parking::dropped_consumers_leave_no_queued_snapshot_reservation ... ok
+test memory::tests::native::native_controls::public_prepared_future_keeps_original_payload_through_the_last_empty_alias ... ok
+test memory::tests::native::native_controls::competing_tail_keeps_canonical_conflict_and_target_unchanged ... ok
+test session::client::tests::connections::failed_home_dial_resets_pending_admissions_only_for_connection_errors ... ok
+test session::client::tests::latest::invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc ... ok
+test memory::tests::native::native_controls::preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_replay ... ok
+test memory::snapshot::tests::retained_fork_cannot_capture_a_future_source_head ... ok
+test session::authority::tests::revocation_and_drop_invalidate_idle_bindings_without_record_credit ... ok
+test memory::tests::native::native_controls::prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_without_growth ... ok
+test memory::tests::parking::unpolled_streams_do_not_block_appends ... ok
+test runtime::tests::platform_executor_preserves_owned_native_context ... ok
+test memory::snapshot::tests::malformed_and_over_capacity_snapshots_leave_live_state_unchanged ... ok
+test memory::snapshot::tests::current_writer_empty_forks_and_atomic_source_changes_roundtrip ... ok
+test head_tests::native_head_identity_hash_charge_is_independent_of_path_and_payload ... ok
+test session::client::tests::public_follow_shares_one_session_and_slow_channels_do_not_block_others ... ok
+test session::client::tests::connections::same_client_discovers_replacement_after_idle_close ... ok
+test memory::tests::native::native_read_differential::bounded_native_read_keeps_full_bytes_errors_and_work_trace ... ok
+test memory::tests::results_and_envelopes_never_expire_or_execute_again ... ok
+test session::client::tests::tenk::redundant_control_traffic_is_rejected_by_the_same_linear_byte_budget ... ok
+test persistence::tests::invalid_record_identity_sequence_time_and_positions_are_rejected ... ok
+test test_latency::delivery_is_observed_before_the_acknowledgement ... ok
+test session::tests::replacement_resumes_from_cursor_and_ignores_stale_source ... ok
+test session::authority::tests::live_sessions_close_idle_and_queued_follows_before_disclosure ... ok
+test session::client::tests::admissions::terminal_unpolled_cursor_cannot_authorize_a_completed_home_reconnect ... ok
+test session::client::tests::admissions::terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive ... ok
+test session::client::tests::cancelling_a_queued_open_does_not_leave_an_idle_subscription ... ok
+test session::tests::properties::negative_control_drops_the_runnable_index_update ... ok
+test local::tests::watermarks::negative_control_publishes_a_durable_cut_before_the_device - should panic ... ok
+test test_latency::negative_control_timestamps_after_both_futures_complete - should panic ... ok
+test test_latency::negative_control_waits_for_ack_before_receiving - should panic ... ok
+test token_operation_tests::inventory_is_ordered_and_unique ... ok
+test wire_codec::read_response_tests::empty_zstd_data_is_refused_and_an_empty_plain_frame_is_accepted ... ok
+test wire_codec::session::resource::tests::malformed_and_alternate_resource_spellings_never_reach_a_stream ... ok
+test wire_codec::read_response_tests::mismatched_length_unknown_codec_and_corrupt_data_are_refused ... ok
+test wire_codec::read_response_tests::mixed_frames_reassemble_in_order ... ok
+test wire_codec::requests::tests::commit_size_matches_generated_protobuf_at_wire_boundaries ... ok
+test wire_codec::read_response_tests::oversized_declared_length_is_refused_before_decompressing ... ok
+test wire_codec::read_response_tests::compressed_frame_decodes_to_the_same_records ... ok
+test session::client::tests::translating_follow_releases_credit_without_application_acknowledgements ... ok
+test wire_codec::requests::tests::request_path_append_json_rejects_invalid_records_and_command_size ... ok
+test wire_codec::requests::tests::request_path_append_encoding_matches_generated_protobuf ... ok
+test session::client::tests::recovery::negative_control_terminal_transport_failure_retires_the_live_follow - should panic ... ok
+test session::tests::queue_scaling::global_byte_credit_selects_fitting_heads_without_overtaking_a_channel ... ok
+test wire_codec::session::tests::credit_failures_never_partially_change_balances ... ok
+test wire_codec::session::tests::latest_values_round_trip_with_additive_credit ... ok
+test session::client::tests::data::raw_follow_keeps_checked_anchors_and_standalone_watermarks ... ok
+test wire_codec::session::tests::malformed_peer_protobuf_is_a_terminal_response_error ... ok
+test wire_codec::watermarks::tests::accepted_observation_round_trips_and_preserves_the_exact_boundary ... ok
+test session::client::tests::latest::canonical_all_data_preserves_the_exact_cursor_and_both_watermarks ... ok
+test session::client::tests::transport_reconnect_reopens_all_channels_from_consumed_cursors ... ok
+test grpc::tests::translating_client_does_not_ack_before_downstream_delivery ... ok
+test session::client::tests::data::latest_follows_keep_attention_and_resume_the_consumed_cut ... ok
+test session::client::tests::context::unobserved_initialization_cannot_hide_a_later_session_subscriber ... ok
+test session::client::tests::checked_recovery::recovery_after_consuming_the_original_tail ... ok
+test session::client::tests::checked::unconfirmed_history_is_rejected_without_granting_credit_or_closing_siblings ... ok
+test session::client::tests::checked::checked_registration_fails_before_returning_a_cursor_and_keeps_siblings_live ... ok
+test session::client::tests::checked_recovery::negative_control_advances_the_anchor_from_received_data - should panic ... ok
+test session::client::tests::latest::latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention ... ok
+test session::client::tests::refused_channel_does_not_close_the_shared_session ... ok
+test replay_tests::gaps_within_and_between_pages_fail_closed ... ok
+test session::client::tests::isolation::malformed_discovery_closes_only_its_node_and_keeps_later_opens_live ... ok
+test session::client::tests::context::root_session_links_both_interests_and_releases_a_while_b_is_active ... ok
+test test_latency::either_failure_ends_sampling_while_the_other_future_is_pending ... ok
+test session::client::tests::data::filtered_loopback_preserves_idle_cuts_matches_and_checked_resume ... ok
+test test_latency::negative_control_join_waits_for_delivery_after_append_failure - should panic ... ok
+test wire_codec::session::resource::tests::resource_round_trip_preserves_reserved_names_and_literal_percent_bytes ... ok
+test wire_codec::session::tests::control_frames_are_exempt_from_data_credit ... ok
+test local::tests::cancelled_real_open_retains_ownership_until_journal_open_stops ... ok
+test session::client::tests::checked::checked_delivery_reports_history_replacement_after_registration ... ok
+test session::client::tests::checked::checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_records ... ok
+test session::client::tests::context::negative_controls_reject_retention_parenting_and_missing_causal_links ... ok
+test session::client::pool::route_searches::route_dispatch_uses_only_required_searches ... ok
+test session::client::tests::node_subscription_fan_in_reuses_the_same_client_session_protocol ... ok
+test session::client::tests::checked_recovery::recovery_preserves_unpolled_credit_through_later_appends ... ok
+test local::tests::journal_capacity_rejects_before_mutating_visible_state ... ok
+test local::tests::replay_work::a_normal_replay_flushes_its_original_deferred_frame ... ok
+test local::tests::wakeups::negative_control_broadcasts_every_accepted_append - should panic ... ok
+test session::client::tests::latest::saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all ... ok
+test grpc::tests::concurrent_retry_captures_keep_their_own_dispatcher ... ok
+test local::tests::wakeups::accepted_append_wakes_only_its_path_and_failure_wakes_every_subscriber ... ok
+test local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes ... ok
+test http::http_follow_tests::truncated_unary_read_body_fails_without_retry ... ok
+test local::tests::follow_out_of_range_is_rejected_at_registration ... ok
+test grpc::tests::retry_capture::unobserved_first_registration_preserves_retry_capture ... ok
+test grpc::tests::retry_capture::capture_owns_registration_without_caller_guard ... ok
+test local::tests::native::native_guard_rechecks_actual_canonical_drift_before_retaining_owner_identity ... ok
+test memory::tests::commit_index::historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_history ... ok
+test local::tests::a_damaged_frame_before_an_intact_one_fails_closed ... ok
+test grpc::tests::source_eof_never_discards_records_queued_before_terminal_close ... ok
+test memory::tests::commit_index::commit_index_work_is_admitted_before_append_or_coordinated_publication ... ok
+test memory::snapshot::tests::snapshots_retain_retry_identity_at_capacity ... ok
+test session::client::pool::ordering::separate_queue_mutant_fails_the_same_oracle_and_shrinks ... ok
+test memory::tests::commit_counts_an_explicit_parent_once_across_prefix_siblings ... ok
+test memory::tests::native::native_read::partial_budget_and_cancellation_keep_the_exact_ordered_prefix ... ok
+test memory::snapshot::tests::retained_empty_forks_cannot_reference_future_destinations ... ok
+test memory::tests::native::native_controls::stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it ... ok
+test head_tests::native_head_fence_cancellation_stops_before_publication ... ok
+test memory::tests::hierarchy_page_starts_after_prefix_siblings ... ok
+test memory::tests::history_index::deriving_a_jump_admits_each_ancestor_before_examining_it ... ok
+test memory::snapshot::tests::snapshots_preserve_committed_timestamps ... ok
+test memory::tests::exact_replay_precedes_capacity_and_changed_arguments_never_reclassify ... ok
+test memory::snapshot::tests::retained_facts_reject_impossible_receipts_records_and_phantom_payloads ... ok
+test session::client::pool::ordering::exhausted_credit_and_replacement_cover_every_dispatch_boundary ... ok
+test memory::snapshot::tests::real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retries ... ok
+test memory::tests::provider_deadline_is_exclusive_and_replay_precedes_time ... ok
+test runtime::tests::negative_control_raw_tokio_spawn_loses_native_context ... ok
+test grpc::tests::service_rejects_oversized_commands_before_provider_dispatch ... ok
+test memory::tests::native::native_controls::prepared_replay_probe_credit_is_required_before_acceptance ... ok
+test local::tests::barrier_policy_rejects_targets_without_exact_barrier_semantics ... ok
+test http::session_tests::http_follows_and_live_children_share_one_native_session ... ok
+test memory::tests::native::cursor_work::cursor_windows_preserve_full_records_errors_and_observation_cuts ... ok
+test memory::tests::single_record_reads_seek_deep_history_and_prefixes ... ok
+test session::client::pool::ordering::cursor_drop_open_and_credit_match_the_stateful_oracle ... ok
+test session::client::tests::allocations::negative_control_rejects_owned_validation_during_a_pending_poll - should panic ... ok
+test local::tests::journal_replay_preserves_monotonic_commit_times ... ok
+test session::client::tests::context::cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome ... ok
+test session::client::tests::connections::active_home_replacement_rediscovers_and_resumes_over_tls ... ok
+test session::client::tests::context::negative_control_retains_the_first_request_context ... ok
+test local::tests::native::prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_admission ... ok
+test local::tests::wakeups::dropped_consumers_leave_no_queued_publication_reservation ... ok
+test wire_codec::requests::tests::request_path_measure_append_encoding ... ok
+test session::sources::tests::unchanged_admission_does_no_queue_edits_and_preserves_turn_order ... ok
+test replay_tests::replay_crosses_pages_in_order_from_any_cursor ... ok
+test memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth ... ok
+test memory::tests::native::native_read::tail_read_fits_its_budget_without_hydrating_older_batches ... ok
+test local::tests::local_follow_observes_lifetime_drop_and_late_error ... ok
+test local::tests::native::native_request_copy_cancellation_precedes_detached_publication ... ok
+test local::tests::native::native_durability_denial_precedes_semantic_cas ... ok
+test session::client::tests::context::overlapping_subscribers_cannot_alias_equal_channel_span_ids ... ok
+test local::tests::native::rejected_commits_do_not_grow_the_journal ... ok
+test local::tests::cancelled_local_read_records_error_and_closes_origin_parent ... ok
+test local::tests::native::native_denial_precedes_read_capture ... ok
+test grpc::tests::retry_attempts_record_independent_spans ... ok
+test session::client::tests::allocations::negative_control_rejects_the_reviewed_redundant_boxes - should panic ... ok
+test memory::tests::history_index::old_point_reads_have_bounded_work_from_one_to_a_thousand_appends ... ok
+test local::tests::a_damaged_snapshot_fails_closed ... ok
+test session::client::tests::allocations::typed_follow_boxes_only_at_its_public_boundary ... ok
+test local::tests::replay_failure_drains_the_bounded_pipeline_and_releases_the_root ... ok
+test http::http_follow_tests::cancelling_a_pending_unary_body_closes_the_connection ... ok
+test http::tests::filtered_http_failure_does_not_record_on_its_parent ... ok
+test http::http_follow_tests::request_path_typed_append_preserves_json_responses_and_validation_trace ... ok
+test local::tests::invalid_headers_and_snapshot_state_fail_without_repairing_disk ... ok
+test memory::tests::subtree::fork_namespace_allocation_is_independent_of_descendant_count ... ok
+test session::client::tests::append_to_follow_latency ... ok
+test session::client::tests::aggregate_credit_is_replenished_beyond_the_initial_window ... ok
+test memory::tests::deep_fork_history_is_dropped_without_recursive_stack_growth ... ok
+test memory::tests::history_index::jumps_preserve_nested_fork_cuts_inside_batches_and_recovery ... ok
+test http::tests::endpoint_and_credential_policy_matches_other_families ... ok
+test local::tests::native::native_compaction_drains_accepted_controls_and_actual_close ... ok
+test memory::tests::paginates_more_children_than_one_wire_page_without_gaps ... ok
+test grpc::latency_tests::append_follow_latency ... ok
+test grpc::tests::invalid_configuration_is_rejected_before_network_io ... ok
+test grpc::tests::transport_loss_retries_the_same_request_but_peer_errors_do_not ... ok
+test http::session_tests::http_session_preserves_the_callers_additional_tls_root ... ok
+test memory::tests::follow_scales_with_history_depth ... ok
+test session::client::tests::dropping_buffered_follows_returns_aggregate_capacity ... ok
+test session::tests::properties::backpressure_matches_the_history_projection ... ok
+test session::client::tests::outbound::a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancellation ... ok
+test session::client::tests::credentials::session_credentials_renew_on_handshake_retry_reconnect_and_move ... ok
+test http::tests::http_credentials_are_current_sensitive_and_fail_before_transport ... ok
+test session::client::tests::recovery::established_interests_survive_more_than_one_handshake_attempt_group ... ok
+test local::tests::native::native_commit_before_checks_actual_cas_and_preserves_replay ... ok
+test local::tests::a_cancelled_mutation_is_invisible_until_its_frame_is_durable ... ok
+test local::tests::durability::native_phase_barrier_admits_before_io_and_flushes_append_and_guarded_commit ... ok
+test local::tests::local_append_emits_its_span ... ok
+test local::tests::native::native_lost_ack_drains_flush_and_reopens_original_identity ... ok
+test local::tests::deadline_is_evaluated_once_and_only_accepted_commands_are_replayed ... ok
+test local::tests::native::headers::prepared_memory_and_local_commits_cover_every_late_header_field ... ok
+test local::tests::native::prepared_denial_precedes_worker_and_canonical_edit ... ok
+test local::tests::native::abandoned_prepared_packet_releases_worker_capacity_without_edit ... ok
+test local::tests::a_zero_filled_or_garbage_last_frame_is_a_torn_tail ... ok
+test local::tests::native::native_append_conflicts_leave_keys_free_and_journal_unchanged ... ok
+test head_tests::head_conditions_and_conflicts_survive_local_recovery_and_wire_encoding ... ok
+test changes::tests::local_projects_both_history_and_live_checked_follows ... ok
+test local::tests::native::native_guard_denial_reads_same_provider_without_lock_and_preserves_typed_owner ... ok
+test local::tests::descriptors::an_open_stream_holds_one_journal_descriptor ... ok
+test local::tests::a_poisoned_store_fails_waits_for_frames_already_durable ... ok
+test local::tests::retry_outcomes_survive_clock_exhaustion_and_reopen ... ok
+test local::tests::filtered_local_operations_preserve_caller ... ok
+test local::tests::compaction::accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_held ... ok
+test local::tests::native::prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_work ... ok
+test local::tests::local_provider_excludes_a_second_process_owner_and_repairs_a_torn_tail ... ok
+test local::tests::native::native_append_lost_ack_reopens_exact_append_identity ... ok
+test local::tests::deferred_mutations_wait_for_the_next_flush ... ok
+test local::tests::durability::dispatch_publication_admits_durability_before_accepting_a_start ... ok
+test local::tests::recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix ... ok
+test local::tests::accepted::follow_and_heads_observe_acceptance_before_the_durability_barrier ... ok
+test local::tests::a_journal_the_snapshot_already_holds_is_discarded ... ok
+test local::tests::cancelled_persist_retains_ownership_until_the_journal_task_stops ... ok
+test local::tests::durability_retries::native_retries_seal_a_deferred_original_without_repeating_its_frame ... ok
+test session::client::tests::checked_recovery::checked_all_matches_the_yielded_ledger_at_every_recovery_boundary ... ok
+test local::tests::mutations_on_other_paths_write_while_a_flush_is_under_way ... ok
+test grpc::tests::platform_roots_and_exclusive_ca ... ok
+test local::tests::native::prepared_reply_drop_keeps_accepted_durability_and_input_custody ... ok
+test local::tests::every_partial_current_frame_recovers_only_the_accepted_prefix ... ok
+test local::tests::ownership::native_guard_lease_survives_caller_abort_and_real_durability_terminal ... ok
+test local::tests::ownership::native_caller_abort_keeps_sdk_request_and_accepted_flush_owned ... ok
+test local::tests::replay_work::replay_reuses_its_durable_frame_and_detects_the_old_write ... ok
+test local::tests::durability::phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix ... ok
+test local::tests::concurrent_commits_on_distinct_paths_replay_after_reopen ... ok
+test local::tests::local_provider_reopens_and_passes_public_conformance ... ok
+test local::tests::a_journal_torn_before_its_header_completed_is_created_again ... ok
+test local::tests::reopen_streams_more_commands_than_the_pipeline_window ... ok
+test local::tests::a_half_full_journal_is_compacted_into_a_snapshot ... ok
+test local::tests::watermarks::accepted_and_durable_watch_cuts_match_the_journal_and_reference ... ok
+test session::client::tests::allocations::ten_thousand_follow_openings_count_pending_and_ready_allocations ... ok
+test local::tests::compaction::append_to_follow_latency_with_frequent_compaction ... ok
+test session::tests::properties::runnable_channels_match_credit_policy ... ok
+test session::client::tests::tenk::ten_thousand_agents_use_stream_transactions_and_one_session_per_node ... ok
+test session::client::tests::concurrent_first_follows_have_a_bounded_welcome_deadline ... ok
+test session::tests::queue_scaling::credited_tail_selection_visits_one_head_independent_of_stalled_follows ... ok
+
+test result: ok. 381 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.98s
+
+     Running unittests src/bin/stream-http-contract.rs (/home/var/targets/cx-streams/debug/deps/stream_http_contract-1440ae8487e16677)
+     Running tests/browser_follow_model.rs (/home/var/targets/cx-streams/debug/deps/browser_follow_model-b3b651d95d544490)
+
+running 0 tests
+     Running tests/checked_session_contract.rs (/home/var/targets/cx-streams/debug/deps/checked_session_contract-f186311b534c48fd)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/client_pool_loom.rs (/home/var/targets/cx-streams/debug/deps/client_pool_loom-07a0b0dd1da68dbb)
+     Running tests/client_session_loom.rs (/home/var/targets/cx-streams/debug/deps/client_session_loom-2080b5764b5c8e18)
+     Running tests/follow_data_contract.rs (/home/var/targets/cx-streams/debug/deps/follow_data_contract-f9fbf9f7c0e69821)
+
+running 15 tests
+test an_older_peer_cannot_confirm_a_checked_follow ... ok
+test every_nonzero_snapshot_cut_reencodes_exactly ... ok
+test checked_anchor_round_trip_and_confirmation ... ok
+test malformed_guards_are_rejected ... ok
+test negative_control_infers_durability_from_acceptance ... ok
+test negative_control_drops_snapshot_checked_state ... ok
+test negative_control_reverses_both_snapshot_codecs ... ok
+test watermark_corpus_seeds_reach_their_named_outcomes ... ok
+test negative_control_accepts_a_31_byte_guard ... ok
+test negative_control_reverses_snapshot_encoding ... ok
+test negative_control_accepts_every_nonempty_confirmation ... ok
+test negative_control_drops_checked_state ... ok
+test snapshot_cursors_round_trip_without_losing_the_anchor ... ok
+test negative_control_reverses_snapshot_decoding ... ok
+test the_fuzz_driver_preserves_the_independent_wire_contract ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test corpus_delivery_seeds_reach_their_named_outcomes ... ok
+test untrusted_positions_and_watermarks_obey_the_same_contract ... ok
+test negative_controls_are_shrunk_by_the_same_property_and_fuzz_driver ... ok
+test admission_matches_the_independent_wire_contract ... ok
+test browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 2 tests
+test encoder_rejects_invalid_nested_record_and_preserves_absent_observation ... ok
+test commit_encoder_preserves_atomic_envelope_and_compact_compatibility ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+     Running tests/http_response_core.rs (/home/var/targets/cx-streams/debug/deps/http_response_core-1daf227783dcbad3)
+     Running tests/local_follow_loom.rs (/home/var/targets/cx-streams/debug/deps/local_follow_loom-1aa3eb91082b826b)
+     Running tests/local_replay_model.rs (/home/var/targets/cx-streams/debug/deps/local_replay_model-442313ac80200277)
+     Running tests/session_properties.rs (/home/var/targets/cx-streams/debug/deps/session_properties-4ecd38ef6e92dc3c)
+     Running tests/wave1_keys.rs (/home/var/targets/cx-streams/debug/deps/wave1_keys-2809cce65adcc60e)
+     Running tests/wave1_loom.rs (/home/var/targets/cx-streams/debug/deps/wave1_loom-7831e3713e37a1f3)
+     Running tests/wave1_recovery.rs (/home/var/targets/cx-streams/debug/deps/wave1_recovery-2bf7dda2f1bb19f7)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 7 tests
+test credit_grants_are_atomic_and_additive ... ok
+test negative_control_treating_latest_as_consecutive_is_detected - should panic ... ok
+test physical_frames_accept_generated_windows ... ok
+test frame_debits_conserve_both_balances ... ok
+test follow_data_preserves_mode_anchor_cursor_and_watermarks ... ok
+test untrusted_frames_and_latest_values_round_trip ... ok
+test physical_frames_have_one_canonical_decode ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 10 tests
+test memory_append_retry ... ok
+test memory_absent_zero_tail ... ok
+test memory_commit_retry ... ok
+test memory_composed_fork ... ok
+test memory_subtree_fork ... ok
+test local_absent_zero_tail ... ok
+test local_commit_retry ... ok
+test local_append_retry ... ok
+test local_composed_fork ... ok
+test local_subtree_fork ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test subtree_and_success_keys_survive_journal_and_snapshot_recovery ... ok
+     Running unittests examples/browser-test-host.rs (/home/var/targets/cx-streams/debug/examples/browser_test_host-1ec66e995170dfe5)
+     Running unittests examples/http-conformance.rs (/home/var/targets/cx-streams/debug/examples/http_conformance-5c78018a82f394a1)
+     Running unittests examples/local-storage-cost.rs (/home/var/targets/cx-streams/debug/examples/local_storage_cost-8c866c61c1d16ee2)
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+     Running unittests examples/provider-conformance.rs (/home/var/targets/cx-streams/debug/examples/provider_conformance-47222cc46e23ab72)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/stream-typescript-consumer.rs (/home/var/targets/cx-streams/debug/examples/stream_typescript_consumer-5feacb856dd8ab10)
+     Running unittests examples/token-operations.rs (/home/var/targets/cx-streams/debug/examples/token_operations-a4b5144b189d9240)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/wave1-conformance.rs (/home/var/targets/cx-streams/debug/examples/wave1_conformance-4ee42789bc9a4f5c)
+   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+    Finished `test` profile [optimized + debuginfo] target(s) in 11.13s
+     Running tests/wave1_loom.rs (/home/var/targets/cx-streams/debug/deps/wave1_loom-d47ba9246edaac38)
+
+running 8 tests
+test negative_control_independent_status_reads - should panic ... ok
+test negative_control_old_fork_without_exclusions - should panic ... ok
+test negative_control_old_root_only_fork - should panic ... ok
+test negative_control_uncharged_status_records - should panic ... ok
+test nested_fork_excludes_existing_siblings ... ok
+test page_statuses_share_one_atomic_cut ... ok
+test projected_status_records_obey_the_page_byte_bound ... ok
+test subtree_fork_races_coordinated_descendant_writes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

@@ -1,0 +1,22 @@
+{
+  "docs/proofs/README.md": "2cfa4f4a5b21e74debb9c375ffbe059375624c9de117cdf884a05045bddda1ff",
+  "docs/proofs/evidence/clippy-report-20261026T010609Z.jsonl": "0e84ed0a221e1546df30cd1302d14d07a2cb34fbcb5d496ef43f9ee406f82f32",
+  "docs/proofs/evidence/fs-append-review/append_segments.rs": "6022c26e81d37a6139ceebca0d2818961cc571bb860f515e549e2c898e7051bd",
+  "docs/proofs/evidence/fs-append-review/content.rs": "40db753dd030c39046c90e841b6cf6a0033bbe7c510a2f956bd8cf22cf765a3b",
+  "docs/proofs/evidence/fs-append-review/namespace.rs": "622148b03277f2743e47ec0bfa1e1cf27d5791535fc0858087f85bf2e60b4ddc",
+  "docs/proofs/evidence/fs-append-review/review.json": "e074fa360fa34d1eee32b3ce4c1b29ed3c7015f864bd24c11bb5ef48ec6555f2",
+  "docs/proofs/evidence/fs-append-review/segments-338-dispatch.log": "714ba3cca882fac34eb5c103fbe7955d17bf4fb5cfca622f02f3ffa4980c3449",
+  "docs/proofs/evidence/fs-append-review/segments-producer.py": "97a65817bd0dd0e5a38b55c23ba8ce27ed268e175bc715beaf9800853e87ff25",
+  "docs/proofs/evidence/fs-append-review/transactions.rs": "3578883286551cafb16ce7dd843eb8efa26c4f882bde7efb67bc525b5a78282e",
+  "docs/proofs/evidence/tests-20261026T005441Z.log": "2ca450245045443fb4e2db651362d3da8ca95bb45febf334532e97ad735b9761",
+  "docs/proofs/evidence/tests-20261026T010305Z.log": "8985f3ad66068465d7b4615d7cc1a0fa0e19de987b60ad0c60947dc07e7e1f97",
+  "docs/proofs/evidence/wave1-fork-source-cd2.rs": "3e6f5a64552f6f514c7a27845c5b4b9b430feaa58661b7e3ffceccc4ce680bbe",
+  "docs/proofs/evidence/wave1-keys-source-9cf.rs": "fcdb6c1abc598c7cd70e15f12300042f1db416a0f45d2a324dd01701ab826f70",
+  "docs/proofs/evidence/wave1-streams-source-cd2.rs": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30",
+  "docs/proofs/wave1-inventory.json": "7ced6e690b25ee2ce6ebfb83507ba283d87bb2e744916b9f07ff7e23e3aed148",
+  "rust/crates/stream/examples/wave1-conformance.rs": "09175a88621ece559b4737a1791ce070e80efe4c94e8101fe891d913ae8ef1d1",
+  "rust/crates/stream/src/conformance/wave1.rs": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30",
+  "rust/crates/stream/src/conformance/wave1/fork.rs": "3e6f5a64552f6f514c7a27845c5b4b9b430feaa58661b7e3ffceccc4ce680bbe",
+  "scripts/check-wave1-inventory.py": "49c24c4472c165443b7bed158b9589420c05bf364ddc0e686a5d6d16dce55bb9",
+  "scripts/test-wave1-inventory.py": "8436608322998a665ac071dd31b0f491468ac7011975c9dfff106ed566f865f2"
+}

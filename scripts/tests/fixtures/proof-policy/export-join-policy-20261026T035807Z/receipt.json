@@ -1,0 +1,95 @@
+{
+  "kind": "canonical_export_consumer_policy_only_not_api_or_runtime_qualification",
+  "source_manifest_sha256": "3f87daaab55753b60a2413cd4e2197142ffd536e6edef3f959f83993f1bc8dd8",
+  "producer_sha256": "e5f498f604b1958ab41bec5be1d0872e8ffc749fad77ba8b1f7fd6de3c37b43c",
+  "runs": [
+    {
+      "label": "positive",
+      "exit": 0,
+      "seconds": 1.125,
+      "selected": 13,
+      "log_sha256": "13209e7a5b132312286742d0c825623c30897d9c9e761510f34d1d6088ec3fc3",
+      "implementation_sha256": "6b55e767101f347960b9c8f5b4c33b81ae84069da54b93109e43aa6712741cc6"
+    },
+    {
+      "label": "omit-revision",
+      "exit": 1,
+      "seconds": 1.2179999999934807,
+      "selected": 13,
+      "log_sha256": "e667de1b3d218fe26923c9582b11fb71e2f963fafdfa58f677fe3021b076e8dc",
+      "implementation_sha256": "82bf799913a258dd4c0792999265ba1a07e17a545b0579732ebc382d84f8c901"
+    },
+    {
+      "label": "omit-source-bytes",
+      "exit": 1,
+      "seconds": 1.1089999999967404,
+      "selected": 13,
+      "log_sha256": "f80f28532061ea4f93e07b43e6a8343605fbfce700c4edb11b7005d20a5d6542",
+      "implementation_sha256": "f2c4f2cb36e182b67ec67215f0bc0922a16135693e9db0af972b5eb53ba60f68"
+    },
+    {
+      "label": "omit-required-profile-set",
+      "exit": 1,
+      "seconds": 1.3910000000032596,
+      "selected": 13,
+      "log_sha256": "f3f6ea79db2c3a275ddd9607fc7838b02a0bdc0cc7cb03aa6e5bebbc30454f33",
+      "implementation_sha256": "b2f00ccad6682501efefa00b1f554fddbc618fc8f2b97770599b750a2e206183"
+    },
+    {
+      "label": "omit-availability-closure",
+      "exit": 1,
+      "seconds": 1.0630000000237487,
+      "selected": 13,
+      "log_sha256": "f247d6acaebdf6e263015f87d5746bd59946f9a69e6498ad51d2ab543dd1e886",
+      "implementation_sha256": "12b812d54020602452a472e152c6bd861c83839f8ef42dc99392ec183740d7c3"
+    },
+    {
+      "label": "omit-profile-export-closure",
+      "exit": 1,
+      "seconds": 0.9380000000237487,
+      "selected": 13,
+      "log_sha256": "c103818cdb85edfcd10085d77e8f8ac600ba90fb70aa7f9596c0d15699a14e1d",
+      "implementation_sha256": "c6e3978981bf49fd8525fba95f1a4080e37f62142c61966781d7f5dbe655a309"
+    },
+    {
+      "label": "drop-feature-signature",
+      "exit": 1,
+      "seconds": 1.125,
+      "selected": 13,
+      "log_sha256": "7c193fd9cf8ec31d3a97b973f3a0383aaada9d9ffbf55cca7655aef964ccb23b",
+      "implementation_sha256": "f8eba38e51631430162916d003e9fdaf9d69c20fe4c6720452a56e89e2047abd"
+    }
+  ],
+  "mutations": {
+    "omit-revision": {
+      "before": "require(manifest['revision'] == revision, 'checked revision differs from generated exports')",
+      "after": "require(True, 'revision check omitted')",
+      "witness": "test_historical_bundle_cannot_qualify_current_revision_or_source"
+    },
+    "omit-source-bytes": {
+      "before": "require(sha(local_file(source_root, name)) == expected, 'source input differs: ' + name)",
+      "after": "require(True, 'source bytes check omitted')",
+      "witness": "test_actual_source_bytes_are_checked"
+    },
+    "omit-required-profile-set": {
+      "before": "require(set(profiles) == set(required_profiles), 'executed profiles differ from required profiles')",
+      "after": "require(True, 'required profile check omitted')",
+      "witness": "test_required_profiles_cannot_be_inferred_or_reduced"
+    },
+    "omit-availability-closure": {
+      "before": "require(seen == set(items), 'canonical occurrence missing profile availability')",
+      "after": "require(True, 'availability closure omitted')",
+      "witness": "test_rehashed_missing_profile_availability_refuses"
+    },
+    "omit-profile-export-closure": {
+      "before": "require({row['profile'] for row in joined} == set(required_profiles), 'required profile has zero joined exports')",
+      "after": "require(True, 'profile export closure omitted')",
+      "witness": "test_rehashed_profile_with_zero_joined_exports_refuses"
+    },
+    "drop-feature-signature": {
+      "before": "return sorted(joined, key=lambda row:",
+      "after": "return sorted([row for row in joined if row['signature'] != 'pub fn demo::overloaded(value: &str) -> usize'], key=lambda row:",
+      "witness": "test_real_feature_signatures_and_all_profiles_survive"
+    }
+  }
+}

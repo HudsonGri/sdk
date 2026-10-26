@@ -1,0 +1,7 @@
+{
+  "path": "scripts/check-proof-coverage.py",
+  "before": "require(Counter((row['kind'], row['line'], row['name']) for row in rows) == Counter(candidates(root, name)), 'public/unsafe/wildcard proof entry multiset differs: ' + name)",
+  "after": "require(True, 'candidate comparison omitted')",
+  "positive_sha256": "9cc1a6bdcb10343181d540a01c2c3c6d6b8fcc7b7a15e6b4ec4688086de6f8af",
+  "mutant_sha256": "3a196c209a5a1a29a3a9d94bed0e60769caddd56df0fbe2cd17b61e6f5e7ac91"
+}

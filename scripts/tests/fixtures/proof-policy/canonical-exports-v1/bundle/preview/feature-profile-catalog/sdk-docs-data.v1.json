@@ -1,0 +1,191 @@
+{
+  "schema": "sdk-docs-data.v1",
+  "schemaVersion": "sdk-docs-data.v1",
+  "version": "feature-profile-catalog",
+  "channel": "preview",
+  "source": {
+    "capturedSource": {
+      "kind": "git",
+      "revision": "eb54c87d3ba7138a36ce5e99768a7b04e2ad1834"
+    },
+    "publicationStatus": "candidate",
+    "revision": "eb54c87d3ba7138a36ce5e99768a7b04e2ad1834",
+    "sourceState": "working-tree",
+    "sourceSha256": "sha256:1be3ae0570467b4cee8ae388df2928dcbd4711fe4a0fb14cf2c76f8a8bdf9be7",
+    "inputSha256": "58bbd63761df5206527657b0a3fd9543e6a06432866a02fc3c8fb8bf30e6627a",
+    "rustdocFormatVersions": [
+      60
+    ],
+    "generator": "sdk-docs/0.1.0"
+  },
+  "navigation": {
+    "entries": [
+      {
+        "slug": "demo",
+        "title": "Demo",
+        "crateName": "demo"
+      }
+    ]
+  },
+  "packages": {
+    "entries": [
+      {
+        "packageName": "demo",
+        "crateName": "demo",
+        "familySlug": "demo",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "search": {
+    "entries": [
+      {
+        "id": "family:demo",
+        "familySlug": "demo",
+        "title": "Demo",
+        "path": "demo",
+        "kind": "family",
+        "text": "Demo demo"
+      },
+      {
+        "id": "item:demo:0",
+        "familySlug": "demo",
+        "title": "Always",
+        "path": "demo::Always",
+        "kind": "struct",
+        "text": "Always pub struct demo::Always "
+      },
+      {
+        "id": "item:demo:42",
+        "familySlug": "demo",
+        "title": "overloaded",
+        "path": "demo::overloaded",
+        "kind": "function",
+        "text": "overloaded pub fn demo::overloaded(value: u64) -> u64 "
+      },
+      {
+        "id": "item:demo:43",
+        "familySlug": "demo",
+        "title": "demo",
+        "path": "demo",
+        "kind": "module",
+        "text": "demo pub mod demo "
+      },
+      {
+        "id": "item:demo:profile-882cbb0c92dc04302657e0d1fe33be851fb239e7087b4ef333e65e78dd17c635",
+        "familySlug": "demo",
+        "title": "FeatureOnly",
+        "path": "demo::FeatureOnly",
+        "kind": "struct",
+        "text": "FeatureOnly pub struct demo::FeatureOnly "
+      },
+      {
+        "id": "item:demo:profile-d31f8dae06d0d5ff46fb20fc6b37691c47b9157252118e3c9ab130d08913b1a2",
+        "familySlug": "demo",
+        "title": "overloaded",
+        "path": "demo::overloaded",
+        "kind": "function",
+        "text": "overloaded pub fn demo::overloaded(value: &str) -> usize "
+      }
+    ]
+  },
+  "families": [
+    {
+      "slug": "demo",
+      "title": "Demo",
+      "crateName": "demo",
+      "items": [
+        {
+          "id": "43",
+          "name": "demo",
+          "kind": "module",
+          "path": "demo",
+          "signature": "pub mod demo",
+          "docs": null,
+          "source": {
+            "path": "rust/crates/demo/src/lib.rs",
+            "beginLine": 1,
+            "beginColumn": 1,
+            "endLine": 10,
+            "endColumn": 24
+          },
+          "reexport": null,
+          "reexportTarget": null
+        },
+        {
+          "id": "0",
+          "parentId": "43",
+          "name": "Always",
+          "kind": "struct",
+          "path": "demo::Always",
+          "signature": "pub struct demo::Always",
+          "docs": null,
+          "source": {
+            "path": "rust/crates/demo/src/lib.rs",
+            "beginLine": 1,
+            "beginColumn": 1,
+            "endLine": 1,
+            "endColumn": 19
+          },
+          "reexport": null,
+          "reexportTarget": null
+        },
+        {
+          "id": "profile-882cbb0c92dc04302657e0d1fe33be851fb239e7087b4ef333e65e78dd17c635",
+          "parentId": "43",
+          "name": "FeatureOnly",
+          "kind": "struct",
+          "path": "demo::FeatureOnly",
+          "signature": "pub struct demo::FeatureOnly",
+          "docs": null,
+          "source": {
+            "path": "rust/crates/demo/src/lib.rs",
+            "beginLine": 10,
+            "beginColumn": 1,
+            "endLine": 10,
+            "endColumn": 24
+          },
+          "reexport": null,
+          "reexportTarget": null
+        },
+        {
+          "id": "profile-d31f8dae06d0d5ff46fb20fc6b37691c47b9157252118e3c9ab130d08913b1a2",
+          "parentId": "43",
+          "name": "overloaded",
+          "kind": "function",
+          "path": "demo::overloaded",
+          "signature": "pub fn demo::overloaded(value: &str) -> usize",
+          "docs": null,
+          "source": {
+            "path": "rust/crates/demo/src/lib.rs",
+            "beginLine": 7,
+            "beginColumn": 1,
+            "endLine": 7,
+            "endColumn": 56
+          },
+          "reexport": null,
+          "reexportTarget": null
+        },
+        {
+          "id": "42",
+          "parentId": "43",
+          "name": "overloaded",
+          "kind": "function",
+          "path": "demo::overloaded",
+          "signature": "pub fn demo::overloaded(value: u64) -> u64",
+          "docs": null,
+          "source": {
+            "path": "rust/crates/demo/src/lib.rs",
+            "beginLine": 4,
+            "beginColumn": 1,
+            "endLine": 4,
+            "endColumn": 47
+          },
+          "reexport": null,
+          "reexportTarget": null
+        }
+      ],
+      "guides": []
+    }
+  ]
+}

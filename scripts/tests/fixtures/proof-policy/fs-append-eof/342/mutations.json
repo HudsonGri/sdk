@@ -1,0 +1,7 @@
+[
+  {
+    "path": "rust/crates/filesystem/src/workspace/content.rs",
+    "before": ".lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)",
+    "after": ".lookup_no_follow_with_accounting(&path.value, accounting, cancellation, false)"
+  }
+]

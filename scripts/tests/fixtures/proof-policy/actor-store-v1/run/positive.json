@@ -1,0 +1,1 @@
+{"command": ["cargo", "test", "--locked", "-p", "acyclic-actors", "--all-features", "--lib", "local::tests", "--", "--nocapture"], "exit": 0, "expected": 0, "seconds": 26.85453208000399}

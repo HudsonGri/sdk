@@ -1,0 +1,31 @@
+# A6 proof contract adopted by rb-identity
+
+The sole SDK AUTH/SECRETS and Cloud Trust/Edge owner is **rb-identity**. b-authority is retired. The actual handover and current API sketch are captured with exact hashes in `../../scripts/tests/fixtures/proof-policy/source-review-20261026/sources.json`. The predecessor proof contract remains historical. P1 security fixes, the owner's reported 104 auth regression tests, and a signed source head do not qualify A6. No complete A6 public suite or arbitrary-endpoint runner is admitted.
+
+## Decisions
+
+Reuse `verify`, opaque `VerifiedCapability`, conjunctive `Effective`, `TrustEvidence::check`, existing harness VerifiedScope and filesystem policy compilation. TrustEvidence contains no grants and cannot authorize an unbounded subtree. Do not create another verifier, grant reducer, bearer parser or serialized verified flag. The proposed AuthorizedEffects/AuthenticatedPolicyCut names are a design contract, not released symbols.
+
+Bind effect authorization to account/audience, canonical request digest including exclusions, source cut, coverage, expiry, actual authenticated keyring stream head, policy revision and accepted owner fence. Compare these at authoritative direct and coordinated publication. A record that advances the authenticated head without changing interpreted keyring fields must invalidate old evidence. An operation cannot authorize itself. During partition, state the locally ordered revocation guarantee precisely; no immediate global revocation claim.
+
+Owner deny is final. Each parent grant union is a ceiling; all ceilings intersect. Canonical segment prefixes, empty-operation denial, half-open expiry (`now < expires`) and revision equality are mandatory. Admit total bytes, links, aggregate grants/caveats and path depth before expensive decode/allocation; retain original work/memory/time/cancellation custody. Signature verification precedes expensive semantic subset conversion. Do not raise the current credential envelope ceiling to hide a direct-verifier bound gap.
+
+Subtree coverage covers every included descendant structurally, without enumerating descendants. Exact-root Read cannot authorize subtree inheritance. Exclusions only narrow effects; destination Fork/Commit is checked independently. Children tail projection requires Read in addition to List. Typed unauthenticated, denied, missing, stale/revoked/expired and unavailable outcomes survive exhaustive mappings to each consumer.
+
+Acknowledged mint/write audit facts are durable only where included in the authority transaction. Reads/denials use the owner's bounded asynchronous audit with visible loss accounting. Audit failure never grants work; no durable-every-denial inference. Keep bootstrap/Pi/provisional-key lifecycle and HTTP whole-request security obligations in P1; they are not evidence for decision/publication correctness.
+
+## Shared histories and controls
+
+Each history runs the same production oracle in memory, local services and arbitrary hosted endpoint. Native/WASM/installed TS consumer results are separate qualifications. All remain unqualified. Private deterministic hooks belong in canonical production/test-support adapters; no public fault endpoint or adapter that independently implements denial.
+
+| ID | Invariant and production seam | Strongest feasible proof and unchanged-oracle control |
+| --- | --- | --- |
+| A6-01 | Verify every parent; private verified construction; conjunctive grants, canonical segments, frozen subject/lineage | Kani on bounded production decision/subset hooks, generated full model equivalence. Skip parent verification, union ceilings, textual prefix and later-lineage substitution must each fail a fixed witness. |
+| A6-02 | Half-open expiry, current revision equality, owner deny precedence, order-independent decisions | Bounded Kani plus production trie/model properties. Widen expiry, use numeric revision ordering, ignore deny or change insertion order semantics. |
+| A6-03 | All direct verifier inputs admitted before decode/allocation/crypto work | Real encoder corpus fuzz plus charged-work/peak-memory assertions at each byte/link/grant/depth boundary. Omit one admission check or allocate before admission. Fixed gate corpus records real encoder/source provenance. |
+| A6-04 | Authorized effects bind exact digest/cut/exclusions, covering source and independent destination authority | Canonical Streams fork histories, exact-root versus covering grants, excluded protected branches and List-only projection. Substitute root-only TrustEvidence, omit one digest field or skip destination/Read checks. Assert no publication or descendant visibility. |
+| A6-05 | Real keyring head, revision/expiry/owner lease checked at direct and coordinated publication; no self-grant | DST pauses after ingress and before publication, moves each fence, advances head with semantically identical policy, retries lost acknowledgement and races self-grant. Remove actual pre-commit comparison or compare interpreted fields only. Production cache/fence Loom where real shared primitives exist. |
+| A6-06 | Typed decisions and audit failure policy survive transport, fs/mount/tool and UI | Same real error cases through exhaustive production adapters, bounded audit saturation/failure. Catch-all mapping and audit-failure allow mutant must fail exact error/no-effect assertions. |
+| A6-07 | Canonical private-read boundary owns authenticated task authority, provider/owner, retained generation and original bounds | Real native/browser/installed TS calls to TaskContext::read_private_path and existing Rust verifier. Substitute caller grants/provider/owner, generation/body, escaping/internal paths or omit result limits. Actual old TS authority-copy and bypass controls; delete the duplicate through Rust/WASM. |
+
+Each selected gate suite must run well under 10 seconds, select nonzero cases and use a fixed corpus. Long fuzz/DST exploration belongs to nightly. Retain exact compiled source manifests, executable/WASM hashes, real output, unchanged oracle identity and each independent mutant's source. Source review, a fake ingress, an expected refusal or an ordinary P1 regression cannot replace these receipts.

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "lane": "rb-fs",
+  "cloud_head": "b03f9757bafc8d63dce5b75404ce001b024d5b59",
+  "sdk_pin": "37b7bba00b4214f4200088de5ff09d4a8eda14d2",
+  "scope": "A5 hosted Streams transport prerequisite; full A5 remains unqualified",
+  "mode": "Cloud production session ingress over loopback mTLS with MemoryStream",
+  "proof_source": "svc/fs/src/streams/session/tests.rs",
+  "adapter_source": "svc/fs/src/request_streams/tests/follow.rs",
+  "invariants": [
+    {
+      "negative_control": "old transport rejects Follow; old_missing_follow_grant_is_a_real_negative_control reproduces the old backing grant denial",
+      "test": "snapshot_cursor_replays_racing_appends_and_shares_independent_channels",
+      "name": "snapshot cursor replays concurrent append without timer polling"
+    },
+    {
+      "negative_control": "old transport rejects the positive history; exact physical open count must equal one",
+      "test": "snapshot_cursor_replays_racing_appends_and_shares_independent_channels",
+      "name": "one canonical session with independent bounded channels and drop/resume"
+    },
+    {
+      "negative_control": "forged CommitId must return PrefixNotRetained; absent path returns NotFound and remains absent",
+      "test": "filtered_progress_keeps_resume_anchors_and_rejects_forged_cursors",
+      "name": "filtered skip progress retains authenticated cut and wrong anchors fail typed"
+    },
+    {
+      "negative_control": "old no-Follow implementation cannot complete any positive history",
+      "test": "snapshot_follow_deterministic_schedule_matrix",
+      "name": "append/cancel/reopen interleavings preserve consecutive delivery",
+      "schedules": 8
+    },
+    {
+      "negative_control": "old RequestStreams inherited Unsupported; test requires both methods to return the racing record",
+      "test": "checked_and_progress_follows_bypass_request_observation_cache",
+      "name": "request observation cache cannot replace atomic follow registration"
+    }
+  ],
+  "concurrency_model": "Uses the pinned SDK canonical session/credit/cursor implementation and its existing Loom models; no new Cloud concurrency protocol",
+  "evidence": {
+    "forwarding_and_old_grant_tests": 2,
+    "first_transport_test_seconds": 0.04,
+    "forwarding_test_seconds": 0.02,
+    "first_transport_tests": 2,
+    "final_gate": "PASS:537.871s total; snapshot594db42dc21f88e1582beba861c8fa8522bb1610; base da1c9ca3e27d8f6ed9dc2b93c78696ec94a99e1a; check55.773s/clippy34.259s/test94.832s; filesystem217 passed,3 skipped; SDK native smoke1 passed. Existing SDK harness corpus compile skips787+1 remain unqualified at pin pending SDK#1473.",
+    "first_bb2_build_seconds": 109
+  },
+  "pending": [
+    "narrow backing Follow grants from rb-identity",
+    "SDK fs-concurrency handover",
+    "A5 conditional write/remove, append segments, composed fork_many, StreamCoreState and one-domain multi-volume prefix/glob query integration",
+    "same SDK A5 endpoint conformance runner in Cloud gate",
+    "WireSession/PageWindow endpoint conformance runner after A5",
+    "durable hosted/retention/failure qualification"
+  ]
+}

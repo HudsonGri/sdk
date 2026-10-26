@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "kind": "streams_checkpoint_partial_observation",
+  "captures": [
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/identities.json",
+      "sha256": "99492086a4c04086782801fe3b23bbfdba18c9d6878b78dc76368a741c456d19",
+      "bytes": 568,
+      "origin": "real git rev-parse commit/tree in Q:\\wt\\rx-hostability-sdk"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/native_signed-signature.txt",
+      "sha256": "e9552d9bbfcebe77b562be3c787f5d6a021de199b0784f462895e97acbbf8b20",
+      "bytes": 85,
+      "origin": "real git log signature status"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/current_signed-signature.txt",
+      "sha256": "dc9f2531c6e385ee3e9e9084eedb2b53dcec40434ef1eacd67374c076ed0bccd",
+      "bytes": 85,
+      "origin": "real git log signature status"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-qualified-20261026T0245Z.log",
+      "sha256": "7deab2df76cf320c8857f04a8a5d44311dc745ee99345443b1772d6dd19dac0f",
+      "bytes": 46090,
+      "origin": "Q:\\lanes\\redesign\\streams\\owner-qualified-20261026T0245Z.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-typescript-20261026T0258Z.log",
+      "sha256": "719131b94660ef644102168d834ed7da6a694d2858983db6a9865e8b7a72fb13",
+      "bytes": 11735,
+      "origin": "Q:\\lanes\\redesign\\streams\\owner-typescript-20261026T0258Z.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-final-surface-20261026T0256Z.log",
+      "sha256": "00d343ffeb6eec954a87d7dd64668b9367042d59d257aa8dd59d4b1d9cc70d87",
+      "bytes": 20018,
+      "origin": "Q:\\lanes\\redesign\\streams\\owner-final-surface-20261026T0256Z.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-native-surface-20261026T0256Z.log",
+      "sha256": "79ffcec46cd6dd2319a88616bd82a6cd771d69faa6ca574f6f6720a4e10f799c",
+      "bytes": 9334,
+      "origin": "Q:\\lanes\\redesign\\streams\\owner-native-surface-20261026T0256Z.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-static-surface-20261026T0258Z.log",
+      "sha256": "c94529d4a381be23beb88747cb30eb9f3d55fb29308fd03ad1a772a32125708a",
+      "bytes": 285307,
+      "origin": "Q:\\lanes\\redesign\\streams\\owner-static-surface-20261026T0258Z.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/adoption.md",
+      "sha256": "e3bc7ddf06f4c119c655fd2c921bf3b5f3c30599962997c282ae01eec1e4551a",
+      "bytes": 8137,
+      "origin": "Q:\\lanes\\redesign\\streams\\adoption.md"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/tests/wave1_loom.rs",
+      "sha256": "1f06f11b48f5794c5a3810dd7976bf14db822079e072485395a2704045fa9bba",
+      "bytes": 1385,
+      "origin": "git show 391d21d2f2d0d82519d4dcd842909a4c656c610a:rust/crates/stream/tests/wave1_loom.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+      "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d",
+      "bytes": 23978,
+      "origin": "git show 391d21d2f2d0d82519d4dcd842909a4c656c610a:rust/crates/stream/src/memory/recovery_model.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/commit.rs",
+      "sha256": "acf4561aad4febbff3813113af0bf569128915572d9a0b0e9d45508284c23372",
+      "bytes": 20645,
+      "origin": "git show 391d21d2f2d0d82519d4dcd842909a4c656c610a:rust/crates/stream/src/memory/commit.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/provider.rs",
+      "sha256": "c9525bc62dc96b57de426651ae542d10b1277e56c4ce03b17c7690a7a58be851",
+      "bytes": 25828,
+      "origin": "git show 391d21d2f2d0d82519d4dcd842909a4c656c610a:rust/crates/stream/src/memory/provider.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/query_sync.rs",
+      "sha256": "e98a7c3461263c563d70e4c7bd28bfb7c6c018e0b1b08096a2767aa19cb4c2c7",
+      "bytes": 537,
+      "origin": "git show 391d21d2f2d0d82519d4dcd842909a4c656c610a:rust/crates/stream/src/query_sync.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/query_sync/locks.rs",
+      "sha256": "5a92243722c95e9cd16872091b81379bc4097b68b6ebb6eb42d6381a4d8b52fa",
+      "bytes": 8413,
+      "origin": "git show 391d21d2f2d0d82519d4dcd842909a4c656c610a:rust/crates/stream/src/query_sync/locks.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/conformance.rs",
+      "sha256": "72b4565e6eb8ad090e1c2c3929a0c27a8468c4905fe259c2d39c64f71b184229",
+      "bytes": 30783,
+      "origin": "git show 391d21d2f2d0d82519d4dcd842909a4c656c610a:rust/crates/stream/src/conformance.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/producer.py",
+      "sha256": "fe290f6e89c8f27fd8078109ba85bff0249a2cc11a6475538815c4f7a9cbd36a",
+      "bytes": 4538,
+      "origin": "Q:\\lanes\\verify\\capture_stream_checkpoint.py"
+    }
+  ],
+  "identities": {
+    "native_snapshot": {
+      "commit": "3c6e21324094455a7ad425db04c00a1fd7c65d17",
+      "tree": "9582f891a605b1acb3225c42764273641401a9ec"
+    },
+    "native_signed": {
+      "commit": "391d21d2f2d0d82519d4dcd842909a4c656c610a",
+      "tree": "9582f891a605b1acb3225c42764273641401a9ec"
+    },
+    "typescript_snapshot": {
+      "commit": "e8b7315427e3c1624f80737dc5773c80ccc81c95",
+      "tree": "a06cfb36d78021b8dd497bad4d158ebcaa07675f"
+    },
+    "current_signed": {
+      "commit": "3a348ebf1646daf71a35c6f849caf793620f5e54",
+      "tree": "a06cfb36d78021b8dd497bad4d158ebcaa07675f"
+    }
+  },
+  "qualified_modes": [],
+  "current_head_qualified": false,
+  "exact_compiled_artifacts_verified": false,
+  "positive_proofs": 0,
+  "native": {
+    "library_tests": 381,
+    "library_seconds": 8.98,
+    "wave1_tests": 10,
+    "wave1_seconds": 0.04,
+    "recovery_tests": 1,
+    "recovery_seconds": 0.65,
+    "loom_tests": 8,
+    "loom_seconds": 0.01
+  },
+  "typescript": {
+    "tests": 105,
+    "files": 14,
+    "seconds": 6.37,
+    "runtime": "Bun; not Node",
+    "generated_wasm_hash": null
+  },
+  "controls": {
+    "root_only": "production_fault",
+    "exclusions": "production_fault",
+    "page_bytes": "production_fault",
+    "independent_reads": "model_postprocessing"
+  },
+  "provenance_gaps": [
+    "compiled input manifests",
+    "executed binary hashes",
+    "generated WASM artifact identity",
+    "full current-head native qualification"
+  ],
+  "remaining": [
+    "shared HST histories and actual hosted endpoint",
+    "browser and staged native addon",
+    "persistent closure/GC/restore and lifetime attempt fencing",
+    "production negative for independent page reads",
+    "all cross-mode obligations"
+  ]
+}

@@ -1,0 +1,65 @@
+[build-slot buildbox] 01:12:47 BUILD_SLOT_TREE=390e8f927252f432c0047d4f5b27cb8619e2e087 0ed4266f08c758dc898df6c8753d793104a076c2 2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084 (client /mnt/q/wt/fs-concurrency)
+[build-slot buildbox] 01:13:10 bb2: git 390e8f927252 + bundle 16966 B, diff 2176593 B (248 new files), 422393 B sent, 13.5s; src wt-sdk/fs-concurrency-3ed9a8c2.0-1792977167761-4614-2e8266f2 target sdk/fs-concurrency-3ed9a8c2; job 1792977167761-4614-2e8266f2; bash .bb-fs-segments.sh
+BB_DISK_FREE [{"path": "/", "free_percent": 19.938756719769813, "free_bytes": 20514607104}, {"path": "/mnt/bb", "free_percent": 22.40454185049768, "free_bytes": 369330388992}]
+GATE_HOME_GUARD {"mechanism": "private-read-only-mount", "real_home": "/home/var", "writable": false, "recursive": true, "private_proc": true}
+[buildbox] sccache startup: sccache: Starting the server...
+sccache: Listening on address /mnt/bb/jobs/job-p6k9_2q5/sccache.sock
+[buildbox] node_modules ensured for tracked lockfiles in 0.0s
+BUILD_SLOT_TREE=390e8f927252f432c0047d4f5b27cb8619e2e087 0ed4266f08c758dc898df6c8753d793104a076c2 2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084
+[buildbox] source clock: exact-content private targets
+BUILD_SLOT_EXEC={"exec_start":"2026-10-26T01:13:12.784Z","toolchain":{"rustc_vv_sha256":"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37","rustc_vv":"rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n","target":["x86_64-unknown-linux-gnu"],"probe_error":null}}
+{"stage": "positive", "exit": 0, "seconds": 326.88583168698824}
+{"label": "append-segments", "filter": "workspace::tests::append_segments::", "exit": 101, "seconds": 0.034884774999227375, "executable_sha256": "aea2da595afb011679116c4c107210c49e787a780df682200bac9d82a725ab77", "compiled_source_manifest_sha256": "8cda803636cf9d6162d5c1939fed39da575a33d41dda73f1949f02c74b267129"}
+
+running 6 tests
+test workspace::tests::append_segments::append_segments_preserve_prefix_and_share_one_publication ... FAILED
+test workspace::tests::append_segments::append_segments_conflict_on_the_same_eof_even_through_an_alias ... ok
+test workspace::tests::append_segments::append_segments_create_and_extend_without_reading_the_existing_body ... ok
+test workspace::tests::append_segments::append_segments_reject_symlinks_and_denied_work_without_partial_edits ... ok
+test workspace::tests::append_segments::append_segments_retain_the_original_native_work ... ok
+test workspace::tests::append_segments::append_segments_equal_serial_concatenation ... ok
+
+failures:
+
+failures:
+    workspace::tests::append_segments::append_segments_preserve_prefix_and_share_one_publication
+
+test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 1504 filtered out; finished in 0.03s
+
+proptest: FileFailurePersistence::SourceParallel set, but no source file known
+Error: Filesystem(FileRead(InvalidRange))
+
+{"label": "staged-content", "filter": "facade::tests::transactions::", "exit": 0, "seconds": 0.011831529991468415, "executable_sha256": "aea2da595afb011679116c4c107210c49e787a780df682200bac9d82a725ab77", "compiled_source_manifest_sha256": "8cda803636cf9d6162d5c1939fed39da575a33d41dda73f1949f02c74b267129"}
+
+running 8 tests
+test facade::tests::transactions::borrowed_authored_second_staged_write_failure_keeps_candidate_source_and_destination ... ok
+test facade::tests::transactions::authored_transaction_is_atomic_and_preserves_result_positions ... ok
+test facade::tests::transactions::authored_transactions_preflight_expansion_noops_and_byte_bounds ... ok
+test facade::tests::transactions::authored_transactions_cover_every_portable_operation_without_hidden_paths ... ok
+test facade::tests::transactions::limits::checkout_generation_and_mode_guards_reject_without_candidate_damage ... ok
+test facade::tests::transactions::inverse_private_mutations_restore_the_base_and_clear_replay_state ... ok
+test facade::tests::transactions::limits::public_byte_boundaries_reject_before_allocation_or_backend_work ... ok
+test facade::tests::transactions::original_authored_transaction_keeps_true_ids_and_original_result_custody ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1502 filtered out; finished in 0.01s
+
+
+Traceback (most recent call last):
+  File "/work/src/.bb-fs-segments.py", line 31, in <module>
+    assert all(checks), 'positive runtime checks failed; inspect named suite output'
+           ^^^^^^^^^^^
+AssertionError: positive runtime checks failed; inspect named suite output
+{"label": "content", "filter": "facade::tests::content::", "exit": 0, "seconds": 0.01086519201635383, "executable_sha256": "aea2da595afb011679116c4c107210c49e787a780df682200bac9d82a725ab77", "compiled_source_manifest_sha256": "8cda803636cf9d6162d5c1939fed39da575a33d41dda73f1949f02c74b267129"}
+
+running 3 tests
+test facade::tests::content::original_content_stream_and_clone_keep_real_identity_and_atomic_stamps ... ok
+test facade::tests::content::stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation ... ok
+test facade::tests::content::whole_file_rewrites_exceed_read_bounds_but_remain_generation_fenced ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1507 filtered out; finished in 0.01s
+
+
+REFUSED step=segments: positive runtime checks failed; inspect named suite output; recovery: pwsh -NoProfile -File .bb-fs-segments-dispatch.ps1 -RunId 1792977520710334359
+8538d365974f3db6f5686e2c6fd7e1810043eb1f0b3e2bc2a695192fc34a9836  .bb-fs-segments.tar
+REFUSED step=segments; recovery: pwsh -NoProfile -File .bb-fs-segments-dispatch.ps1 -RunId 1792977520754494632
+[build-slot buildbox] 01:18:46 rc=1 in 398.0s; log /home/var/log/buildbox/1792977128289-4614-62e7d670.log

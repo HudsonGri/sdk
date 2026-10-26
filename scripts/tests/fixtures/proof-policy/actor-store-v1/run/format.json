@@ -1,0 +1,1 @@
+{"command": ["rustfmt", "--edition", "2024", "--config", "skip_children=true", "rust/crates/actors/src/lib.rs", "rust/crates/actors/src/guest.rs", "rust/crates/actors/src/guest/handler.rs", "rust/crates/actors/src/local.rs", "rust/crates/actors/src/local/tests.rs"], "exit": 0, "expected": 0, "seconds": 0.052609203004976735}

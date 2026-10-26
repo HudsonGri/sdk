@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "cargo",
+    "build",
+    "--locked",
+    "-p",
+    "acyclic-stream",
+    "--features",
+    "http,local",
+    "--message-format=json",
+    "--example",
+    "wave1-conformance"
+  ],
+  "exit": 0,
+  "seconds": 1.0731363640225027
+}

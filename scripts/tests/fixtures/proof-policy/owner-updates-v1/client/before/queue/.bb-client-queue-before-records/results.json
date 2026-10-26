@@ -1,0 +1,21 @@
+[
+  {
+    "name": "metrics",
+    "command": [
+      "bun",
+      ".bb-client-queue-before.ts"
+    ],
+    "rc": 0,
+    "seconds": 0.2703953919990454
+  },
+  {
+    "name": "negative",
+    "command": [
+      "bun",
+      "test",
+      "./.bb-client-queue-before.test.ts"
+    ],
+    "rc": 1,
+    "seconds": 0.02755108298151754
+  }
+]

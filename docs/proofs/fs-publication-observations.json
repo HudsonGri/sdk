@@ -1,0 +1,161 @@
+{
+  "kind": "targeted_source_observation_not_wave1_qualification",
+  "source_commit": "4b9723782c3b1ac64976b0ec0ec722fcabc36e04",
+  "external_receipt": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\receipt.json",
+  "external_receipt_sha256": "116f1ab878d93c3a4612328a49652e5b14a5a2a8eca8048294d0a080bee779b3",
+  "input_files_verified": 1529,
+  "input_scope": "all tracked filesystem crate files plus root Cargo.toml/Cargo.lock and two captured producer files; not the full workspace/compiler dependency closure",
+  "positive": {
+    "tests": 48,
+    "groups": 10,
+    "max_suite_seconds": 0.8106664000000001,
+    "executable": "/work/target/debug/deps/acyclic_fs-2a499a2bd5ea5781",
+    "reported_executable_sha256": "ec137e64bb1d9b7b68b55c008cc58a5b38fb8c393c2bd25d1a3c653ef65211b6",
+    "cargo_artifact_was_rebuilt": true
+  },
+  "negative": {
+    "controls": [
+      {
+        "test": "collection::tests::checkout_root_replacement_rejects_mismatched_hold_before_changing_state",
+        "test_file": "rust/crates/filesystem/src/collection/tests.rs",
+        "test_sha256": "f3a6c2aee720f4f5c044ee7a872acf9f8401bb4849436cf1fd132dfb7c49a518",
+        "production_file": "rust/crates/filesystem/src/collection/roots.rs",
+        "production_sha256": "c9309c3e53b215bfb4dba8e614f400ea5ff0d38a6632cd07790c9fc7f2a5535b",
+        "mutant_sha256": "cccbc85e256990c519b3fd458174e9a67ab57c30bb97a6e68dc856fc4a553c65",
+        "witness": "assertion failed: held.is_none()",
+        "seconds": 0.004305475000000001,
+        "classification": "actual_old_behavior_in_combined_mutant_executable",
+        "limitation": "root witness is production debug_assert before unchanged test state-order assertion"
+      },
+      {
+        "test": "distributed::tests::native_io_failure_preserves_the_real_cause_with_and_without_original_work",
+        "test_file": "rust/crates/filesystem/src/distributed/tests.rs",
+        "test_sha256": "b7761ef96d89684b0057375bf14f9544488459f6c0916e234a994b4ad937edbf",
+        "production_file": "rust/crates/filesystem/src/distributed/native.rs",
+        "production_sha256": "230ad762def86f340192ada26f63fc3e3172bdfcaa395f28e050de71b093653d",
+        "mutant_sha256": "57ee0a313efc00a435bce93c38a2f3969b2716f94f88f4ed02226d0bfaf66ddf",
+        "witness": "native SDK funding",
+        "seconds": 0.021843227000000014,
+        "classification": "actual_old_behavior_in_combined_mutant_executable",
+        "limitation": "targeted typed-refusal/no-panic regression; not distributed protocol proof"
+      },
+      {
+        "test": "core_state::tests::log::record_directory_refuses_a_path_without_a_parent",
+        "test_file": "rust/crates/filesystem/src/core_state/tests/log.rs",
+        "test_sha256": "d10dc89ccaf684838354f65db4f8c8e1f1274507caff32772f0b7b25e6990f4e",
+        "production_file": "rust/crates/filesystem/src/core_state/records.rs",
+        "production_sha256": "2a7449975ef54242ee625b131e43bf6b7632f22f0894f5fc73b9c820c2393688",
+        "mutant_sha256": "e5b0869cf8c80671335e5d066834269bd0ccef1699e71e8ff7158dfdcdb7201e",
+        "witness": "record paths have a family",
+        "seconds": 0.01639985200000001,
+        "classification": "actual_old_behavior_in_combined_mutant_executable",
+        "limitation": "targeted typed-refusal/no-panic regression; not distributed protocol proof"
+      }
+    ],
+    "combined_mutant": true,
+    "executable": "/work/target/debug/deps/acyclic_fs-2a499a2bd5ea5781",
+    "reported_executable_sha256": "55ea3e9274c384e2103f02c6871d8331ebe958976ca212b5cddafa36f6199c5e"
+  },
+  "clippy": {
+    "status": "RED",
+    "errors": 32,
+    "warnings": 161,
+    "error_lines": [
+      "rust/crates/filesystem/src/cancellation/mod.rs:66:33: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/cancellation/mod.rs:73:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/cancellation/wait/mod.rs:135:13: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/cancellation/wait/mod.rs:212:9: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/cancellation/wait/mod.rs:260:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/cancellation/wait/mod.rs:271:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/cancellation/wait/mod.rs:293:13: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/demand/accounting.rs:131:9: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/demand/accounting.rs:379:9: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/demand/admissions.rs:79:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/demand/admissions.rs:82:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/demand/admissions.rs:90:17: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/demand/admissions.rs:96:17: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/demand/admissions.rs:107:9: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/heap_future.rs:174:13: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/lazy_workspace/materialize.rs:265:17: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/lazy_workspace/materialize.rs:282:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/lazy_workspace/materialize.rs:296:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/lazy_workspace/path.rs:32:13: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/materializer/preparation.rs:29:9: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/materializer/reservation_meter.rs:99:9: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/materializer/reservation_meter.rs:104:9: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/operation_window/lease_path/encoding.rs:42:9: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/operation_window/lease_path/encoding.rs:52:9: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/operation_window/lease_path/encoding.rs:74:9: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/operation_window/lease_path/encoding.rs:76:9: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/simulation/mod.rs:317:9: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/staged_objects/io.rs:71:9: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/staged_objects/publication.rs:224:17: error: used `expect()` on a `Result` value",
+      "rust/crates/filesystem/src/staged_objects/spill.rs:65:21: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/staged_objects/spill.rs:75:39: error: used `expect()` on an `Option` value",
+      "rust/crates/filesystem/src/staged_objects/mod.rs:53:13: error: used `expect()` on a `Result` value"
+    ]
+  },
+  "qualified_modes": [],
+  "complete_A5_positive_proofs": 0,
+  "limitations": [
+    "no full compiler-input closure or retained executable bytes; actual producer reports executable hashes bound to Cargo-selected paths",
+    "negative archive has original sources and exact mutation recipe; reconstructed mutant bytes match separately captured actual-export hashes",
+    "three production restorations share one mutant executable; each named test fails at its distinct intended old-behavior panic",
+    "root ordering-only control still needed; debug assertion fires before explicit unchanged-state assertions",
+    "legacy core_state cleanup is not redesigned StreamCoreState proof",
+    "no DST/hosted/endpoint/deployment/macOS/Windows guarantee; canonical-root failure remains open"
+  ],
+  "rollout": {
+    "ledger": "Q:/lanes/rollout/LEDGER.md",
+    "sdk_pr": 1492,
+    "cloud_pr": 6652,
+    "merged_sdk": null,
+    "deployed_endpoint_receipt": null,
+    "live_swarm_receipt": null,
+    "source": "owner handoff and shared ledger source review only"
+  },
+  "source_references": [
+    {
+      "file": "rust/crates/filesystem/src/collection/tests.rs",
+      "line": 30,
+      "sha256": "f3a6c2aee720f4f5c044ee7a872acf9f8401bb4849436cf1fd132dfb7c49a518",
+      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\collection\\tests.rs",
+      "scope": "actual signed4b972 source; not current verify source tree"
+    },
+    {
+      "file": "rust/crates/filesystem/src/collection/roots.rs",
+      "line": 123,
+      "sha256": "c9309c3e53b215bfb4dba8e614f400ea5ff0d38a6632cd07790c9fc7f2a5535b",
+      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\collection\\roots.rs",
+      "scope": "actual signed4b972 source; not current verify source tree"
+    },
+    {
+      "file": "rust/crates/filesystem/src/distributed/tests.rs",
+      "line": 19,
+      "sha256": "b7761ef96d89684b0057375bf14f9544488459f6c0916e234a994b4ad937edbf",
+      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\distributed\\tests.rs",
+      "scope": "actual signed4b972 source; not current verify source tree"
+    },
+    {
+      "file": "rust/crates/filesystem/src/distributed/native.rs",
+      "line": 99,
+      "sha256": "230ad762def86f340192ada26f63fc3e3172bdfcaa395f28e050de71b093653d",
+      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\distributed\\native.rs",
+      "scope": "actual signed4b972 source; not current verify source tree"
+    },
+    {
+      "file": "rust/crates/filesystem/src/core_state/tests/log.rs",
+      "line": 4,
+      "sha256": "d10dc89ccaf684838354f65db4f8c8e1f1274507caff32772f0b7b25e6990f4e",
+      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\core_state\\tests\\log.rs",
+      "scope": "actual signed4b972 source; not current verify source tree"
+    },
+    {
+      "file": "rust/crates/filesystem/src/core_state/records.rs",
+      "line": 14,
+      "sha256": "2a7449975ef54242ee625b131e43bf6b7632f22f0894f5fc73b9c820c2393688",
+      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\core_state\\records.rs",
+      "scope": "actual signed4b972 source; not current verify source tree"
+    }
+  ]
+}

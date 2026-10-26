@@ -1,0 +1,7 @@
+{
+  "path": "scripts/check-proof-coverage.py",
+  "before": "result[name] = dict(source={HST_POLICY_SOURCE: compiled[HST_POLICY_SOURCE]}, invariants={HST_POLICY_INVARIANT})",
+  "after": "result[name] = dict(source=compiled, invariants={HST_POLICY_INVARIANT})",
+  "positive_sha256": "9cc1a6bdcb10343181d540a01c2c3c6d6b8fcc7b7a15e6b4ec4688086de6f8af",
+  "mutant_sha256": "c7c9c6bc96bb0084456c9cd62d253f34a18ef38abcdb27ae28ef4e9032d95e87"
+}

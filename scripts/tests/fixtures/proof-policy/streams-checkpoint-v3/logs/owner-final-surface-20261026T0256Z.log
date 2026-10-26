@@ -1,0 +1,328 @@
+bb2run: streams at 172dbae63c (snapshot of 2446d21206 + worktree)
+CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9917931520,"afterAllocatedBytes":9917931520,"beforeApparentBytes":9857929712,"afterApparentBytes":9857929706,"incrementalUnits":1,"ageUnits":0,"capUnits":0,"elapsedSeconds":0.37877919499999996}
+diff -u rust/crates/stream/proto/stream/v1/session.proto.orig rust/crates/stream/proto/stream/v1/session.proto
+--- rust/crates/stream/proto/stream/v1/session.proto.orig	2026-10-26 02:53:05.097781160 +0000
++++ rust/crates/stream/proto/stream/v1/session.proto	2026-10-26 02:53:05.097781160 +0000
+@@ -2,9 +2,8 @@
+ syntax = "proto3";
+ package acyclic.stream.v1;
+ 
+-import "validation/v1/options.proto";
+-
+ import "stream/v1/stream.proto";
++import "validation/v1/options.proto";
+ 
+ option go_package = "github.com/acyclic-labs/sdk/go/gen/stream/v1;streamv1";
+ 
+@@ -35,7 +34,10 @@
+   repeated bytes credentials = 6; // bounded slots, oldest index first
+ }
+ // Empty credential drops the slot and closes every channel bound to it.
+-message SessionCredential { uint32 slot = 1; bytes credential = 2; }
++message SessionCredential {
++  uint32 slot = 1;
++  bytes credential = 2;
++}
+ message SessionWelcome {
+   uint32 version = 1;
+   string node_id = 2;
+@@ -151,5 +153,7 @@
+ }
+ 
+ service StreamSessionService {
+-  rpc Session(stream SessionFrame) returns (stream SessionFrame) { option (acyclic.validation.v1.auth) = { extractor: "streams.session-channels" }; }
++  rpc Session(stream SessionFrame) returns (stream SessionFrame) {
++    option (acyclic.validation.v1.auth) = {extractor: "streams.session-channels"};
++  }
+ }
+diff -u rust/crates/stream/proto/stream/v1/stream.proto.orig rust/crates/stream/proto/stream/v1/stream.proto
+--- rust/crates/stream/proto/stream/v1/stream.proto.orig	2026-10-26 02:53:05.101781192 +0000
++++ rust/crates/stream/proto/stream/v1/stream.proto	2026-10-26 02:53:05.101781192 +0000
+@@ -122,8 +122,14 @@
+ }
+ 
+ // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
+-message KeyRange { bytes start = 1; bytes end = 2; }
+-message AttributeMatch { string name = 1; repeated bytes any_of = 2; }
++message KeyRange {
++  bytes start = 1;
++  bytes end = 2;
++}
++message AttributeMatch {
++  string name = 1;
++  repeated bytes any_of = 2;
++}
+ // Flat conjunction keeps every authority ceiling intact across provider hops.
+ // all_keys applies to opaque records; typed changes project individual entries.
+ message SessionFilterClause {
+@@ -355,14 +361,65 @@
+ }
+ 
+ service StreamService {
+-  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" extractor: "streams.idempotency-resources" }; }
+-  rpc Append(AppendRequest) returns (AppendResponse) { option (acyclic.validation.v1.auth) = { action: "streams/append" resource: "streams:/{path}" }; }
+-  rpc Tail(TailRequest) returns (TailResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" resource: "streams:/{path}" }; }
+-  rpc Fork(ForkRequest) returns (ForkReceipt) { option (acyclic.validation.v1.auth) = { action: "streams/fork" resource: "streams:/{source}" }; option (acyclic.validation.v1.auth) = { action: "streams/create" resource: "streams:/{destination}" }; }
+-  rpc Read(ReadRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/read" resource: "streams:/{path}" }; }
+-  rpc Follow(FollowRequest) returns (stream ReadResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" resource: "streams:/{path}" }; }
+-  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse) { option (acyclic.validation.v1.auth) = { action: "streams/follow" extractor: "streams.delivery-resource" }; }
+-  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) { option (acyclic.validation.v1.auth) = { action: "streams/list" extractor: "streams.list-visible-children" }; }
+-  rpc Commit(CommitRequest) returns (CommitResponse) { option (acyclic.validation.v1.auth) = { extractor: "streams.transaction" }; }
+-  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) { option (acyclic.validation.v1.auth) = { action: "streams/read" extractor: "streams.commit-resources" }; }
++  rpc InspectIdempotency(InspectIdempotencyRequest) returns (InspectIdempotencyResponse) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/read"
++      extractor: "streams.idempotency-resources"
++    };
++  }
++  rpc Append(AppendRequest) returns (AppendResponse) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/append"
++      resource: "streams:/{path}"
++    };
++  }
++  rpc Tail(TailRequest) returns (TailResponse) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/read"
++      resource: "streams:/{path}"
++    };
++  }
++  rpc Fork(ForkRequest) returns (ForkReceipt) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/fork"
++      resource: "streams:/{source}"
++    };
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/create"
++      resource: "streams:/{destination}"
++    };
++  }
++  rpc Read(ReadRequest) returns (stream ReadResponse) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/read"
++      resource: "streams:/{path}"
++    };
++  }
++  rpc Follow(FollowRequest) returns (stream ReadResponse) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/follow"
++      resource: "streams:/{path}"
++    };
++  }
++  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/follow"
++      extractor: "streams.delivery-resource"
++    };
++  }
++  rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/list"
++      extractor: "streams.list-visible-children"
++    };
++  }
++  rpc Commit(CommitRequest) returns (CommitResponse) {
++    option (acyclic.validation.v1.auth) = {extractor: "streams.transaction"};
++  }
++  rpc ReadCommit(ReadCommitRequest) returns (CommittedEnvelope) {
++    option (acyclic.validation.v1.auth) = {
++      action: "streams/read"
++      extractor: "streams.commit-resources"
++    };
++  }
+ }
+    Checking acyclic-stream-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream-napi)
+`napi` macro expand failed.
+error: JavaScript String is primitive and cannot be passed by reference
+`napi` macro expand failed.
+   --> rust/crates/stream-napi/src/lib.rs:492:43
+    |
+492 |     pub fn with_credential(&self, token: &str) -> Result<Self> {
+    |                                           ^^^
+
+error: unused import: `napi::Env`
+  --> rust/crates/stream-napi/src/lib.rs:18:5
+   |
+18 | use napi::Env;
+   |     ^^^^^^^^^
+   |
+   = note: `-D unused-imports` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unused imports: `PromiseRaw` and `Promise`
+  --> rust/crates/stream-napi/src/lib.rs:19:44
+   |
+19 | use napi::bindgen_prelude::{Buffer, Error, Promise, PromiseRaw, Result, Status};
+   |                                            ^^^^^^^  ^^^^^^^^^^
+
+error: unused import: `napi::threadsafe_function::ThreadsafeFunction`
+  --> rust/crates/stream-napi/src/lib.rs:20:5
+   |
+20 | use napi::threadsafe_function::ThreadsafeFunction;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: unused import: `operations::*`
+   --> rust/crates/stream-napi/src/lib.rs:707:5
+    |
+707 | use operations::*;
+    |     ^^^^^^^^^^^^^
+
+error: could not compile `acyclic-stream-napi` (lib) due to 5 previous errors
+warning: build failed, waiting for other jobs to finish...
+error[E0599]: no associated function or constant named `connect_with_ca_result` found for struct `NativeStreamClient` in the current scope
+   --> rust/crates/stream-napi/src/tests.rs:395:45
+    |
+395 |         let connected = NativeStreamClient::connect_with_ca_result(
+    |                                             ^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `NativeStreamClient`
+    |
+   ::: rust/crates/stream-napi/src/lib.rs:393:1
+    |
+393 | pub struct NativeStreamClient {
+    | ----------------------------- associated function or constant `connect_with_ca_result` not found for this struct
+    |
+note: if you're trying to build a new `NativeStreamClient`, consider using `NativeStreamClient::from_client` which returns `NativeStreamClient`
+   --> rust/crates/stream-napi/src/lib.rs:398:5
+    |
+398 |     fn from_client(provider: grpc::Client) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `acyclic-stream-napi` (lib test) due to 5 previous errors
+   Compiling acyclic-stream-napi v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream-napi)
+`napi` macro expand failed.
+error: JavaScript String is primitive and cannot be passed by reference
+   --> rust/crates/stream-napi/src/lib.rs:492:43
+    |
+492 |     pub fn with_credential(&self, token: &str) -> Result<Self> {
+    |                                           ^^^
+
+warning: unused import: `napi::Env`
+  --> rust/crates/stream-napi/src/lib.rs:18:5
+   |
+18 | use napi::Env;
+   |     ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `PromiseRaw` and `Promise`
+  --> rust/crates/stream-napi/src/lib.rs:19:44
+   |
+19 | use napi::bindgen_prelude::{Buffer, Error, Promise, PromiseRaw, Result, Status};
+   |                                            ^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `napi::threadsafe_function::ThreadsafeFunction`
+  --> rust/crates/stream-napi/src/lib.rs:20:5
+   |
+20 | use napi::threadsafe_function::ThreadsafeFunction;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no associated function or constant named `connect_with_ca_result` found for struct `NativeStreamClient` in the current scope
+   --> rust/crates/stream-napi/src/tests.rs:395:45
+    |
+395 |         let connected = NativeStreamClient::connect_with_ca_result(
+    |                                             ^^^^^^^^^^^^^^^^^^^^^^ associated function or constant not found in `NativeStreamClient`
+    |
+   ::: rust/crates/stream-napi/src/lib.rs:393:1
+    |
+393 | pub struct NativeStreamClient {
+    | ----------------------------- associated function or constant `connect_with_ca_result` not found for this struct
+    |
+note: if you're trying to build a new `NativeStreamClient`, consider using `NativeStreamClient::from_client` which returns `NativeStreamClient`
+   --> rust/crates/stream-napi/src/lib.rs:398:5
+    |
+398 |     fn from_client(provider: grpc::Client) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `acyclic-stream-napi` (lib test) generated 3 warnings
+error: could not compile `acyclic-stream-napi` (lib test) due to 2 previous errors; 3 warnings emitted
+bun test v1.4.2 (744846f84)
+
+typescript/packages/stream/test/session-errors.test.ts:
+(pass) every Rust error code round-trips through TLS gRPC and WASM Session I/O [297.89ms]
+ 9 |       encoding: "utf8", timeout: 5000, windowsHide: true,
+10 |     });
+11 |     expect(child.error).toBeUndefined();
+12 |     if (broken) {
+13 |       expect(child.status).not.toBe(0);
+14 |       expect(child.stderr).toContain("JS transport must emit canonical Rust code: not_found");
+                                ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "JS transport must emit canonical Rust code: not_found"
+Received: "52 |     observed.length = 0;\n53 |     const before = fixture.counts.sessions;\n54 |     const follow = provider.follow(\"events\", { from: 0n, signal: AbortSignal.timeout(1000) })[Symbol.asyncIterator]();\n55 |     const error = await follow.next().then(() => undefined, error => error);\n56 |     assert(observed.length > 0, \"error never crossed the JS transport\");\n57 |     assert(observed.every(value => value === code), `JS transport must emit canonical Rust code: ${code}; received ${observed}`);\n         ^\nAssertionError: JS transport must emit canonical Rust code: invalid_response; received unavailable,unavailable,unavailable\n generatedMessage: false,\n     actual: false,\n   expected: true,\n   operator: \"==\",\n       diff: \"simple\",\n       code: \"ERR_ASSERTION\"\n\n      at /mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/session-error-driver.ts:57:5\n\nBun v1.4.2 (Linux x64)\n"
+
+      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/session-errors.test.ts:14:28)
+(fail) negative control rejects public aliases entering Rust Session I/O [267.37ms]
+
+typescript/packages/stream/test/stream.test.ts:
+(pass) absent retry observations project undefined through memory and HTTP [9.60ms]
+(pass) website Stream contract > opens the local provider without exposing provider setup [3.93ms]
+(pass) website Stream contract > local streams do not issue unused hosted access tokens [0.16ms]
+(pass) website Stream contract > JSON streams reject values that cannot satisfy their declared recursive type [0.23ms]
+(pass) website Stream contract > enforces the Rust Stream path, batch, and read bounds before mutation [4.59ms]
+(pass) website Stream contract > rejects oversized commands and invalid cursors before they can change state [13.83ms]
+(pass) website Stream contract > allows a follow cursor exactly at the Rust tail and resumes after the next append [2.23ms]
+(pass) website Stream contract > Rust rejects oversized encoded requests before decoding or dispatch [0.70ms]
+(pass) website Stream contract > requires matching conditions and canonicalizes coordinated retry identity [4.07ms]
+(pass) website Stream contract > rejects forged absence conditions before provider dispatch [0.23ms]
+(pass) website Stream contract > distinguishes a missing tail from zero and materializes ancestor paths [1.09ms]
+(pass) website Stream contract > appends, forks an exact prefix, and follows typed JSON [2.19ms]
+(pass) website Stream contract > keeps the complete committed prefix readable after later appends and a fork [1.98ms]
+(pass) website Stream contract > uses exact uint64 positions, opaque identities, flattened receipts, and typed commit inputs [2.01ms]
+(pass) website Stream contract > projects every Rust memory response oneof with isolated exact values [2.01ms]
+(pass) website Stream contract > Rust memory response projector owns widths, copies, and missing oneofs [0.61ms]
+(pass) website Stream contract > Rust memory response projector owns children page validation and projection [0.33ms]
+(pass) website Stream contract > projects commit responses larger than the bounded request size [23.38ms]
+(pass) website Stream contract > binds commit identities to request content [0.80ms]
+(pass) website Stream contract > enforces Rust commit deadlines at the WASM boundary [0.64ms]
+(pass) website Stream contract > serializes concurrent mutations and replays a shared idempotency key once [0.82ms]
+(pass) website Stream contract > returns CAS conflicts without mutating [0.40ms]
+(pass) website Stream contract > does not create a path when its first conditional append conflicts [0.82ms]
+(pass) website Stream contract > removes cancelled memory followers without waiting for a later append [0.69ms]
+(pass) website Stream contract > closed Rust follow handles end before or during a pending read [0.34ms]
+(pass) website Stream contract > rejects a failed multi-stream commit atomically [0.80ms]
+(pass) website Stream contract > retains a valid prototype-named tail in memory and hosted commit results [0.96ms]
+(pass) website Stream contract > hosted append sends the bytes and key validated at call time [1.52ms]
+(pass) website Stream contract > default transport snapshots append inputs before delayed provider selection [4.57ms]
+(pass) website Stream contract > default transport snapshots token grants before delayed provider selection [1.01ms]
+(pass) website Stream contract > default transport snapshots lazy read cursors when the iterator is created [0.94ms]
+(pass) website Stream contract > Rust encodes every protobuf-backed hosted request shape [0.66ms]
+(pass) website Stream contract > hosted children pages use the Rust response contract [1.09ms]
+(pass) website Stream contract > public stream handles snapshot commit and iterator inputs at call time [1.01ms]
+(pass) website Stream contract > default selection keeps concurrent follow waiters independent [0.42ms]
+(pass) website Stream contract > default selection cancels abandoned native connect and retries for a newcomer [0.29ms]
+(pass) website Stream contract > default selection caches a successfully selected provider [0.12ms]
+(pass) website Stream contract > default childrenPage snapshots hierarchy version and request fields [0.15ms]
+(pass) website Stream contract > read captures one cursor before asynchronous validation [0.71ms]
+(pass) website Stream contract > managed transport validates responses and propagates follow cancellation [5.90ms]
+(pass) website Stream contract > hosted follow has no idle timers and clears cancellation resources [2.54ms]
+(pass) website Stream contract > hosted follow stops on malformed frames and canonical channel errors [3.87ms]
+(pass) website Stream contract > hosted follow does not fetch when its signal is already aborted [0.25ms]
+(pass) website Stream contract > hosted non-success responses preserve canonical Stream error codes [0.76ms]
+(pass) website Stream contract > hosted reads keep the canonical cursor contiguous [0.20ms]
+(pass) website Stream contract > hosted reads reject an empty page beyond the canonical tail [0.20ms]
+(pass) website Stream contract > HTTP provider rejects invalid paths and commit shapes before fetching [0.75ms]
+(pass) website Stream contract > HTTP token grants reject invalid paths before fetching [0.38ms]
+(pass) website Stream contract > HTTP token creation serializes the Rust-validated request [0.29ms]
+(pass) website Stream contract > cancels oversized streaming transport responses at the configured bound [0.30ms]
+(pass) website Stream contract > HTTP transport refuses redirects and header-unsafe or oversized bearer tokens [0.37ms]
+(pass) website Stream contract > round-trips full uint64 positions and opaque identities through the HTTP wire codec [0.40ms]
+(pass) website Stream contract > Rust owns HTTP scalar projection after validating the response schema [0.27ms]
+(pass) path ordering matches Unicode code point order, the order of UTF-8 bytes [377.42ms]
+(pass) delivery acknowledgements use Rust token bounds and the authenticated HTTP endpoint [2.96ms]
+
+1 tests failed:
+(fail) negative control rejects public aliases entering Rust Session I/O [267.37ms]
+
+ 56 pass
+ 1 fail
+ 462 expect() calls
+Ran 57 tests across 2 files. [1112.00ms]
+rust/crates/harness/tests/scenarios/goals/private/_defaults.json: forbidden private path
+rust/crates/harness/tests/scenarios/goals/private/private-absent.json: forbidden private path
+rust/crates/harness/tests/scenarios/goals/private/private-agent-blocked.json: forbidden private path
+rust/crates/harness/tests/scenarios/goals/private/private-disabled-negative-control.json: forbidden private path
+rust/crates/harness/tests/scenarios/goals/private/private-finite-cap.json: forbidden private path
+rust/crates/harness/tests/scenarios/goals/private/private-unchanged-active-settles-until-agent-done.json: forbidden private path
+rust/crates/harness/tests/scenarios/goals/private/private-zero-cap.json: forbidden private path

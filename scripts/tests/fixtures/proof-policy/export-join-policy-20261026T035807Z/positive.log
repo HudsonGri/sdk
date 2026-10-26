@@ -1,0 +1,18 @@
+test_actual_source_bytes_are_checked (__main__.CanonicalExports.test_actual_source_bytes_are_checked) ... ok
+test_historical_bundle_cannot_qualify_current_revision_or_source (__main__.CanonicalExports.test_historical_bundle_cannot_qualify_current_revision_or_source) ... ok
+test_missing_generated_or_external_source_is_not_dropped (__main__.CanonicalExports.test_missing_generated_or_external_source_is_not_dropped) ... ok
+test_private_or_unsupported_rustdoc_refuses (__main__.CanonicalExports.test_private_or_unsupported_rustdoc_refuses) ... ok
+test_raw_artifact_digest_is_checked (__main__.CanonicalExports.test_raw_artifact_digest_is_checked) ... ok
+test_real_capture_hashes_and_source_pins (__main__.CanonicalExports.test_real_capture_hashes_and_source_pins) ... ok
+test_real_feature_signatures_and_all_profiles_survive (__main__.CanonicalExports.test_real_feature_signatures_and_all_profiles_survive) ... ok
+test_rehashed_duplicate_profile_join_refuses (__main__.CanonicalExports.test_rehashed_duplicate_profile_join_refuses) ... ok
+test_rehashed_missing_profile_availability_refuses (__main__.CanonicalExports.test_rehashed_missing_profile_availability_refuses) ... ok
+test_rehashed_profile_owner_and_target_mismatch_refuse (__main__.CanonicalExports.test_rehashed_profile_owner_and_target_mismatch_refuse) ... ok
+test_rehashed_profile_with_zero_joined_exports_refuses (__main__.CanonicalExports.test_rehashed_profile_with_zero_joined_exports_refuses) ... ok
+test_required_profiles_cannot_be_inferred_or_reduced (__main__.CanonicalExports.test_required_profiles_cannot_be_inferred_or_reduced) ... ok
+test_zero_exports_refuses (__main__.CanonicalExports.test_zero_exports_refuses) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.975s
+
+OK

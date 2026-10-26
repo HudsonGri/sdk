@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "/work/target/debug/deps/wave1_coverage-8c6af6b38fb3bac7",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit": 101,
+  "seconds": 0.001815464987885207
+}

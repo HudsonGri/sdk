@@ -1,0 +1,11 @@
+{
+  ".bb-client-current-wasm-runtime/typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm": "61f893d420abd5b3a27cec5249a827c1cff42e75e575c40e46045a0eeb6d85f4",
+  ".bb-client-current-wasm-runtime/typescript/packages/harness/test/node-swarm.mjs": "4a161e50d15f057b097327f3906c756e8c315162eb6c7c0523ca3648d535fc19",
+  "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts": "9450058503ccad6d2d5e5a7018c70a334602ed207c0d6c25b03d8eadd5258758",
+  "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js": "bb2434b5f3ffa71f4c05cf09b26ee1b6e2a1b53a5253f394ece0583b96fbf8c6",
+  "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm": "61f893d420abd5b3a27cec5249a827c1cff42e75e575c40e46045a0eeb6d85f4",
+  "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm.d.ts": "8db9518f000c94111d92b177714bf8e42f9ac7813bbb4dd505a02c55c812b89a",
+  "typescript/packages/harness/generated/wasm/snippets/acyclic-harness-64f96082e1bd3c42/inline0.js": "0fa115e89e6ac7003c8c344b532f6ce4ccc6b3e7f42857f8d4fa4f373a9d377f",
+  "typescript/packages/harness/generated/wasm/snippets/acyclic-harness-providers-c328336f1ffd1aef/inline0.js": "cc13b0e007617a8953c09b704c6bd477dbf2a966b237f4d2c2dab70744dae95d",
+  "typescript/packages/harness/generated/wasm/snippets/acyclic-harness-providers-c328336f1ffd1aef/inline1.js": "af07f99a59f196c98b879c7c8f19b0a5d9d9fb52b6fc9ef8e13a89f3fa96dc68"
+}

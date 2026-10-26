@@ -1,0 +1,7 @@
+{
+  "path": "scripts/check-proof-coverage.py",
+  "before": "if row['kind'] == 'catch_all_arm':",
+  "after": "if False:  # omitted wildcard classification",
+  "positive_sha256": "9cc1a6bdcb10343181d540a01c2c3c6d6b8fcc7b7a15e6b4ec4688086de6f8af",
+  "mutant_sha256": "31d34e04d8671df05d02d94f22c1735d89780f503d4438347f0111ab679e6ea3"
+}

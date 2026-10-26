@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "kind": "handover_observations_not_runtime_qualification",
+  "captured_at": "2026-10-26T02:11:32.319572+00:00",
+  "positive_proofs": 0,
+  "negative_controls_detected": 0,
+  "full_obligation_qualified": false,
+  "streams": {
+    "signed_transfer": "41d8b46a5e3e18786d601b125b586b5b7f413506",
+    "state": "signed_wip_not_qualified",
+    "older_positive_snapshot": "1a7ae0d2e73652a46ef59b030ce6b52f16b36307",
+    "older_positive_counts": [
+      375,
+      10,
+      1
+    ],
+    "older_positive_seconds": [
+      9.45,
+      0.06,
+      0.24
+    ],
+    "loom_snapshot": "d0e2ff7b4fe360e5c03b3488d5886c009be21d0c",
+    "loom_cases": 4,
+    "latest_tested_snapshot": "6e3310f979d50a02482b09cef7b4b63c494143ed",
+    "latest_tested_outcome": "rejected",
+    "latest_passed": 374,
+    "latest_failed": 6,
+    "latest_seconds": 9.77,
+    "qualified_pin": null,
+    "source_mapping": "snapshot-to-log mapping owner-reported; no executed-source manifest or executable identity in these captures",
+    "remaining": [
+      "empty-condition conformance setup diagnosis is source inference, not validated fix",
+      "grpc/WASM projected tail decode absent",
+      "malformed WASM frame terminal classification",
+      "bounded never-issued/retired channel ownership",
+      "retained cut API",
+      "actual browser/endpoint and final-head clippy/fmt"
+    ]
+  },
+  "actors": {
+    "state": "sketch_only_no_signed_implementation_or_runtime_receipt",
+    "contract": "A4-01..08; atomic pause/outbox tuple, checked alarm generations, wake owner and Unknown custody"
+  },
+  "rb_fs": {
+    "state": "owner_reported_no_raw_receipt",
+    "cloud_head": "b484b659b8b11626dda154be50b1091a0ccb0861",
+    "reported_gate": "PASS538.396s for b484b659b8b11626dda154be50b1091a0ccb0861; exact snapshot a5792bac809a769960c0a00729723a3ca2c210b9/base6fc6e6fc41e8c96363a21e5a140ce0ba650dfa1b. check43.912s/clippy30.253s/test92.303s;218 passed,3 skipped; native smoke1 passed2.722s/native phase190.070s. Coordinator-approved corpus compile skips787+1 remain unqualified.",
+    "durable_follow_scope": "sealed/recent replay after fs client replacement on unchanged single-member cell; no cell restart/GC/restore/A5 endpoint proof",
+    "duration_discrepancy": {
+      "steer_seconds": 1.186,
+      "handoff_seconds": 1.41,
+      "resolution": "unresolved_without_raw_selected_receipt; no exact runtime admitted"
+    },
+    "controls": "stale anchor and removed Follow grant are invalid-input controls; no new production mutant admitted"
+  },
+  "captures": [
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/signature.txt",
+      "bytes": 85,
+      "sha256": "aed086b04b50c480537119d628d199de8ebe71f03824eca019673f657e0307be",
+      "origin": "git log -1 --format=%H %G? %GS 41d8b46a5e3e18786d601b125b586b5b7f413506"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/handover.md",
+      "bytes": 14401,
+      "sha256": "217ce54befc4325517d46bf18f47611f477ccd1efc6d4c44e7492cc81a50f3a8",
+      "origin": "Q:\\lanes\\redesign\\streams\\handover.md"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-tests.log",
+      "bytes": 37907,
+      "sha256": "82a4b8e980672d9f919ee2a33addd45956cbd649b16886484efdc07e233be3cf",
+      "origin": "Q:\\lanes\\redesign\\streams\\streams-tests.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-loom.log",
+      "bytes": 616,
+      "sha256": "79cd09eafcc44c37f64ef4d45e81504cecfb728574339f273e544c787ed442b2",
+      "origin": "Q:\\lanes\\redesign\\streams\\streams-loom.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-rust-all.log",
+      "bytes": 39735,
+      "sha256": "207edd612a483ba66fd101569d211d1b7223f91cbeee8a00885ebe761ba5c08b",
+      "origin": "Q:\\lanes\\redesign\\streams\\streams-rust-all.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-ts-tests.log",
+      "bytes": 17090,
+      "sha256": "1911f341801b90cc903e8d44f86998bcb2f75860ba798e349b3ed02bae3e3661",
+      "origin": "Q:\\lanes\\redesign\\streams\\streams-ts-tests.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-generate.log",
+      "bytes": 6794,
+      "sha256": "f9cf000c9484f92f63ca92f147017b70d52ac94d1991636b726922e05dcf1df2",
+      "origin": "Q:\\lanes\\redesign\\streams\\streams-generate.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-wasm.log",
+      "bytes": 23806,
+      "sha256": "2305fd0ed984221801a01b1373daebbe73353a9b3f7ac8bcbe74a9da74020788",
+      "origin": "Q:\\lanes\\redesign\\streams\\streams-wasm.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/streams-tsc.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "origin": "Q:\\lanes\\redesign\\streams\\streams-tsc.log"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/source/conformance.rs",
+      "bytes": 23922,
+      "sha256": "5318c0f78cdfd2779dd507f625f3646445d3888a0d5018ca70ff756a2c7adc90",
+      "origin": "git show 41d8b46a5e3e18786d601b125b586b5b7f413506:rust/crates/stream/src/conformance.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/source/grpc/client.rs",
+      "bytes": 16706,
+      "sha256": "09a2e666af85290fa347a9218689c9fb7804d9603edc125abe5f926b6d10dbb7",
+      "origin": "git show 41d8b46a5e3e18786d601b125b586b5b7f413506:rust/crates/stream/src/grpc/client.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/streams/source/wasm/remote.rs",
+      "bytes": 11847,
+      "sha256": "56860266d560de0398b57d6199c5304ecf772c679e1b993473fd46eb9e3f27c8",
+      "origin": "git show 41d8b46a5e3e18786d601b125b586b5b7f413506:rust/crates/stream/src/wasm/remote.rs"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/actors/api.md",
+      "bytes": 5199,
+      "sha256": "fa43ad0f93603eeb4e0e8df747d5b824f4454bccf027ae5048445075cde75443",
+      "origin": "Q:\\lanes\\redesign\\api\\b-runtime.md"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/actors/verify-contract.md",
+      "bytes": 7747,
+      "sha256": "92ba0b0021ff20750f26483ce235d9dadc1406749422cc98725ba4532c1bc316",
+      "origin": "Q:\\lanes\\redesign\\verify-to-b-runtime.md"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/rb-fs/handoff.json",
+      "bytes": 4651,
+      "sha256": "ac88f89f01089f0e65825174b1dfa04f3774de12ea8d269bfc786e45e99a530f",
+      "origin": "Q:\\lanes\\verify\\handoffs\\rb-fs.json"
+    },
+    {
+      "repo_path": "docs/proofs/evidence/owner-handover-v2/rb-fs/owner-steer.md",
+      "bytes": 971,
+      "sha256": "7936d12ed043382c409cbd1351c021dc4e53983a7e03c4ee38bb793f5a4bcc83",
+      "origin": "Q:\\lanes\\steers\\rb-fs-to-verify-20261026T020500Z.md"
+    }
+  ]
+}

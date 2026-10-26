@@ -1,0 +1,326 @@
+{
+  "schema": "sdk-docs-profile-availability.v1",
+  "entries": [
+    {
+      "itemId": "0",
+      "path": "demo::Always",
+      "kind": "struct",
+      "signature": "pub struct demo::Always",
+      "profiles": [
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [
+            "base"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": true,
+          "features": [],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": true,
+          "features": [
+            "base",
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        }
+      ]
+    },
+    {
+      "itemId": "42",
+      "path": "demo::overloaded",
+      "kind": "function",
+      "signature": "pub fn demo::overloaded(value: u64) -> u64",
+      "profiles": [
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [
+            "base"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": true,
+          "features": [],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        }
+      ]
+    },
+    {
+      "itemId": "43",
+      "path": "demo",
+      "kind": "module",
+      "signature": "pub mod demo",
+      "profiles": [
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [
+            "base"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": true,
+          "features": [],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": true,
+          "features": [
+            "base",
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        }
+      ]
+    },
+    {
+      "itemId": "profile-882cbb0c92dc04302657e0d1fe33be851fb239e7087b4ef333e65e78dd17c635",
+      "path": "demo::FeatureOnly",
+      "kind": "struct",
+      "signature": "pub struct demo::FeatureOnly",
+      "profiles": [
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": true,
+          "features": [
+            "base",
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        }
+      ]
+    },
+    {
+      "itemId": "profile-d31f8dae06d0d5ff46fb20fc6b37691c47b9157252118e3c9ab130d08913b1a2",
+      "path": "demo::overloaded",
+      "kind": "function",
+      "signature": "pub fn demo::overloaded(value: &str) -> usize",
+      "profiles": [
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": false,
+          "features": [
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        },
+        {
+          "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+          "rustdocPackage": "demo",
+          "publishedOwner": "demo",
+          "rustdocVersion": "1.0.0",
+          "publishedVersion": "1.0.0",
+          "ownerKind": "publishedRoot",
+          "target": "x86_64-pc-windows-msvc",
+          "defaultFeatures": true,
+          "features": [
+            "base",
+            "extra"
+          ],
+          "capabilities": [
+            "native",
+            "rust"
+          ]
+        }
+      ]
+    }
+  ]
+}

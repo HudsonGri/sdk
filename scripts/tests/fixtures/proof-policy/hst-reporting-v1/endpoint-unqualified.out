@@ -1,0 +1,12 @@
+{"history":"HST-01","outcome":"Unqualified","partial_case_exports":["subtree_fork","composed_fork"],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-02","outcome":"Unqualified","partial_case_exports":["append_retry","commit_retry"],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-03","outcome":"Unqualified","partial_case_exports":["append_retry","commit_retry"],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-04","outcome":"Unqualified","partial_case_exports":["append_retry","commit_retry"],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-05","outcome":"Unqualified","partial_case_exports":["composed_fork"],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-06","outcome":"Unqualified","partial_case_exports":[],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-07","outcome":"Unqualified","partial_case_exports":[],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-08","outcome":"Unqualified","partial_case_exports":[],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-09","outcome":"Unqualified","partial_case_exports":[],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-10","outcome":"Unqualified","partial_case_exports":[],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-11","outcome":"Unqualified","partial_case_exports":[],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}
+{"history":"HST-12","outcome":"Unqualified","partial_case_exports":[],"reason":"CanonicalHistoryNotExported","suite":"wave1_hst_coverage"}

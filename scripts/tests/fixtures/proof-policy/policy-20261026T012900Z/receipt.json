@@ -1,0 +1,34 @@
+{
+  "kind": "inventory_policy_only_not_rust_runtime_proof",
+  "source_manifest_sha256": "3e18f9c62bce52cb98523e7207b981800b75500d12f7b29047fe56029c0bf9cc",
+  "manifest_sha256": "7ced6e690b25ee2ce6ebfb83507ba283d87bb2e744916b9f07ff7e23e3aed148",
+  "runs": [
+    {
+      "label": "positive",
+      "command": [
+        "C:\\Users\\varun\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "scripts/test-wave1-inventory.py"
+      ],
+      "exit": 0,
+      "seconds": 0.8130000000237487,
+      "selected": 8,
+      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T012900Z\\positive.log",
+      "log_sha256": "427e051fe867411aa14dfb4cd7c9fcbe871670135a8616e3167dd10c45ae7845",
+      "checker_sha256": "49c24c4472c165443b7bed158b9589420c05bf364ddc0e686a5d6d16dce55bb9"
+    },
+    {
+      "label": "omit-exact-witness-check",
+      "command": [
+        "C:\\Users\\varun\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+        "scripts/test-wave1-inventory.py"
+      ],
+      "exit": 1,
+      "seconds": 0.6869999999762513,
+      "selected": 8,
+      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T012900Z\\omit-exact-witness-check.log",
+      "log_sha256": "a9dd4d6d2b41c2747fc73dcbfd271bfc43e37f4d30115d4a447706688617297a",
+      "checker_sha256": "804465e333228d6c3d1e4689b7eec77415cc577d97ec9c2fd5668b61afbb8797"
+    }
+  ],
+  "control": "omit exact expected semantic-witness multiset comparison; same tests detect incomplete/wrong-step declarations and changed captured invariant"
+}
