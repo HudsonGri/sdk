@@ -67,6 +67,12 @@ pub fn send(
     };
     let intent = intent_of(record);
     existing(inbox_tail)?;
+    let encoded = record.encode()?;
+    // The key binds the exact record: a key naming another request then
+    // differs only in the tail, so the same record is already delivered. A
+    // reused intent with another record is a distinct commit, never an
+    // acknowledgement of one that was not written.
+    let digest = blake3::hash(&encoded).to_hex();
     Ok(CommitRequest {
         conditions: vec![
             CommitCondition::Absent { path: to.closed()? },
@@ -77,9 +83,12 @@ pub fn send(
         ],
         mutations: vec![CommitMutation::Append {
             path: to.inbox()?,
-            records: vec![record.encode()?.into()],
+            records: vec![encoded.into()],
         }],
-        idempotency_key: intent_key(kind, &[to.as_str(), &sender_text(sender), &intent])?,
+        idempotency_key: intent_key(
+            kind,
+            &[to.as_str(), &sender_text(sender), &intent, digest.as_str()],
+        )?,
     })
 }
 
