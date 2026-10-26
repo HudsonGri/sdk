@@ -69,7 +69,10 @@ async fn place<P: StreamProvider + ?Sized>(
         .await
 }
 
-async fn atomic_history<P: StreamProvider + ?Sized>(provider: Arc<P>, root: StreamPath) -> TestResult {
+async fn atomic_history<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    root: StreamPath,
+) -> TestResult {
     let store = Store::new(Arc::clone(&provider), root);
     let address = actor("atomic")?;
     place(&store, &address).await?;
@@ -163,9 +166,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
         )
         .await?;
     let old = store.load(&address).await?;
-    store
-        .claim(&old, 2, key("takeover")?)
-        .await?;
+    store.claim(&old, 2, key("takeover")?).await?;
     let current = store.load(&address).await?;
     // A freshly loaded token still cannot be used by an old placement.
     assert!(
@@ -318,7 +319,11 @@ async fn pause_and_consumed_alarm_history<P: StreamProvider + ?Sized>(
 #[tokio::test]
 async fn memory_atomic_history() -> TestResult {
     atomic_history(Arc::new(MemoryStream::default()), state_root()?).await?;
-    atomic_history(Arc::new(MemoryStream::default()), StreamPath::new("actors")?).await
+    atomic_history(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("actors")?,
+    )
+    .await
 }
 
 #[tokio::test]

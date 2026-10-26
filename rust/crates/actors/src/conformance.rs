@@ -106,7 +106,9 @@ impl Handler for Package {
                 (Trigger::Record { sequence, .. }, Some(record)) => {
                     let command = std::str::from_utf8(&record.value).map_err(guest)?;
                     match command.split_once(' ') {
-                        None if command == "emit" => (AlarmChange::Keep, Some(format!("r{sequence}"))),
+                        None if command == "emit" => {
+                            (AlarmChange::Keep, Some(format!("r{sequence}")))
+                        }
                         None if command == "clear" => (AlarmChange::Clear, None),
                         Some(("set", delay)) => (
                             AlarmChange::Set {
@@ -119,7 +121,9 @@ impl Handler for Package {
                         _ => return Err(guest("unknown command")),
                     }
                 }
-                (Trigger::Record { .. }, None) => return Err(guest("record trigger without record")),
+                (Trigger::Record { .. }, None) => {
+                    return Err(guest("record trigger without record"));
+                }
             };
             let mut effects = Vec::new();
             if let Some(output) = output {
@@ -184,10 +188,16 @@ impl<'a, T: Target + ?Sized> Fixture<'a, T> {
     /// Create a fresh actor through the companion mutation in a standalone
     /// commit; the host discovers it without placement.
     async fn create(target: &'a T, run: &str, case: &'static str) -> Result<Self, Failure> {
-        let actor = ActorReference::new(b"conformance", b"actors", format!("{run}-{case}").as_bytes())
-            .map_err(|_| Error::Invalid("conformance actor id"))?;
-        let inbox = StreamPath::new(format!("conformance/{run}/{case}/inbox")).map_err(Error::from)?;
-        let outbox = StreamPath::new(format!("conformance/{run}/{case}/outbox")).map_err(Error::from)?;
+        let actor = ActorReference::new(
+            b"conformance",
+            b"actors",
+            format!("{run}-{case}").as_bytes(),
+        )
+        .map_err(|_| Error::Invalid("conformance actor id"))?;
+        let inbox =
+            StreamPath::new(format!("conformance/{run}/{case}/inbox")).map_err(Error::from)?;
+        let outbox =
+            StreamPath::new(format!("conformance/{run}/{case}/outbox")).map_err(Error::from)?;
         let ledger = Ledger {
             outbox: outbox.clone(),
             published: 0,

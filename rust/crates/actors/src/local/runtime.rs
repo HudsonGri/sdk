@@ -38,7 +38,9 @@ impl Clock for SystemClock {
     fn now_unix_ms(&self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
     }
     fn sleep_until(&self, deadline_unix_ms: u64) -> BoxFuture<'static, ()> {
         let wait = deadline_unix_ms.saturating_sub(self.now_unix_ms());
@@ -194,10 +196,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Host forever: discover actors created under the root by any commit,
     /// deliver concurrently across actors, and fire alarms from one timer.
     /// Per-actor failures go to `report`; the input stays queued.
-    pub async fn run(
-        &self,
-        report: impl Fn(&ActorReference, &Error),
-    ) -> Result<Infallible, Error> {
+    pub async fn run(&self, report: impl Fn(&ActorReference, &Error)) -> Result<Infallible, Error> {
         let mut created = self
             .store
             .provider()
@@ -268,10 +267,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .cloned()
     }
 
-    async fn execute(
-        &self,
-        work: Work<ActorReference>,
-    ) -> Result<(), (ActorReference, Error)> {
+    async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
@@ -370,7 +366,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             match self
                 .store
-                .publish(&snapshot, epoch, &trigger, transition, key(&snapshot, "publish")?)
+                .publish(
+                    &snapshot,
+                    epoch,
+                    &trigger,
+                    transition,
+                    key(&snapshot, "publish")?,
+                )
                 .await
             {
                 Ok(()) => {}
@@ -399,7 +401,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<bool, Error> {
         let provider = self.store.provider();
         if !inner.awaiting.contains_key(id) {
-            match provider.follow(path.clone(), cursor, FollowFilter::default()).await {
+            match provider
+                .follow(path.clone(), cursor, FollowFilter::default())
+                .await
+            {
                 Ok(follow) => {
                     inner.follows.insert(id.to_owned(), follow);
                     return Ok(true);

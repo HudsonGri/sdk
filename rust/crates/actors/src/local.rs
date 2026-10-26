@@ -9,8 +9,8 @@ pub use runtime::{Clock, Runtime, SystemClock};
 use crate::addressing::ActorReference;
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestError, Transition, Trigger};
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
-    IdempotencyKey, ReadRequest, StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
+    ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -95,7 +95,9 @@ impl State {
     }
     /// Next unconsumed sequence of a declared subscription.
     pub fn cursor(&self, subscription: &str) -> Option<u64> {
-        self.subscriptions.get(subscription).map(|value| value.cursor)
+        self.subscriptions
+            .get(subscription)
+            .map(|value| value.cursor)
     }
     /// Current alarm, including its invalidation generation.
     pub const fn alarm(&self) -> &Alarm {
@@ -249,7 +251,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             .strip_prefix(self.root.as_str())
             .and_then(|rest| rest.strip_prefix('/'))
             .filter(|name| !name.contains('/'))
-            .ok_or(Error::Invalid("path is not a direct child of the state root"))?;
+            .ok_or(Error::Invalid(
+                "path is not a direct child of the state root",
+            ))?;
         let bytes = acyclic_auth::decode_component(name)
             .map_err(|_| Error::Invalid("undecodable actor state name"))?;
         ActorReference::decode(&bytes).map_err(|_| Error::Invalid("undecodable actor reference"))
@@ -512,6 +516,6 @@ fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<Sta
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests;
-#[cfg(all(test, not(target_arch = "wasm32")))]
 mod model;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

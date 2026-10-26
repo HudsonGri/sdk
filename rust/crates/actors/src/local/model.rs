@@ -203,7 +203,10 @@ async fn values(provider: &MemoryStream, stream: &str) -> Result<Vec<Bytes>, Fai
         .await?
         .try_collect()
         .await?;
-    Ok(records.into_iter().map(|record| Bytes::copy_from_slice(&record.value)).collect())
+    Ok(records
+        .into_iter()
+        .map(|record| Bytes::copy_from_slice(&record.value))
+        .collect())
 }
 
 /// The durable tuple must equal exactly the script prefix its checkpoint names.
@@ -285,7 +288,11 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
     })?;
     PreparedPublish::settle(&provider.inner.commit(create.into_request()).await?)?;
     setup
-        .claim(&setup.load(&actor).await?, 1, IdempotencyKey::new(b"claim".to_vec())?)
+        .claim(
+            &setup.load(&actor).await?,
+            1,
+            IdempotencyKey::new(b"claim".to_vec())?,
+        )
         .await?;
     for _ in 0..32 {
         let snapshot = store.load(&actor).await?;
@@ -295,7 +302,9 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
             return Ok(());
         };
         let key = |suffix: &str| {
-            IdempotencyKey::new(format!("{}/{}/{suffix}", snapshot.path, snapshot.tail).into_bytes())
+            IdempotencyKey::new(
+                format!("{}/{}/{suffix}", snapshot.path, snapshot.tail).into_bytes(),
+            )
         };
         // Any failure is a crash: re-read the cut and continue from it.
         match shape {
@@ -324,7 +333,8 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                         idempotency_key: key("state")?,
                     })
                     .await;
-                if matches!(first, Ok(CommitOutcome::Committed(_))) && !effect_mutations.is_empty() {
+                if matches!(first, Ok(CommitOutcome::Committed(_))) && !effect_mutations.is_empty()
+                {
                     let _crash = provider
                         .commit(CommitRequest {
                             conditions: effect_conditions,
