@@ -7,13 +7,23 @@ use super::{ProcessCustody, ProcessTree};
 use std::ffi::OsString;
 use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 
 struct State {
     tree: ProcessTree,
     cancelled: bool,
     failure: Option<io::Error>,
+}
+
+fn retire_child(state: &mut State, child: Child) -> io::Result<ExitStatus> {
+    // Return the original child before entering the one ordered retirement
+    // path. In particular, Unix must retain its unreaped identity if removing
+    // the recovery record fails.
+    state.tree.child = Some(child);
+    let status = state.tree.try_wait(None);
+    state.tree.terminate(None)?;
+    status?.ok_or_else(|| io::ErrorKind::NotFound.into())
 }
 
 struct Directory(PathBuf);
@@ -85,7 +95,7 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
     // The sole waiter owns the actual Child. Cancellation only asks the same
     // tree's containment owner to terminate; it never substitutes PID polling.
-    let mut child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
+    let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
     tree.cleanup_on_drop = false;
     let state = Arc::new(Mutex::new(State {
         tree,
@@ -115,29 +125,15 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The Child has crossed its physical wait. Keep all original custody
     // records and output leases until the same owner has drained descendants.
-    let terminated = state.tree.terminate_descendants();
-    // Unix retains WNOWAIT custody until after the process group has been
-    // terminated, so a reaped leader's PID cannot name an unrelated group.
-    let status = child.wait();
-    #[cfg(windows)]
-    let closed = state.tree.guard.close(None);
-    let retired = state
-        .tree
-        .custody
-        .as_ref()
-        .map_or(Ok(()), super::custody::Record::remove);
+    let status = retire_child(&mut state, child);
     waited?;
-    terminated?;
-    #[cfg(windows)]
-    closed?;
-    retired?;
+    let status = status?;
     if let Some(failure) = state.failure.take() {
         return Err(failure);
     }
     if state.cancelled {
         return Ok(124);
     }
-    let status = status?;
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt as _;
@@ -147,4 +143,78 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     }
     #[cfg(windows)]
     Ok(status.code().unwrap_or(125))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_retirement_preserves_the_observed_native_exit_status() {
+        let root = tempfile::tempdir().unwrap();
+        let custody = ProcessCustody::open(&root.path().join("custody")).unwrap();
+        let mut tree = ProcessTree::spawn_in_custody(
+            &mut super::super::tests::command("exit-code", root.path()),
+            &custody,
+        )
+        .unwrap();
+        let child = tree.child.take().unwrap();
+        super::super::platform::wait_without_reaping(&child).unwrap();
+        let mut state = State {
+            tree,
+            cancelled: false,
+            failure: None,
+        };
+        assert_eq!(retire_child(&mut state, child).unwrap().code(), Some(7));
+        assert!(state.tree.is_reaped());
+    }
+
+    #[test]
+    fn failed_external_retirement_keeps_the_canonical_recovery_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let records = root.path().join("custody");
+        let custody = ProcessCustody::open(&records).unwrap();
+        let mut tree = ProcessTree::spawn_in_custody(
+            &mut super::super::tests::command("partial", root.path()),
+            &custody,
+        )
+        .unwrap();
+        super::super::tests::ready(root.path(), "partial-ready", || {
+            tree.try_wait(None).map_or(true, |status| status.is_some())
+        });
+        let record = std::fs::read_dir(&records)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        // A real failed unlink, rather than a synthetic process result.
+        std::fs::remove_file(&record).unwrap();
+        std::fs::create_dir(&record).unwrap();
+        tree.terminate_descendants().unwrap();
+        let child = tree.child.take().unwrap();
+        super::super::platform::wait_without_reaping(&child).unwrap();
+        let mut state = State {
+            tree,
+            cancelled: false,
+            failure: None,
+        };
+        let failed = retire_child(&mut state, child).is_err();
+        let retained = state.tree.custody.is_some() && !state.tree.is_reaped();
+        #[cfg(unix)]
+        let unreaped = state.tree.child.is_some();
+        // Restore the actual failed filesystem boundary before assertions so
+        // even an old implementation's failed oracle can drain its owner.
+        std::fs::remove_dir(&record).unwrap();
+        state.tree.terminate(None).unwrap();
+        assert!(failed);
+        assert!(retained);
+        #[cfg(unix)]
+        assert!(
+            unreaped,
+            "failed record retirement must retain the unreaped child"
+        );
+        assert!(state.tree.is_reaped());
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+    }
 }
