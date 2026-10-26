@@ -3,6 +3,7 @@ mod catalog_compaction;
 mod final_message;
 mod goal_review;
 mod input_review;
+mod agent_smoke;
 mod instruction_review;
 #[cfg(test)]
 #[cfg(unix)]

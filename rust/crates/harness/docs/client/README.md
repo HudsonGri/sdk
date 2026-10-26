@@ -15,6 +15,25 @@ host. `read_turn` authenticates the selected immutable output file and enforces
 the byte limit before decoding. An agent `Unknown` error retains the exact
 commit request; keep that request under the original intent's custody.
 
+`connect_recent(local, maximum_output_bytes)` chooses the last 128 conversation
+records and the last status record using selected-root metadata. The records
+still arrive through that authenticated session. `prompt_turn(id, text)` matches
+the exact principal, intent and committed inbox sequence. An idle status alone
+never establishes success. A status that overtakes conversation delivery is
+evaluated after draining a fixed conversation tail. A missing settlement in the
+selected window is a typed refusal requiring explicit historical backfill.
+
+Native `run_agent_prompt` and `run_agent_jsonl` use one JSONL reply dialect:
+`settled`, `blocked`, `settlement_unavailable`, or `closed`. A settled reply
+includes the original intent, conversation sequence, input/output references and
+bounded decoded output. JSONL input is `{"id":"caller-intent","prompt":"text"}`,
+capped at 65,536 bytes per line. It admits one prompt at a time, then drains
+immediately available complete lines before exiting; keeping stdin open cannot
+hold up an already settled batch. `-p --operation UUID` fixes the prompt's intent;
+JSONL lines supply their own identities. Unknown commits remain typed errors
+carrying the exact request. These are the new actor APIs, without a TaskVolume
+request-file compatibility path.
+
 Browser callers initialize the generated WASM module and construct `AgentClient`
 from `client-query` with their authenticated `WasmStream`, canonical agent path,
 explicit cursors and credential slot. The browser object drives the same Rust
@@ -24,11 +43,13 @@ reuse an unchanged view; `record(index)` copies only the requested visible turn.
 Sequences cross as exact `BigInt` values. `currentStatus()` reads the Rust fold
 and returns null until a real status arrives, rather than fabricating idle state.
 
-The whole-client migration is in progress: the GraphCoder workflow consumers,
+The whole-client migration is in progress: GraphCoder's interactive consumers,
 TaskVolume folds and old Swarm bindings still need replacement. The generic
-absent-stream follow, same-cut child-status projection and exact replay-to-turn
-correlation are owner dependencies. These adapters do not claim that migration
-or its endpoint qualification is complete.
+absent-stream follow, same-cut child-status projection, actor-native input
+composition/commands and historical backfill remain open. GraphCoder's prompt,
+JSONL and dumb-terminal entries now use the actor client. These source changes
+do not claim that the complete migration, compilation or endpoint qualification
+is complete.
 
 ## Local hypotheses
 
