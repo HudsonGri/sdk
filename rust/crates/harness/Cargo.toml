@@ -190,6 +190,7 @@ workspace = true
 [[test]]
 name = "host-hooks"
 path = "tests/host_hooks.rs"
+required-features = ["filesystem-local", "native-execution"]
 
 [[test]]
 name = "skills-context"
