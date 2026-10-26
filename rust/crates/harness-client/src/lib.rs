@@ -3,7 +3,10 @@
 #[cfg(any(feature = "grpc", feature = "wasm"))]
 mod command;
 #[cfg(any(feature = "grpc", feature = "wasm"))]
-pub use command::{AgentCommand, CommandError, PageRequest as AgentPageRequest, PreparedCommand};
+pub use command::{
+    AgentCommand, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
+    PageRequest as AgentPageRequest, PreparedCommand,
+};
 
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),

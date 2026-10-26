@@ -30,7 +30,9 @@ impl ReadKey {
             acyclic_stream::wire_codec::session::validate_resource(&text).map_err(stream_error)?;
             Ok(Self::Resource(text))
         } else {
-            path(value).map(Self::Stream)
+            StreamPath::new(text)
+                .map(Self::Stream)
+                .map_err(stream_error)
         }
     }
 
@@ -276,10 +278,7 @@ impl WasmWireSession {
 
     /// Retire every interest and wake pending readers to observe the refusal.
     pub fn close(&self) -> Result<(), JsValue> {
-        self.session
-            .borrow_mut()
-            .clear()
-            .map_err(session_error)?;
+        self.session.borrow_mut().clear().map_err(session_error)?;
         for state in self.readers.borrow_mut().values_mut() {
             state.cancelled = true;
         }
