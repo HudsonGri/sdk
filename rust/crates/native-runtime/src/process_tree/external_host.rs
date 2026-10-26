@@ -178,7 +178,7 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     }));
     if !invocation.inherit_input {
         let control = Arc::clone(&state);
-        std::thread::Builder::new()
+        let started = std::thread::Builder::new()
             .name("process-host-control".into())
             .spawn(move || {
                 let input = io::stdin().read(&mut [0]);
@@ -191,7 +191,13 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
                     .terminate_descendants()
                     .err()
                     .or_else(|| input.err());
-            })?;
+            });
+        if let Err(admission) = started {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            return Err(reject_control_admission(&mut state.tree, child, admission));
+        }
     }
     let waited = super::platform::wait_without_reaping(&child);
     let mut state = state
@@ -208,6 +214,25 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     };
     completion.retired(code, state.cancelled)?;
     Ok(code)
+}
+
+fn reject_control_admission(
+    tree: &mut ProcessTree,
+    child: Child,
+    admission: io::Error,
+) -> io::Error {
+    // A reader that failed to start has no owner to request cancellation.
+    // Restore the original child before the same physical retirement API.
+    tree.child = Some(child);
+    match tree.terminate(None) {
+        Ok(()) => admission,
+        Err(retirement) => io::Error::new(
+            admission.kind(),
+            format!(
+                "step=process-host-control-admission: {admission}; retirement unresolved: {retirement}; recovery=acyclic-process-host --custody ABSOLUTE_DIRECTORY ABSOLUTE_EXECUTABLE ARGS"
+            ),
+        ),
+    }
 }
 
 fn retire_after_observation(
@@ -240,6 +265,84 @@ fn exit_code(status: ExitStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_control_admission_retires_through_the_original_process_owner() {
+        for former_order in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let records = root.path().join("custody");
+            let custody = ProcessCustody::open(&records).unwrap();
+            let mut tree = ProcessTree::spawn_in_custody(
+                &mut super::super::tests::command("partial", root.path()),
+                &custody,
+            )
+            .unwrap();
+            super::super::tests::ready(root.path(), "partial-ready", || {
+                tree.try_wait(None).map_or(true, |status| status.is_some())
+            });
+            let child = tree.child.take().unwrap();
+            tree.cleanup_on_drop = false;
+            let admission = io::Error::from(io::ErrorKind::WouldBlock);
+            let (error, retained_for_fixture_cleanup) = if former_order {
+                // The former spawn-? cut propagated without returning Child
+                // to its tree or invoking retirement. Keep that Child only
+                // in the fixture so this negative can explicitly drain it.
+                (admission, Some(child))
+            } else {
+                (reject_control_admission(&mut tree, child, admission), None)
+            };
+            let completed = tree.is_reaped()
+                && std::fs::read_dir(&records).unwrap().count() == 0;
+            if let Some(child) = retained_for_fixture_cleanup {
+                tree.child = Some(child);
+            }
+            tree.terminate(None).unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            assert_eq!(completed, !former_order);
+            assert!(tree.is_reaped());
+            assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn failed_control_admission_retains_recovery_when_retirement_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let records = root.path().join("custody");
+        let custody = ProcessCustody::open(&records).unwrap();
+        let mut tree = ProcessTree::spawn_in_custody(
+            &mut super::super::tests::command("partial", root.path()),
+            &custody,
+        )
+        .unwrap();
+        super::super::tests::ready(root.path(), "partial-ready", || {
+            tree.try_wait(None).map_or(true, |status| status.is_some())
+        });
+        let record = std::fs::read_dir(&records)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let captured = std::fs::read(&record).unwrap();
+        std::fs::remove_file(&record).unwrap();
+        std::fs::create_dir(&record).unwrap();
+        let child = tree.child.take().unwrap();
+        tree.cleanup_on_drop = false;
+        let error = reject_control_admission(
+            &mut tree,
+            child,
+            io::Error::from(io::ErrorKind::WouldBlock),
+        );
+        let retained = tree.custody.is_some() && !tree.is_reaped();
+        std::fs::remove_dir(&record).unwrap();
+        std::fs::write(&record, captured).unwrap();
+        tree.terminate(None).unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("retirement unresolved"));
+        assert!(retained);
+        assert!(tree.is_reaped());
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+    }
 
     #[test]
     fn external_retirement_preserves_the_observed_native_exit_status() {

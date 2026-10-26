@@ -8,16 +8,27 @@ using System.Text;
 using System.Threading;
 
 public static class GraphcoderConPty {
+    static string recovery;
+    static void Refuse(string step, Exception error) {
+        Console.Error.WriteLine("step=conpty-" + step + "; error=" + error + "; recovery=" + recovery);
+    }
     // Compiled ahead of qualification; direct launch avoids one PowerShell per PTY.
     public static int Main(string[] args) {
+        string host = Environment.GetEnvironmentVariable("E2E_PROCESS_HOST");
+        recovery = Quote(String.IsNullOrEmpty(host) ? "acyclic-process-host.exe" : host) + " --inherit-input " +
+            Quote(System.Reflection.Assembly.GetExecutingAssembly().Location);
+        foreach (string argument in args) recovery += " " + Quote(argument);
+        string step = "native-custody";
         try {
             RequireNativeCustody();
+            step = "arguments";
             int deadline;
             if (args.Length != 7 || !Int32.TryParse(args[5], out deadline) ||
                 (args[6] != "fresh" && args[6] != "resume"))
                 throw new ArgumentException("usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL DEADLINE fresh|resume");
+            step = "terminal";
             return Run(args[0], args[1], args[2], args[3], args[4], deadline, args[6] == "resume");
-        } catch (Exception error) { Console.Error.WriteLine(error); return 125; }
+        } catch (Exception error) { Refuse(step, error); return 125; }
     }
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short X, Y; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
@@ -94,6 +105,7 @@ public static class GraphcoderConPty {
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false, rootExited = false;
         Thread outputThread = null;
+        string step = "terminal-create";
         try {
             Require(CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0), "CreatePipe input");
             Require(CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0), "CreatePipe output");
@@ -127,6 +139,7 @@ public static class GraphcoderConPty {
             // Native ProcessCustody owns this transport before it executes.
             // ConPTY children inherit that containment atomically at creation;
             // this thin terminal adapter owns no Job or process-tree reaper.
+            step = "child-admission";
             AdmitSuspendedProcess(process.processId);
             Require(ResumeThread(process.thread) != UInt32.MaxValue, "resume admitted ConPTY child");
             IntPtr inputHandle = inWrite, outputHandle = outRead;
@@ -144,7 +157,7 @@ public static class GraphcoderConPty {
                         if (total > 1048576) throw new IOException("ConPTY captured output exceeds 1 MiB");
                         stdout.Write(bytes, 0, (int)count); stdout.Flush();
                     }
-                } catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(125); }
+                } catch (Exception error) { Refuse("output", error); Environment.Exit(125); }
             });
             outputThread.IsBackground = true; outputThread.Start();
             var inputThread = new Thread(delegate() {
@@ -156,24 +169,33 @@ public static class GraphcoderConPty {
                         uint written; Require(WriteFile(inputHandle, bytes, (uint)count, out written, IntPtr.Zero), "ConPTY WriteFile");
                         if (written != count) throw new IOException("ConPTY partial input write");
                     }
-                } catch (Exception error) { Console.Error.WriteLine(error); Environment.Exit(125); }
+                } catch (Exception error) { Refuse("input", error); Environment.Exit(125); }
             });
             inputThread.IsBackground = true; inputThread.Start();
+            step = "child-wait";
             Console.Error.WriteLine("conpty-host primitive=CreatePseudoConsole process-attribute=PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE child-process-id=" + process.processId);
             uint waited = WaitForSingleObject(process.process, (uint)deadline);
-            if (waited == 258) { Console.Error.WriteLine("finite real ConPTY process deadline exceeded"); Environment.Exit(124); }
+            if (waited == 258) { Refuse("child-deadline", new TimeoutException("finite real ConPTY process deadline exceeded")); Environment.Exit(124); }
             Require(waited == 0, "WaitForSingleObject");
             rootExited = true;
             uint exit; Require(GetExitCodeProcess(process.process, out exit), "GetExitCodeProcess");
+            step = "terminal-drain";
             // Drain concurrently while closing; ClosePseudoConsole can wait for its output reader.
             ClosePseudoConsole(console); console = IntPtr.Zero;
             if (!outputThread.Join(5000)) throw new TimeoutException("finite ConPTY output-drain deadline exceeded");
             return unchecked((int)exit);
+        } catch (Exception error) {
+            Refuse(step, error);
+            if (process.process != IntPtr.Zero && !rootExited) Environment.Exit(125);
+            return 125;
         } finally {
             // An incomplete transport must not block in ClosePseudoConsole
             // while its child still runs. Exiting transfers terminal cleanup
             // to the native owner, which retains all physical-death barriers.
-            if (process.process != IntPtr.Zero && !rootExited) Environment.Exit(125);
+            if (process.process != IntPtr.Zero && !rootExited) {
+                Refuse("incomplete-transport", new IOException("native owner must retire the admitted child"));
+                Environment.Exit(125);
+            }
             if (console != IntPtr.Zero) ClosePseudoConsole(console);
             if (attributeInitialized) DeleteProcThreadAttributeList(attributes);
             if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
