@@ -1,7 +1,9 @@
 use super::*;
 
 /// Declared directory boundary; conveys no authority.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextRoot {
@@ -230,7 +232,9 @@ impl ContextDiscoveryLimits {
 }
 
 /// Immutable discovery path; never follows a newer head.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct PinnedContextPath {

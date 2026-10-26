@@ -2,7 +2,9 @@ use super::*;
 
 /// Pinned file or private discovery source.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
 #[serde(untagged)]
 #[schemars(extend("type" = "object"))]
 pub enum ReadInput {
@@ -14,7 +16,9 @@ pub enum ReadInput {
 
 /// Private discovery source.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSourceInput {
     /// Source copied from discovery.
@@ -23,7 +27,9 @@ pub struct ReadSourceInput {
 
 /// Canonical source resolution retains the actual immutable reference and text.
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout,
+)]
 #[serde(deny_unknown_fields)]
 pub struct ReadSourceResult {
     /// Owner-resolved immutable source.
@@ -34,7 +40,7 @@ pub struct ReadSourceResult {
 }
 
 /// The resolved-file read keeps its string result; lazy reads retain provenance.
-#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema, crate::HeapLayout)]
 #[serde(untagged)]
 pub enum ReadOutput {
     /// Exact text of an already resolved file.

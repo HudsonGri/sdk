@@ -1,6 +1,40 @@
 use super::*;
 use crate::{Capabilities, OperationId, conversation::Limits};
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn lazy_read_decode_retains_shared_heap_custody() -> Result<()> {
+    let file = crate::tool::tests::file(b"exact")?;
+    let (generation, _) =
+        crate::resources::GenerationRef::new(file.volume().provider(), b"generation", None, None)?;
+    let source = crate::context::PinnedContextPath {
+        root: crate::context::ContextRoot {
+            volume: file.volume().clone(),
+            directory: String::new(),
+        },
+        generation,
+        path: file.path().into(),
+    };
+    for input in [json!({"file": file}), json!({"source": source})] {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = work.live_allocation_bytes();
+        let (decoded, custody) = crate::tool::codec::decode::<ReadInput>(&input, Some(&work))?;
+        assert_eq!(
+            serde_json::to_value(&decoded).map_err(|error| Error::Invalid(error.to_string()))?,
+            input
+        );
+        assert!(work.live_allocation_bytes() > baseline);
+        drop(decoded);
+        drop(custody);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
 #[test]
 fn lazy_source_read_schema_and_decoder_reject_ambiguous_selectors() -> Result<()> {
     let file = crate::tool::tests::file(b"exact")?;
