@@ -942,6 +942,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-core",
  "acyclic-proto-build",
  "acyclic-test-support",
  "arrayvec",
