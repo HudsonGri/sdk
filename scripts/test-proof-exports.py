@@ -12,7 +12,7 @@ sys.dont_write_bytecode = True
 from proof_export_join import load_catalog
 
 ROOT = Path(__file__).resolve().parent.parent
-FIXTURE = ROOT / 'docs/proofs/evidence/canonical-exports-v1'
+FIXTURE = ROOT / 'scripts/tests/fixtures/proof-policy/canonical-exports-v1'
 CAPTURE = json.loads((FIXTURE / 'capture.json').read_bytes())
 PROFILE_FILE = 'sdk-docs-rustdoc-profiles.v1.json'
 DOCS_FILE = 'preview/feature-profile-catalog/sdk-docs-data.v1.json'

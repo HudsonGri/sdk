@@ -16,7 +16,7 @@ POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
 MANIFEST = json.loads((ROOT / POLICY.MANIFEST).read_bytes())
 SOURCE = 'rust/crates/stream/src/conformance/wave1/coverage.rs'
-CAPTURES = ROOT / 'docs/proofs/evidence/entrypoint-discovery-v1'
+CAPTURES = ROOT / 'scripts/tests/fixtures/proof-policy/entrypoint-discovery-v1'
 
 
 class ProofCoverage(unittest.TestCase):

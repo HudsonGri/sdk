@@ -12,6 +12,7 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
+from proof_fixture_paths import repository_path, repository_relative
 
 ROOT = Path(__file__).resolve().parents[1]
 RECOVERY = "python scripts/check-wave1-inventory.py"
@@ -23,9 +24,7 @@ def require(holds, message):
 
 
 def source_path(relative):
-    path = (ROOT / relative).resolve()
-    require(path.is_relative_to(ROOT), f"path escapes repository: {relative}")
-    return path
+    return repository_path(ROOT, relative)
 
 
 def sha256(path):
@@ -106,7 +105,7 @@ def check_observations(reference):
     base = path.parent
     def load(relative):
         target = base / relative
-        require(target.relative_to(ROOT).as_posix() in {capture["repo_path"] for capture in captures}, "observation uses uncaptured receipt")
+        require(target.relative_to(ROOT).as_posix() in {repository_relative(capture["repo_path"]) for capture in captures}, "observation uses uncaptured receipt")
         return json.loads(target.read_text(encoding="utf-8"))
     observations = {item["id"]: item for item in receipt["observations"]}
     require(len(observations) == len(receipt["observations"]) == 5, "wrong owner observation selection")

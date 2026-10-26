@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from proof_fixture_paths import repository_path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,7 +53,7 @@ class EvidencePolicy(unittest.TestCase):
             with self.subTest(mutation=before), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 self.copy_evidence(root, original)
-                target = root / original["repo_log"]
+                target = repository_path(root, original["repo_log"])
                 data = target.read_bytes()
                 self.assertIn(before.encode(), data)
                 target.write_bytes(data.replace(before.encode(), after.encode()))
@@ -88,7 +89,7 @@ class EvidencePolicy(unittest.TestCase):
             root = Path(directory)
             receipt = self.copy_review(root, original)
             review = json.loads(receipt.read_text(encoding="utf-8"))
-            target = root / review["rejected_run"]["repo_log"]
+            target = repository_path(root, review["rejected_run"]["repo_log"])
             data = target.read_bytes()
             self.assertEqual(data.count(b'"stage": "positive"'), 1)
             target.write_bytes(data.replace(b'"stage": "positive"', b'"stage": "negative"'))
@@ -100,9 +101,9 @@ class EvidencePolicy(unittest.TestCase):
 
     @staticmethod
     def copy_file(root, relative):
-        target = root / relative
+        target = repository_path(root, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / relative, target)
+        shutil.copyfile(repository_path(ROOT, relative), target)
         return target
 
     def test_owner_observations_cannot_be_relabelled_as_proofs(self):
@@ -143,7 +144,7 @@ class EvidencePolicy(unittest.TestCase):
                             rows.pop()
                         copied.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
                         capture.update(sha256=POLICY.sha256(copied), bytes=copied.stat().st_size)
-                source = json.loads((root / original["repo_receipt"]).with_name("source.json").read_bytes())
+                source = json.loads(repository_path(root, original["repo_receipt"]).with_name("source.json").read_bytes())
                 for name in source:
                     if name.endswith(("conformance/wave1/coverage.rs", "conformance/wave1.rs", "tests/wave1_coverage.rs", "examples/wave1-conformance.rs", "scripts/qualify-wave1-coverage.py")):
                         self.copy_file(root, name)

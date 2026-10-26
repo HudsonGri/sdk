@@ -1,6 +1,6 @@
 # Streams partial checkpoint review
 
-`evidence/streams-checkpoint-v3/receipt.json` captures real owner logs, actual committed source, real git commit/tree identities and signature output. It replaces no historical receipt. The earlier41d8 handover's six failures remain a rejected historical observation; the newer run no longer reproduces them. No Rust compile or provider run was repeated for this admission.
+`../../scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/receipt.json` captures real owner logs, actual committed source, real git commit/tree identities and signature output. It replaces no historical receipt. The earlier41d8 handover's six failures remain a rejected historical observation; the newer run no longer reproduces them. No Rust compile or provider run was repeated for this admission.
 
 ## Source and observed selections
 

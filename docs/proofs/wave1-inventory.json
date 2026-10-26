@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T04:20:16.781328+00:00",
+  "generated_at": "2026-10-26T04:36:05.903249+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -91,7 +91,7 @@
         "sha256": "c2f35978526297efd6999ae0f39e2d1a71215ed8c1f1374064afa205ba3f1dfc"
       }
     ],
-    "repo_receipt": "docs/proofs/evidence/hst-reporting-v1/admission.json",
+    "repo_receipt": "scripts/tests/fixtures/proof-policy/hst-reporting-v1/admission.json",
     "sha256": "1fb9fa37481d3dd56cb92cd7e5b542bc179afe7447a11d2fceab8ca6b3f3d825",
     "negative_control": "exact compiled production guard Err(Unqualified) -> Ok(()), unchanged Rust test fails the explicit refusal assertion",
     "remaining": [
@@ -103,14 +103,14 @@
   },
   "actor_store_observations": {
     "actor-store-v1": {
-      "repo_receipt": "docs/proofs/evidence/actor-store-v1/receipt.json",
+      "repo_receipt": "scripts/tests/fixtures/proof-policy/actor-store-v1/receipt.json",
       "sha256": "5e3d73177266334e026ab78bbe759dd6b0574fbacbffa8c464913c10f2f41a44",
       "qualification": "partial Store output and signed source join only; executable/mutant manifests absent; Runtime/readiness/Keep and full A4 unqualified"
     }
   },
   "stream_checkpoint_observations": {
     "streams-v3": {
-      "repo_receipt": "docs/proofs/evidence/streams-checkpoint-v3/receipt.json",
+      "repo_receipt": "scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/receipt.json",
       "sha256": "56ae2d123fb14767ba3e09c9a2ec4c3f7538c75b4b3c636e61699a8e531b8b02",
       "qualification": "partial native/Loom and Bun source-log joins only; binary/WASM/input identities and full modes pending; page split control is model postprocessing"
     }
@@ -135,7 +135,7 @@
       {
         "file": "scripts/check-proof-coverage.py",
         "line": 100,
-        "sha256": "9cc1a6bdcb10343181d540a01c2c3c6d6b8fcc7b7a15e6b4ec4688086de6f8af"
+        "sha256": "e3a797885356bea6d8c483bd509f1b520e7388671df355dbc940808a71010f44"
       },
       {
         "file": "scripts/proof_inventory_scan.py",
@@ -145,87 +145,87 @@
       {
         "file": "scripts/test-proof-coverage.py",
         "line": 22,
-        "sha256": "fa7568e439b5c3b7bb3048d163b05df2e7251de22739de853375d2540032629b"
+        "sha256": "a50f4b3f136faa57e636ab820c82174681d2f9e2e29401f9e36439786bf263a4"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/auth/rust/crates/auth/src/verify.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/verify.rs",
         "line": 1,
         "sha256": "8f630dcace20357aab44c167f41e96cb254d594a2b5573ee378786a3838ee502"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/auth/rust/crates/auth/src/verify/current.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/verify/current.rs",
         "line": 1,
         "sha256": "46dae3ccbf403f264c1f8e31e49e2b0987b000c21b3957f8ff6ea729a06d632e"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/auth/rust/crates/auth/src/verify/effective.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/verify/effective.rs",
         "line": 1,
         "sha256": "59013d5cf5bcc99013cf8066232410588d11ac921ce823b34beb6c08683ce8cd"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/auth/rust/crates/auth/src/verify/wire.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/verify/wire.rs",
         "line": 1,
         "sha256": "f2439750870f03dbad7a81e59cb562325341413359b145cc3e12e57145a8fcf5"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/auth/rust/crates/auth/src/authority.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/authority.rs",
         "line": 1,
         "sha256": "fbbcbd76ebc34b4a751e1c31945f2f91a1afec47835ec4cfbf06a79b406baebc"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/lib.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/lib.rs",
         "line": 1,
         "sha256": "359168b4325d0eafb15a77a8f18b08a31578905dab8393fddeae214f1043ef28"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/projection.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/projection.rs",
         "line": 1,
         "sha256": "255449100b1794daa218e07ef1c31c34c375b1936c64530aef59f0a7e2ec8f3e"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/public_api.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/public_api.rs",
         "line": 1,
         "sha256": "da28643433573ee8657737236f8bddd1e48cd556d56318f4f50d3cd1c8e18210"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/rustdoc_profiles.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/rustdoc_profiles.rs",
         "line": 1,
         "sha256": "bfdceeec20156ff26099fb2c9088bbe5f1949ac0a7113a55f0586f7847b3fd53"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/rustdoc_profiles/receipts.rs",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/sdk-docs/rust/crates/sdk-docs/src/rustdoc_profiles/receipts.rs",
         "line": 1,
         "sha256": "e4c093e501175b72241f469b9c94d5f72492a1be71bcc7b8ab248169c2660801"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/coordination/handover.md",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/handover.md",
         "line": 1,
         "sha256": "f4628b33fab0a619ac0ca06320a057b54e16414d528d5cb4319d6f9f1066ef3b"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/coordination/adoption-rb-identity.md",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/adoption-rb-identity.md",
         "line": 1,
         "sha256": "43bc4dcb0334caca1b9ad2b9df6363399a1f54a644e19b8c9b338741145836f0"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/coordination/rb-identity.md",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/rb-identity.md",
         "line": 1,
         "sha256": "835835b64eae00cea06f2517ea83b78e70d8f0afd2467acb91c2f21d44b11288"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/coordination/gate-speed-to-verify-20261026T031900Z.md",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/gate-speed-to-verify-20261026T031900Z.md",
         "line": 1,
         "sha256": "86610f06bcd949bf6dcdb17ff025b946e27644d1eca3bffd9b5d29141ae3218f"
       },
       {
-        "file": "docs/proofs/evidence/source-review-20261026/sources.json",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/sources.json",
         "line": 3,
         "sha256": "0b11f705989616e25e1103a98279412f8f3e292617f4a123468e7548ebb34f6c"
       },
       {
         "file": "docs/proofs/canonical-exports.md",
         "line": 1,
-        "sha256": "4572e8172c62ec7054498ec3f93cd8f9c66bcb169f8d8059ca8fa05f9cc92111"
+        "sha256": "2d5ebf740be1a945865d29ad33ee774c4df471952788d124547de084e59081ac"
       },
       {
         "file": ".github/workflows/static.yml",
@@ -235,12 +235,17 @@
       {
         "file": "docs/proofs/streams-checkpoint.md",
         "line": 1,
-        "sha256": "c65e996b30f40501b4fc84e909ae90ab9a42e551b3879997ba32ad78917fb4de"
+        "sha256": "477e5b492de81daef41f101fb303d38a7a374d8eee038ddb4468ec5a20981e0e"
       },
       {
         "file": "docs/proofs/fs-publication-observations.json",
         "line": 2,
         "sha256": "a7c9f1626fcf8aaf07686bd171b66e7f6e9dd956b654f80114b23721fa3cb0c0"
+      },
+      {
+        "file": "scripts/proof_fixture_paths.py",
+        "line": 13,
+        "sha256": "d6e4c149436a73ec077dee2b7e2eea21bb731271d0cae513838ee5b7fb184803"
       },
       {
         "file": "scripts/proof_export_join.py",
@@ -250,20 +255,20 @@
       {
         "file": "scripts/test-proof-exports.py",
         "line": 22,
-        "sha256": "13c514f1f02af0d336c4d1972e1160a0025ab51c48025d530fc6bfc4043d3128"
+        "sha256": "13fd0505ec2ab6cb99e3d30ee9897407d8591e2483258f113ec0c9f24fd8ef16"
       },
       {
-        "file": "docs/proofs/evidence/canonical-exports-v1/capture.json",
+        "file": "scripts/tests/fixtures/proof-policy/canonical-exports-v1/capture.json",
         "line": 2,
         "sha256": "0d5709857de1f79a71dd097911afdb96262e7860ec750a9affd5b0ba7aecac9a"
       },
       {
-        "file": "docs/proofs/evidence/canonical-exports-v1/occurrences.json",
+        "file": "scripts/tests/fixtures/proof-policy/canonical-exports-v1/occurrences.json",
         "line": 2,
         "sha256": "af132540c1ee3a91b7bb1ba3f2290acf03e94699b7089b3e7efc6245cc2e0844"
       },
       {
-        "file": "docs/proofs/evidence/export-join-policy-20261026T035807Z/admission.json",
+        "file": "scripts/tests/fixtures/proof-policy/export-join-policy-20261026T035807Z/admission.json",
         "line": 2,
         "sha256": "8e2fcad73a70da72563c46bbed94d0ab54bd85214040f11a1f91f09214774882"
       }
@@ -288,7 +293,7 @@
       "contract": "docs/proofs/canonical-exports.md",
       "producer": "sdk-docs build_data/DocsData families plus existing Cargo/profile execution identity",
       "second_api_walker": false,
-      "capture": "docs/proofs/evidence/canonical-exports-v1/capture.json",
+      "capture": "scripts/tests/fixtures/proof-policy/canonical-exports-v1/capture.json",
       "capture_sha256": "0d5709857de1f79a71dd097911afdb96262e7860ec750a9affd5b0ba7aecac9a",
       "observed_occurrences": 17,
       "observed_profiles": 5,
@@ -314,7 +319,7 @@
           "path": "evidence/wave1/wave1-keys-source-9cf.rs",
           "sha256": "fcdb6c1abc598c7cd70e15f12300042f1db416a0f45d2a324dd01701ab826f70",
           "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
-          "repo_path": "docs/proofs/evidence/wave1-keys-source-9cf.rs"
+          "repo_path": "scripts/tests/fixtures/proof-policy/wave1-keys-source-9cf.rs"
         }
       ],
       "receipt_scope": "negative_only; not a passing implementation, concurrency or crash/hosted proof",
@@ -342,7 +347,7 @@
           "occurrences": 2
         }
       ],
-      "repo_log": "docs/proofs/evidence/tests-20261026T005441Z.log"
+      "repo_log": "scripts/tests/fixtures/proof-policy/tests-20261026T005441Z.log"
     },
     "old-stream-controls": {
       "kind": "old_production_source",
@@ -358,13 +363,13 @@
           "path": "evidence/wave1/wave1-streams-source-cd2.rs",
           "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30",
           "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
-          "repo_path": "docs/proofs/evidence/wave1-streams-source-cd2.rs"
+          "repo_path": "scripts/tests/fixtures/proof-policy/wave1-streams-source-cd2.rs"
         },
         {
           "path": "evidence/wave1/wave1-fork-source-cd2.rs",
           "sha256": "3e6f5a64552f6f514c7a27845c5b4b9b430feaa58661b7e3ffceccc4ce680bbe",
           "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
-          "repo_path": "docs/proofs/evidence/wave1-fork-source-cd2.rs"
+          "repo_path": "scripts/tests/fixtures/proof-policy/wave1-fork-source-cd2.rs"
         }
       ],
       "receipt_scope": "negative_only; not a passing implementation, concurrency or crash/hosted proof",
@@ -404,33 +409,33 @@
           "occurrences": 2
         }
       ],
-      "repo_log": "docs/proofs/evidence/tests-20261026T010305Z.log"
+      "repo_log": "scripts/tests/fixtures/proof-policy/tests-20261026T010305Z.log"
     }
   },
   "source_reviews": {
     "fs-append-initial": {
-      "repo_receipt": "docs/proofs/evidence/fs-append-review/review.json",
+      "repo_receipt": "scripts/tests/fixtures/proof-policy/fs-append-review/review.json",
       "sha256": "e074fa360fa34d1eee32b3ce4c1b29ed3c7015f864bd24c11bb5ef48ec6555f2",
       "qualification": "source_review_and_rejected_run_only"
     }
   },
   "owner_observations": {
     "updates-v1": {
-      "repo_receipt": "docs/proofs/evidence/owner-updates-v1/observations.json",
+      "repo_receipt": "scripts/tests/fixtures/proof-policy/owner-updates-v1/observations.json",
       "sha256": "5adb3967444029527e15eabd115b9035d68d5b492e87b20b27f7f670197a35cc",
       "qualification": "none; historical controls, prerequisite smoke and owner reports only"
     }
   },
   "partial_proofs": {
     "append-eof": {
-      "repo_receipt": "docs/proofs/evidence/fs-append-eof/receipt.json",
+      "repo_receipt": "scripts/tests/fixtures/proof-policy/fs-append-eof/receipt.json",
       "sha256": "8a59e46920f605ae3fdec68eb7bbb44868e44370d984e121f68b4458a71ea730",
       "qualification": "exact same-oracle EOF control only; complete A5 unqualified"
     }
   },
   "handover_observations": {
     "updates-v2": {
-      "repo_receipt": "docs/proofs/evidence/owner-handover-v2/observations.json",
+      "repo_receipt": "scripts/tests/fixtures/proof-policy/owner-handover-v2/observations.json",
       "sha256": "6d4f60efa094e7a032b00193b36c04ca88e3bf08e16b7992df54b84deb360683",
       "qualification": "none; signed Streams WIP with distinct passing/failing snapshots, A4 sketch, owner-reported durable follow prerequisite only"
     }
@@ -501,7 +506,7 @@
         ]
       }
     ],
-    "repo_capture": "docs/proofs/evidence/coverage-clippy-20261026T023104Z.jsonl",
+    "repo_capture": "scripts/tests/fixtures/proof-policy/coverage-clippy-20261026T023104Z.jsonl",
     "capture_sha256": "ea7e26b7948d692f41865b84671e073d3f654301f4f768b2f3319ea116c6eaf9",
     "capture_provenance": "exact BUILD_SLOT_TREE/compiler-message/build-finished lines selected from captured real BB2 output; dependency artifact chatter omitted"
   },
@@ -1024,12 +1029,12 @@
       "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
-          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "file": "scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
           "line": 574,
           "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
         },
         {
-          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "file": "scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
           "line": 559,
           "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
         }
@@ -1110,7 +1115,7 @@
           "sha256": "3e6f5a64552f6f514c7a27845c5b4b9b430feaa58661b7e3ffceccc4ce680bbe"
         },
         {
-          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "file": "scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
           "line": 449,
           "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
         }
@@ -1354,7 +1359,7 @@
       "id": "streams.keys.lifetime",
       "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
-      "invariant": "Successful key\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a0\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2digest/receipt bindings last for namespace lifetime and remain retained by reachable fork history; a key is never expired then replayed as fresh.",
+      "invariant": "Successful key\u00c3\u0192\u00c6\u2019\u00c3\u201a\u00c2\u00a2\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u20ac\u0161\u00c2\u00ac\u00c3\u201a\u00c2\u00a0\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u20ac\u0161\u00c2\u00ac\u00c3\u00a2\u00e2\u20ac\u017e\u00c2\u00a2digest/receipt bindings last for namespace lifetime and remain retained by reachable fork history; a key is never expired then replayed as fresh.",
       "proof_specification": "Injected production clock, >120s retention witness, restart/snapshot and exact retry/changed digest.",
       "negative_controls": [
         {
@@ -1485,7 +1490,7 @@
         {
           "file": "docs/proofs/wave1-auth-contract.md",
           "line": 1,
-          "sha256": "6af268055de445544b0b128d6ade3f19f4efbe308e623a961903b99d8326201e"
+          "sha256": "72ab14355ff0bfec36d427aa14b9ab8af85fe3617524f8af39d3d834fde2fc52"
         }
       ],
       "modes": {
@@ -1513,7 +1518,7 @@
       "owner": "rb-identity",
       "risk": "authority_or_security",
       "invariant": "Verified scope cannot authorize publication after revision/lease fence moves; typed access errors remain exhaustive through every surface; audit failure policy explicit.",
-      "proof_specification": "Real cache/fence loom and ingress\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a0\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2revocation\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a0\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2commit DST across stream/mount/facade/S3/tool.",
+      "proof_specification": "Real cache/fence loom and ingress\u00c3\u0192\u00c6\u2019\u00c3\u201a\u00c2\u00a2\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u20ac\u0161\u00c2\u00ac\u00c3\u201a\u00c2\u00a0\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u20ac\u0161\u00c2\u00ac\u00c3\u00a2\u00e2\u20ac\u017e\u00c2\u00a2revocation\u00c3\u0192\u00c6\u2019\u00c3\u201a\u00c2\u00a2\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u20ac\u0161\u00c2\u00ac\u00c3\u201a\u00c2\u00a0\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u20ac\u0161\u00c2\u00ac\u00c3\u00a2\u00e2\u20ac\u017e\u00c2\u00a2commit DST across stream/mount/facade/S3/tool.",
       "negative_controls": [
         {
           "mutation": "stale cached decision",
@@ -1541,7 +1546,7 @@
         {
           "file": "docs/proofs/wave1-auth-contract.md",
           "line": 1,
-          "sha256": "6af268055de445544b0b128d6ade3f19f4efbe308e623a961903b99d8326201e"
+          "sha256": "72ab14355ff0bfec36d427aa14b9ab8af85fe3617524f8af39d3d834fde2fc52"
         }
       ],
       "modes": {
@@ -1694,7 +1699,7 @@
         {
           "file": "docs/proofs/wave1-auth-contract.md",
           "line": 1,
-          "sha256": "6af268055de445544b0b128d6ade3f19f4efbe308e623a961903b99d8326201e"
+          "sha256": "72ab14355ff0bfec36d427aa14b9ab8af85fe3617524f8af39d3d834fde2fc52"
         }
       ],
       "modes": {
@@ -1748,7 +1753,7 @@
       "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
-          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "file": "scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
           "line": 523,
           "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
         }

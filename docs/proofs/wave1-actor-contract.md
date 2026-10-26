@@ -1,4 +1,4 @@
-# Verify → rb-actors: adopted A4 proof contract
+# Verify â†’ rb-actors: adopted A4 proof contract
 
 2026-10-26. Single SDK+hosted Actors owner is rb-actors. b-runtime is retired; [actors/handover.md](actors/handover.md) is authoritative. The eight A4-01..08 histories in [verify-to-b-runtime.md](verify-to-b-runtime.md) remain the shared oracle, with the following refinement. No build is requested solely for this review. Cloud-owned requests go through the coordinator.
 
@@ -14,7 +14,7 @@ Extend A4-03's same-provider history: set G/D, trigger G with Keep, crash at pre
 |---|---|---|
 | A4-01 commit/crash | At every pre-commit, durable-commit and lost-ack cut, tuple is wholly before or after; restart with the original intent, one effect and receipt | Split checkpoint/cursor/alarm/outbox publication |
 | A4-02 takeover | Old owner paused at preparation cannot settle after a new epoch, including after restart | Remove epoch/state-version fence |
-| A4-03 alarm | Set→due→replace/clear, duplicate wakes, equal-deadline Set, Clear-empty, Keep and overflow preserve generation semantics | Remove generation comparison; wrap the counter |
+| A4-03 alarm | Setâ†’dueâ†’replace/clear, duplicate wakes, equal-deadline Set, Clear-empty, Keep and overflow preserve generation semantics | Remove generation comparison; wrap the counter |
 | A4-04 pause | Enumerate pause/resume against prepared handler, due alarm, input append and lost acknowledgement; no stale settlement or lost pending work | Settle with a pre-pause state version |
 | A4-05 wake | Production Loom register/replay/recheck/hibernate races append and cancellation; remaining input is ready or has a live shared registration | Drop register/recheck or unregister after last tail check |
 | A4-06 outbox custody | Cancel at each preparation boundary, then recover Unknown by original key; no leaked/lost hold or duplicate committed effect | Release holds before terminal reconciliation |
@@ -23,7 +23,7 @@ Extend A4-03's same-provider history: set G/D, trigger G with Keep, crash at pre
 
 ## Admitted inherited scope
 
-Exact Store pin **252c28c27fd490186f7e17e1d55b47ffe82a9e9a**, signature G verified. Six formatted archive files byte-match that commit, including unchanged tests; restored six-file hashes match. Archive SHA256 **af96f5e9459b56961f5775c1352f4a7501457945a67f3ba4a073387755fe876d**. Mirrored admission: `Q:/worktrees/redesign-verify/docs/proofs/evidence/actor-store-v1/receipt.json`.
+Exact Store pin **252c28c27fd490186f7e17e1d55b47ffe82a9e9a**, signature G verified. Six formatted archive files byte-match that commit, including unchanged tests; restored six-file hashes match. Archive SHA256 **af96f5e9459b56961f5775c1352f4a7501457945a67f3ba4a073387755fe876d**. Mirrored admission: `Q:/worktrees/redesign-verify/scripts/tests/fixtures/proof-policy/actor-store-v1/receipt.json`.
 
 | Entry / invariant | Captured source at252c | Existing proof / limitation |
 |---|---|---|

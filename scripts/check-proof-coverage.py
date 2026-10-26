@@ -63,7 +63,7 @@ def validate_proofs(root, registry):
     for name, proof in registry.items():
         require(proof['adapter'] == 'hst_reporting_v1', 'unsupported proof adapter: ' + proof['adapter'])
         policy.check_hst_reporting(proof['receipt'])
-        receipt_path = root / proof['receipt']['repo_receipt']
+        receipt_path = policy.source_path(proof['receipt']['repo_receipt'])
         # Dependency input identity is not proof of dependency behavior. This
         # adapter admits only the reporting module exercised by its oracle.
         compiled = json.loads((receipt_path.parent / 'source.json').read_bytes())
