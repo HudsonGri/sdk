@@ -129,7 +129,10 @@ fn publish_executable(
             match stage {
                 private_file::PublicationStage::Synced => observe(Stage::Ready)?,
                 private_file::PublicationStage::Published => observe(Stage::Published)?,
-                private_file::PublicationStage::Created => (),
+                // Installed precedes the directory barrier. Only Published
+                // is the durable package boundary exposed to this observer.
+                private_file::PublicationStage::Created
+                | private_file::PublicationStage::Installed => (),
             }
             Ok(())
         },
