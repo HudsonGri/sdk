@@ -1,0 +1,361 @@
+//! The records an agent subtree holds: inbox input, status and the close marker.
+//!
+//! The inbox is the only input to an agent. Every record carries a stable intent
+//! identity, which with its sender forms the Streams idempotency key, so a retry
+//! after a lost acknowledgement replays exactly and a definitive conflict leaves
+//! the key unspent.
+
+use super::{AgentId, AgentPath, Error};
+use crate::conversation::FileRef;
+use serde::{Deserialize, Serialize};
+
+/// Largest encoded inbox, status or close record. Payloads live in volume files.
+pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+/// Largest intent identity.
+pub const MAX_INTENT_BYTES: usize = 128;
+/// Largest failure message carried in a record.
+pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
+/// Most volumes bound to one agent.
+pub const MAX_VOLUMES: usize = 8;
+
+/// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct IntentId(String);
+
+impl IntentId {
+    /// Canonical text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for IntentId {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Error> {
+        if !value.is_empty()
+            && value.len() <= MAX_INTENT_BYTES
+            && value.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            Ok(Self(value))
+        } else {
+            Err(Error::Record("intent id must be 1-128 printable ASCII bytes"))
+        }
+    }
+}
+
+impl TryFrom<&str> for IntentId {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Error> {
+        Self::try_from(value.to_owned())
+    }
+}
+
+impl From<IntentId> for String {
+    fn from(value: IntentId) -> Self {
+        value.0
+    }
+}
+
+/// Who wrote an inbox record.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Sender {
+    /// A human or application principal.
+    User {
+        /// Principal identity as authenticated by the caller's grant.
+        principal: String,
+    },
+    /// Another agent.
+    Agent {
+        /// The sending agent.
+        path: AgentPath,
+    },
+    /// A host plugin (Codex, Claude Code, Pi).
+    Host {
+        /// Host name.
+        host: String,
+    },
+}
+
+/// A named volume bound to an agent at adoption.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeBinding {
+    /// Agent-visible name (`private`, `project`, `result`).
+    pub name: String,
+    /// Volume identity in the filesystem authority.
+    pub volume: String,
+}
+
+/// First record of every agent, written by the spawn fork or by root creation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForkAdopted {
+    /// The adopted agent.
+    pub agent: AgentId,
+    /// Spawning agent, `None` for a root.
+    pub parent: Option<AgentPath>,
+    /// Inbox sequence of this record; the agent's first consumed input.
+    pub forked_at: u64,
+    /// Tail of the inherited conversation at the fork cut.
+    pub conversation_tail: u64,
+    /// Volumes the agent owns.
+    pub volumes: Vec<VolumeBinding>,
+    /// Task brief, if any.
+    pub brief: Option<FileRef>,
+    /// Approval policy file interpreted by the approvals feature, if any.
+    pub policy: Option<FileRef>,
+}
+
+/// An agent-to-agent or user-to-agent message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Message {
+    /// Sender.
+    pub from: Sender,
+    /// Stable message identity.
+    pub id: IntentId,
+    /// Message body.
+    pub body: FileRef,
+}
+
+/// Terminal result of an agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentOutcome {
+    /// Completed, with an optional result file.
+    Succeeded {
+        /// Result file.
+        result: Option<FileRef>,
+    },
+    /// Failed with a bounded description.
+    Failed {
+        /// Failure description.
+        message: String,
+    },
+    /// Stopped by archive before completing.
+    Archived,
+}
+
+/// A child reached a terminal status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChildDone {
+    /// The child.
+    pub child: AgentPath,
+    /// Its outcome.
+    pub outcome: AgentOutcome,
+}
+
+/// A response file now exists for an approval request of this agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Approval {
+    /// Approval request identity.
+    pub id: IntentId,
+}
+
+/// A child delegates an approval request to this agent (the parent approver).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalRequested {
+    /// The requesting child.
+    pub child: AgentPath,
+    /// Approval request identity.
+    pub id: IntentId,
+}
+
+/// Cancel or archive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Control {
+    /// Requester.
+    pub by: Sender,
+    /// Stable intent identity.
+    pub id: IntentId,
+}
+
+/// A host plugin hook event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hook {
+    /// Host name.
+    pub host: String,
+    /// Stable hook identity.
+    pub id: IntentId,
+    /// Event file.
+    pub event: FileRef,
+}
+
+/// The only input to an agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum InboxRecord {
+    /// First record of every agent.
+    ForkAdopted(ForkAdopted),
+    /// `send`.
+    Message(Message),
+    /// A child finished.
+    ChildDone(ChildDone),
+    /// An approval response exists.
+    Approval(Approval),
+    /// A child delegates an approval.
+    ApprovalRequested(ApprovalRequested),
+    /// Stop the current turn; the agent stays open.
+    Cancel(Control),
+    /// Close the agent.
+    Archive(Control),
+    /// A host plugin hook.
+    Hook(Hook),
+}
+
+/// Current phase of an agent, appended to its status stream on change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Phase {
+    /// No queued input.
+    Idle,
+    /// A turn is executing.
+    Running,
+    /// Waiting for an approval response.
+    WaitingApproval {
+        /// Request identity.
+        id: IntentId,
+    },
+    /// Waiting for a deadline.
+    WaitingAlarm {
+        /// Unix milliseconds.
+        deadline_unix_ms: u64,
+    },
+    /// Waiting for children to finish.
+    WaitingChildren {
+        /// Number still open.
+        open: u32,
+    },
+    /// Terminal.
+    Done {
+        /// Outcome.
+        outcome: AgentOutcome,
+    },
+}
+
+/// One status stream record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusRecord {
+    /// Phase after the transition that wrote it.
+    pub phase: Phase,
+    /// Inbox cursor consumed by that transition.
+    pub cursor: u64,
+}
+
+/// The single record of the close marker stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Closed {
+    /// Requester.
+    pub by: Sender,
+    /// Archive intent identity.
+    pub id: IntentId,
+}
+
+/// Canonical bounded encoding shared by every agent record.
+pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
+    /// Structural bounds beyond the type itself.
+    fn check(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Canonical JSON with sorted keys, refused above [`MAX_RECORD_BYTES`].
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        self.check()?;
+        let bytes = crate::contract::canonical_json_bytes(self)
+            .map_err(|_| Error::Record("record is not encodable"))?;
+        if bytes.len() > MAX_RECORD_BYTES {
+            return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
+        }
+        Ok(bytes)
+    }
+
+    /// Total, bounded decode of untrusted bytes.
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > MAX_RECORD_BYTES {
+            return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
+        }
+        let value: Self =
+            serde_json::from_slice(bytes).map_err(|_| Error::Record("record is malformed"))?;
+        value.check()?;
+        Ok(value)
+    }
+}
+
+fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
+    match outcome {
+        AgentOutcome::Failed { message } if message.len() > MAX_MESSAGE_BYTES => {
+            Err(Error::Record("failure message exceeds MAX_MESSAGE_BYTES"))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_text(text: &str) -> Result<(), Error> {
+    if text.is_empty() || text.len() > MAX_INTENT_BYTES {
+        return Err(Error::Record("name must be 1-128 bytes"));
+    }
+    Ok(())
+}
+
+impl AgentRecord for InboxRecord {
+    fn check(&self) -> Result<(), Error> {
+        match self {
+            Self::ForkAdopted(adopted) => {
+                if adopted.volumes.len() > MAX_VOLUMES {
+                    return Err(Error::Record("too many volumes"));
+                }
+                for binding in &adopted.volumes {
+                    check_text(&binding.name)?;
+                    check_text(&binding.volume)?;
+                }
+                if adopted.parent.as_ref().is_some_and(|parent| {
+                    parent.child(&adopted.agent).is_err()
+                }) {
+                    return Err(Error::Record("adopted child exceeds MAX_DEPTH"));
+                }
+                Ok(())
+            }
+            Self::ChildDone(done) => check_outcome(&done.outcome),
+            Self::Message(Message { from, .. })
+            | Self::Cancel(Control { by: from, .. })
+            | Self::Archive(Control { by: from, .. }) => check_sender(from),
+            Self::Hook(hook) => check_text(&hook.host),
+            Self::Approval(_) | Self::ApprovalRequested(_) => Ok(()),
+        }
+    }
+}
+
+fn check_sender(sender: &Sender) -> Result<(), Error> {
+    match sender {
+        Sender::User { principal } => check_text(principal),
+        Sender::Host { host } => check_text(host),
+        Sender::Agent { .. } => Ok(()),
+    }
+}
+
+impl AgentRecord for StatusRecord {
+    fn check(&self) -> Result<(), Error> {
+        match &self.phase {
+            Phase::Done { outcome } => check_outcome(outcome),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl AgentRecord for Closed {
+    fn check(&self) -> Result<(), Error> {
+        check_sender(&self.by)
+    }
+}

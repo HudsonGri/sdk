@@ -61,6 +61,7 @@ mod accounting_trace {
     include!("memory_store/retention_scan_trace.rs");
     include!("memory_store/retention_scan_capture.rs");
 }
+pub mod agent;
 pub mod agent_loop;
 pub mod bundle;
 #[doc(hidden)]
