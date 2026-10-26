@@ -10,8 +10,7 @@ pub(in crate::filesystem) type MergeAllocation = ();
 pub struct ParentProjectController<'a, A, O> {
     pub(in crate::filesystem) host: &'a FilesystemHost<A, O>,
     pub(in crate::filesystem) project: VolumeRef,
-    pub(in crate::filesystem) verifier: AuthorityVerifier,
-    pub(in crate::filesystem) scope: Scope,
+    pub(in crate::filesystem) authority: crate::core::VerifiedScope,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -71,7 +70,9 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         }
         crate::executor::with_history_io(io, |work| {
             verifier.verify_audience(parent.authority(), work)?;
-            verifier.verify(scope, work)?;
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let authority = verifier.authenticate_scope(scope, quota.work())?;
+            quota.adopt(authority.logical_owned_bytes()?)?;
             if scope.agent().is_none()
                 || parent.conversation().and_then(|state| state.agent) != scope.agent()
             {
@@ -80,23 +81,19 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
                     "project controller requires the bound parent agent",
                 ));
             }
-            project.validate(work)?;
+            project.validate(quota.work())?;
             if project.provider() != &host.provider {
                 return Err(reject(
                     crate::wire::ErrorCode::Invalid,
                     "parent project belongs to another provider",
                 ));
             }
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let verifier = verifier.copy_in_quota(&mut quota)?;
-            let scope = scope.copy_in_quota(&mut quota)?;
             let project = project.copy_in_quota(&mut quota)?;
             let _native_custody = quota.into_custody()?;
             Ok(Self {
                 host,
                 project,
-                verifier,
-                scope,
+                authority,
                 #[cfg(not(target_arch = "wasm32"))]
                 native_custody: _native_custody,
             })
@@ -123,18 +120,15 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
             ));
         }
         crate::executor::with_history_io(io, |work| {
-            self.verifier
-                .verify_audience(self.verifier.audience(), work)?;
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.scope,
+            ContentGrant::authorize_authenticated_volume(
+                &self.authority,
                 &self.project,
                 operation,
                 u64::MAX,
                 work,
             )
         })?;
-        if !self.scope.capabilities().contains(capability) {
+        if !self.authority.scope().capabilities().contains(capability) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,

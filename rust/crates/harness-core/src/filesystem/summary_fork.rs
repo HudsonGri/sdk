@@ -4,8 +4,8 @@ use crate::{
     IdempotencyKey, Result,
     context::Context,
     conversation::{
-        ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        ContentResidencyVerifier, FileDescriptor, FileRef, VolumeClass, VolumeOperation,
+        VolumeOwner, VolumeRef,
     },
     core::Reducer,
     executor::{
@@ -321,30 +321,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 preparation.verify(false, io)?.await?;
             }
         }
-        with_history_io(io, |work| {
-            if !self.scope.capabilities().contains("fork:publish") {
-                return Err(denied(
-                    "summary fork scope lacks original publication authority",
-                ));
-            }
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.scope,
-                &self.project,
-                VolumeOperation::Read,
-                u64::MAX,
-                work,
-            )
-        })?;
-        if parent.authority() != self.verifier.audience()
-            || prepared.parent() != self.verifier.audience()
+        self.require("fork:publish", VolumeOperation::Read, io)?;
+        if parent.authority() != self.authority.verifier().audience()
+            || prepared.parent() != self.authority.verifier().audience()
             || prepared.parent_revision() != parent.revision()
-            || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
+            || parent.conversation().and_then(|state| state.agent) != self.authority.scope().agent()
             || prepared.through_sequence()
                 != parent
                     .conversation()
                     .map_or(0, crate::conversation::ConversationState::logical_revision)
-            || journal.canonical_authority() != Some(self.verifier.audience())
+            || journal.canonical_authority() != Some(self.authority.verifier().audience())
             || child_private.provider() != &self.host.provider
             || child_private.class() != VolumeClass::AgentPrivate
             || !matches!(child_private.owner(), VolumeOwner::Agent(_))

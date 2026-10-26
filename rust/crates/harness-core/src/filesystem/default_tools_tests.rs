@@ -16,6 +16,10 @@ type Host = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 #[path = "aggregate_custody_tests.rs"]
 mod aggregate_custody_tests;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "parent_authentication_tests.rs"]
+mod parent_authentication_tests;
+
 struct Fixture {
     host: Arc<Host>,
     stream: Arc<MemoryStream>,

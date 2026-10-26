@@ -576,6 +576,19 @@ impl ContentGrant {
         Self::check_volume(scope, volume, operation, maximum_bytes, work)
     }
 
+    /// Checks a retained authentication owner against fresh trust and the exact volume.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn authorize_authenticated_volume(
+        authority: &crate::core::VerifiedScope,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        authority.recheck(work)?;
+        Self::check_volume(authority.scope(), volume, operation, maximum_bytes, work)
+    }
+
     fn check_volume(
         scope: &Scope,
         volume: &VolumeRef,

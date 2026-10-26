@@ -22,8 +22,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub struct FilesystemProjectWorkspaces<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     project: VolumeRef,
-    verifier: AuthorityVerifier,
-    scope: Scope,
+    authority: crate::core::VerifiedScope,
 }
 
 impl<A, O> Clone for FilesystemProjectWorkspaces<A, O> {
@@ -31,8 +30,7 @@ impl<A, O> Clone for FilesystemProjectWorkspaces<A, O> {
         Self {
             host: Arc::clone(&self.host),
             project: self.project.clone(),
-            verifier: self.verifier.clone(),
-            scope: self.scope.clone(),
+            authority: self.authority.clone(),
         }
     }
 }
@@ -51,8 +49,7 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
         Ok(Self {
             host: Arc::clone(host),
             project,
-            verifier: controller.verifier,
-            scope: controller.scope,
+            authority: controller.authority,
         })
     }
 
@@ -60,16 +57,15 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
         ParentProjectController {
             host: &self.host,
             project: self.project.clone(),
-            verifier: self.verifier.clone(),
-            scope: self.scope.clone(),
+            authority: self.authority.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: None,
         }
     }
 
     fn require_scope(&self, scope: &Scope) -> Result<()> {
-        self.verifier.verify(scope, &mut None)?;
-        if scope != &self.scope {
+        self.authority.recheck(&mut None)?;
+        if scope != self.authority.scope() {
             return Err(Error::Unauthorized(
                 "project operation belongs to another parent scope".into(),
             ));
@@ -118,7 +114,7 @@ where
     ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>> {
         Box::pin(async move {
             self.require_scope(scope)?;
-            if destination.authority() != self.verifier.audience()
+            if destination.authority() != self.authority.verifier().audience()
                 || destination.conversation().and_then(|state| state.agent) != scope.agent()
                 || source.kind != crate::core::AggregateKind::Conversation
             {

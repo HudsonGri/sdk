@@ -15,8 +15,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .fork_volume_pinned(
                 &self.project,
                 &ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
+                    self.authority.verifier(),
+                    self.authority.scope(),
                     &self.project,
                     VolumeOperation::Read,
                     u64::MAX,
@@ -186,7 +186,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 if source.provider() != &self.host.provider
                     || (!selected
                         && !io.contains_capability(
-                            self.scope.capabilities(),
+                            self.authority.scope().capabilities(),
                             source,
                             acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
                         )?)
@@ -211,8 +211,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             self.require(capability::PROJECT_MERGE, VolumeOperation::Write, None)?;
             if !selected {
                 ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
+                    self.authority.verifier(),
+                    self.authority.scope(),
                     source,
                     VolumeOperation::Read,
                     u64::MAX,
@@ -275,7 +275,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 Ok((
                     source.copy(work)?,
                     self.project.copy(work)?,
-                    self.scope.copy(work)?,
+                    self.authority.scope().copy(work)?,
                 ))
             })?;
         drop(source_ref);
@@ -314,35 +314,45 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let work = custody.work();
             let io = PreparationIo::from_native_work(work)?;
             self.require_merge_plan(plan, Some(&io))?;
-            self.verifier
-                .verify(&self.scope, &mut Some(&mut io.history_io()))?;
-            let verifier = self.verifier.copy(&mut Some(&mut io.history_io()))?;
-            let scope = self.scope.copy(&mut Some(&mut io.history_io()))?;
-            let project = self.project.copy(&mut Some(&mut io.history_io()))?;
+            let mut history = io.history_io();
+            let mut observer = Some(&mut history as &mut dyn crate::store::HistoryIo);
+            let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
+            let authority = self
+                .authority
+                .verifier()
+                .authenticate_scope(self.authority.scope(), quota.work())?;
+            quota.adopt(authority.logical_owned_bytes()?)?;
+            let project = self.project.copy_in_quota(&mut quota)?;
             let bytes = std::mem::size_of::<(
-                AuthorityVerifier,
-                Scope,
+                crate::core::VerifiedScope,
                 VolumeRef,
                 acyclic_fs::NativeAllocation,
-            )>() as u64;
-            io.retain_owned(bytes)?;
-            io.allocation_attempt(bytes)?;
-            let retained = io.owned_bytes()?;
-            let owner = Arc::new((verifier, scope, project, io.into_native_custody(retained)?));
+            )>() as u64
+                + (2 * std::mem::size_of::<usize>()) as u64;
+            quota.retain(bytes)?;
+            quota.observer()?.allocation_attempt(bytes)?;
+            let custody = quota
+                .into_custody()?
+                .ok_or_else(|| io.invalid("native merge owner has no custody"))?;
+            let owner = Arc::new((authority, project, custody));
             let mut guard = move |original: &acyclic_fs::NativeMaterializationWork| {
                 std::future::ready((|| {
-                    if !owner.3.work().shares_allocation_context(original) {
+                    if !owner.2.work().shares_allocation_context(original) {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
                             reason: "merge publication owner belongs to another original resource",
                         });
                     }
                     let io = PreparationIo::from_native_work(original)?;
-                    owner.0.verify(&owner.1, &mut Some(&mut io.history_io()))?;
-                    if !owner.1.capabilities().contains(capability::PROJECT_MERGE)
+                    owner.0.recheck(&mut Some(&mut io.history_io()))?;
+                    if !owner
+                        .0
+                        .scope()
+                        .capabilities()
+                        .contains(capability::PROJECT_MERGE)
                         || !io.contains_capability(
-                            owner.1.capabilities(),
-                            &owner.2,
+                            owner.0.scope().capabilities(),
+                            &owner.1,
                             acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
                         )?
                     {
@@ -592,7 +602,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 "merge plan belongs to another original parent controller",
             ));
         }
-        if plan.parent_project != self.project || plan.parent_scope != self.scope {
+        if plan.parent_project != self.project || &plan.parent_scope != self.authority.scope() {
             return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
