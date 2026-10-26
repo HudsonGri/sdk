@@ -7,7 +7,7 @@ import type {
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
-import type { HarnessClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "../src/client.js";
+import type { FileClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "../src/client.js";
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
   ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,
@@ -23,8 +23,8 @@ type Equal<Left, Right> = (<Value>() => Value extends Left ? 1 : 2) extends
 type AssertNever<Value extends never> = Value;
 
 type _FileClientPreservesExactBounds = Assert<Equal<FileClientLimits["commands"] | FileClientLimits["bytes"], bigint>>;
-type _FileClientUsesCanonicalRequestKeys = Assert<Equal<Parameters<HarnessClient["enqueue"]>[0], FileKey>>;
-type _FileClientReturnsTheSharedCursor = Assert<Equal<ReturnType<HarnessClient["cursor"]>, Cursor>>;
+type _FileClientUsesCanonicalRequestKeys = Assert<Equal<Parameters<FileClient["enqueue"]>[0], FileKey>>;
+type _FileClientReturnsTheSharedCursor = Assert<Equal<ReturnType<FileClient["cursor"]>, Cursor>>;
 type _QueryPublishesCanonicalChanges = Assert<Equal<Parameters<Parameters<ClientQuery["follow"]>[0]>[0], QueryDelivery>>;
 
 type _SummaryLimitsUseExistingNativeWire = Assert<Equal<RustSummaryForkSelection["limits"], WasmNativeLimitsWire>>;

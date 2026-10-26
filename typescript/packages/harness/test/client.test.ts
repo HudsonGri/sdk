@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
 import "fake-indexeddb/auto";
-import { HarnessClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+import { FileClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
 
 beforeAll(initializeClientQueries);
 
@@ -35,7 +35,7 @@ async function setup(durable = false) {
   const outbox = await TaskVolume.create(stream, "client/files");
   const target = await TaskVolume.create(stream, "agent/files");
   const policy = { ...limits, durability: durable ? "Durable" : "Accepted" } as const;
-  const client = await HarnessClient.open(outbox, target, policy);
+  const client = await FileClient.open(outbox, target, policy);
   return { name, stream, outbox, target, client, policy,
     free() { client.free(); outbox.free(); target.free(); stream.free(); } };
 }
@@ -52,7 +52,7 @@ test("the exported client is the Rust file client and restores enqueue order", a
     if (seen.length === 2) stop.resolve();
   }, stop.promise);
   f.client.free();
-  const restored = await HarnessClient.open(f.outbox, f.target, f.policy);
+  const restored = await FileClient.open(f.outbox, f.target, f.policy);
   expect(restored.pending()).toBe(2);
   expect(await restored.flush()).toBe(2);
   await follow;
@@ -80,7 +80,7 @@ test(`${kind} rejects before storing another file and allows acknowledged retrie
   f.client.free();
   const bytes = BigInt(encode.encode("one").byteLength);
   const limit = kind === "CommandQuota" ? commands : bytes;
-  const client = await HarnessClient.open(f.outbox, f.target, { ...f.policy, commands, bytes });
+  const client = await FileClient.open(f.outbox, f.target, { ...f.policy, commands, bytes });
   await client.enqueue(request("one.json"), encode.encode("one"));
   const before = await f.outbox.head();
   await expect(client.enqueue(request("two.json"), encode.encode("two"))).rejects.toEqual({ kind, detail: { limit } });
@@ -92,7 +92,7 @@ test(`${kind} rejects before storing another file and allows acknowledged retrie
   await client.enqueue(request("one.json"), encode.encode("one"));
   expect(client.pending()).toBe(1);
   client.free();
-  const reopened = await HarnessClient.open(f.outbox, f.target, { ...f.policy, commands, bytes });
+  const reopened = await FileClient.open(f.outbox, f.target, { ...f.policy, commands, bytes });
   await reopened.enqueue(request("one.json"), encode.encode("one"));
   expect(reopened.pending()).toBe(1);
   expect(await reopened.flush()).toBe(1);
@@ -104,12 +104,12 @@ test("a stale client cannot move the persisted cursor backwards", async () => {
   const f = await setup();
   await f.client.enqueue(request("one.json"), encode.encode("one"));
   await f.client.enqueue(request("two.json"), encode.encode("two"));
-  const stale = await HarnessClient.open(f.outbox, f.target, f.policy);
+  const stale = await FileClient.open(f.outbox, f.target, f.policy);
   expect(await f.client.flush()).toBe(2);
   const cursor = f.client.cursor();
   await expect(stale.flush()).rejects.toBeDefined();
   stale.free();
-  const reopened = await HarnessClient.open(f.outbox, f.target, f.policy);
+  const reopened = await FileClient.open(f.outbox, f.target, f.policy);
   expect(reopened.cursor()).toEqual(cursor);
   expect(reopened.pending()).toBe(0);
   reopened.free(); f.free();
@@ -123,10 +123,10 @@ test("a terminal rejection retires its entry and allows the next request after r
   await expect(f.client.flush()).rejects.toMatchObject({ kind: "Rejected", detail: { request: request("rejected.json") } });
   expect(f.client.pending()).toBe(1);
   f.client.free();
-  const reopened = await HarnessClient.open(f.outbox, f.target, f.policy);
+  const reopened = await FileClient.open(f.outbox, f.target, f.policy);
   expect(await reopened.flush()).toBe(1);
   reopened.free();
-  const restored = await HarnessClient.open(f.outbox, f.target, f.policy);
+  const restored = await FileClient.open(f.outbox, f.target, f.policy);
   expect(restored.pending()).toBe(0);
   restored.free(); f.outbox.free(); f.target.free(); f.stream.free();
 });
@@ -157,7 +157,7 @@ test("persistent provider files recover pending intent after all handles close",
   const stream = await WasmStream.openBrowser(name, 64, 65536n);
   const outbox = await TaskVolume.open(stream, "client/files");
   const target = await TaskVolume.open(stream, "agent/files");
-  const client = await HarnessClient.open(outbox, target, policy);
+  const client = await FileClient.open(outbox, target, policy);
   expect(client.pending()).toBe(1);
   const readerStream = await WasmStream.openBrowser(name, 64, 65536n);
   const readerVolume = await TaskVolume.open(readerStream, "agent/files");
