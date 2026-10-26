@@ -1,0 +1,9 @@
+[Unit]
+Description=bb2 size-bounded janitor (sccache/jobs/wt-sdk)
+[Service]
+Type=oneshot
+User=var
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=540
+ExecStart=/usr/bin/python3 /usr/local/lib/buildbox/bb-janitor.py
