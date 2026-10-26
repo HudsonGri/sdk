@@ -5,8 +5,11 @@
 use super::{LocalHarness, LocalStream, storage};
 use crate::{
     Error, OperationId, Result,
-    agent::{AgentHost, AgentPath, AgentState, ExecutorDriver, ForkAdopted, IntentId, VolumeBinding},
-    conversation::VolumeRef,
+    agent::{
+        AgentHost, AgentPath, AgentState, Delivered, ExecutorDriver, ForkAdopted, InboxRecord,
+        IntentId, Message, Sender, VolumeBinding,
+    },
+    conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits},
     model::ModelContent,
@@ -110,6 +113,41 @@ impl LocalHarness {
             .get_or_try_init(|| async { self.host_agents().await })
             .await?;
         Ok((&hosted.agents, &hosted.root))
+    }
+
+    /// Send `prompt` to the root agent as message `id`: one staged body file
+    /// on its private volume, then one inbox commit. Retrying the same `id`
+    /// with the same prompt replays exactly.
+    pub async fn prompt(self: &Arc<Self>, id: &IntentId, prompt: &str) -> Result<Delivered> {
+        let (agents, root) = self.agents().await?;
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.prompt.v1");
+        hasher.update(root.as_str().as_bytes());
+        hasher.update(&[0]);
+        hasher.update(id.as_str().as_bytes());
+        let mut bytes = [0; 16];
+        hasher.finalize_xof().fill(&mut bytes);
+        let operation = OperationId::from_bytes(bytes);
+        let body = self
+            .input_publisher_with_limit(self.limits.file_bytes)?
+            .stage_once(
+                operation,
+                &format!("inputs/{operation}.txt"),
+                prompt.as_bytes(),
+                "text/plain",
+                "prompt",
+                ContentAccess::default(),
+            )?
+            .await?
+            .0;
+        let from = Sender::User {
+            principal: "local".into(),
+        };
+        let message = InboxRecord::Message(Message {
+            from: from.clone(),
+            id: id.clone(),
+            body: Box::new(body),
+        });
+        agents.send(root, &from, &message).await.map_err(storage)
     }
 
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
