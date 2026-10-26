@@ -1,7 +1,15 @@
 use super::*;
 /// Semantic kind of a provider-owned reference.
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout, schemars::JsonSchema,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    crate::HeapLayout,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
