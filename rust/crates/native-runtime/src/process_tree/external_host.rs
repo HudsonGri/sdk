@@ -242,31 +242,186 @@ mod tests {
     use super::*;
 
     #[test]
-    fn failed_host_observation_keeps_child_and_recovery_authority() {
+    fn external_retirement_preserves_the_observed_native_exit_status() {
         let root = tempfile::tempdir().unwrap();
-        let custody = ProcessCustody::open(root.path()).unwrap();
-        let mut command = super::super::tests::command("exit-code", root.path());
-        let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).unwrap();
+        let custody = ProcessCustody::open(&root.path().join("custody")).unwrap();
+        let mut tree = ProcessTree::spawn_in_custody(
+            &mut super::super::tests::command("exit-code", root.path()),
+            &custody,
+        )
+        .unwrap();
         let child = tree.child.take().unwrap();
-        tree.cleanup_on_drop = false;
+        super::super::platform::wait_without_reaping(&child).unwrap();
+        let mut state = State {
+            tree,
+            cancelled: false,
+            failure: None,
+        };
         assert_eq!(
-            retire_after_observation(&mut tree, child, Err(io::ErrorKind::Interrupted.into()))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::Interrupted,
+            retire_after_observation(&mut state.tree, child, Ok(()))
+                .unwrap()
+                .code(),
+            Some(7)
         );
-        assert!(
-            tree.child.is_some(),
-            "failed wait must retain the original child"
-        );
-        assert!(
-            tree.custody.is_some(),
-            "failed wait must retain recovery authority"
-        );
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        assert!(state.tree.is_reaped());
+    }
+
+    #[test]
+    fn failed_external_retirement_keeps_the_canonical_recovery_owner() {
+        for former_order in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let records = root.path().join("custody");
+            let custody = ProcessCustody::open(&records).unwrap();
+            let mut tree = ProcessTree::spawn_in_custody(
+                &mut super::super::tests::command("partial", root.path()),
+                &custody,
+            )
+            .unwrap();
+            super::super::tests::ready(root.path(), "partial-ready", || {
+                tree.try_wait(None).map_or(true, |status| status.is_some())
+            });
+            let record = std::fs::read_dir(&records)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let record_bytes = std::fs::read(&record).unwrap();
+            // A real failed unlink, rather than a synthetic process result.
+            std::fs::remove_file(&record).unwrap();
+            std::fs::create_dir(&record).unwrap();
+            tree.terminate_descendants().unwrap();
+            let mut child = tree.child.take().unwrap();
+            super::super::platform::wait_without_reaping(&child).unwrap();
+            let mut state = State {
+                tree,
+                cancelled: false,
+                failure: None,
+            };
+            let failed = if former_order {
+                // Actual pre-integration ordering from 579657faa7: reap the
+                // child, close its Job, then attempt record removal directly.
+                child.wait().unwrap();
+                #[cfg(windows)]
+                state.tree.guard.close(None).unwrap();
+                state.tree.custody.as_ref().unwrap().remove().is_err()
+            } else {
+                retire_after_observation(&mut state.tree, child, Ok(())).is_err()
+            };
+            let retained = state.tree.custody.is_some() && !state.tree.is_reaped();
+            #[cfg(windows)]
+            let former_completion = state.tree.child.is_none() && !state.tree.guard.pending();
+            #[cfg(unix)]
+            let unreaped = state.tree.child.is_some();
+            // Restore the filesystem boundary and explicitly retire the old
+            // control's record before assertions; neither case leaves work.
+            std::fs::remove_dir(&record).unwrap();
+            std::fs::write(&record, record_bytes).unwrap();
+            if former_order {
+                super::super::custody::Record::retire(&mut state.tree.custody, None).unwrap();
+            }
+            state.tree.terminate(None).unwrap();
+            assert!(failed);
+            assert!(retained);
+            #[cfg(windows)]
+            assert!(
+                former_completion,
+                "the former completion predicate loses pending recovery work"
+            );
+            #[cfg(unix)]
+            assert_eq!(
+                unreaped, !former_order,
+                "failed record retirement must retain the unreaped child"
+            );
+            assert!(state.tree.is_reaped());
+            assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn failed_host_observation_keeps_the_live_child_and_recovery_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let records = root.path().join("custody");
+        let custody = ProcessCustody::open(&records).unwrap();
+        let mut tree = ProcessTree::spawn_in_custody(
+            &mut super::super::tests::command("partial", root.path()),
+            &custody,
+        )
+        .unwrap();
+        super::super::tests::ready(root.path(), "partial-ready", || {
+            tree.try_wait(None).map_or(true, |status| status.is_some())
+        });
+        let child = tree.child.take().unwrap();
+        let failure =
+            retire_after_observation(&mut tree, child, Err(io::ErrorKind::Interrupted.into()));
+        let retained = tree.child.is_some()
+            && tree.custody.is_some()
+            && std::fs::read_dir(&records).unwrap().count() == 1;
         tree.terminate(None).unwrap();
+        assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert!(retained);
         assert!(tree.is_reaped());
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+    }
+
+    // Captured from 579657faa74dc6a3a6334cf97e059a70d0724c03's external
+    // adapter ordering. Only state.tree is passed as an argument here; the
+    // native operations and the error propagation cuts are unchanged.
+    fn retire_in_former_order(
+        tree: &mut ProcessTree,
+        mut child: Child,
+        waited: io::Result<()>,
+    ) -> io::Result<ExitStatus> {
+        let terminated = tree.terminate_descendants();
+        let status = child.wait();
+        #[cfg(windows)]
+        let closed = tree.guard.close(None);
+        let retired = tree
+            .custody
+            .as_ref()
+            .map_or(Ok(()), super::super::custody::Record::remove);
+        waited?;
+        terminated?;
+        #[cfg(windows)]
+        closed?;
+        retired?;
+        status
+    }
+
+    #[test]
+    fn failed_observation_retains_recovery_authority_against_actual_former_order() {
+        for former_order in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let records = root.path().join("custody");
+            let custody = ProcessCustody::open(&records).unwrap();
+            let mut tree = ProcessTree::spawn_in_custody(
+                &mut super::super::tests::command("partial", root.path()),
+                &custody,
+            )
+            .unwrap();
+            super::super::tests::ready(root.path(), "partial-ready", || {
+                tree.try_wait(None).map_or(true, |status| status.is_some())
+            });
+            let child = tree.child.take().unwrap();
+            let observed = Err(io::ErrorKind::Interrupted.into());
+            let failure = if former_order {
+                retire_in_former_order(&mut tree, child, observed)
+            } else {
+                retire_after_observation(&mut tree, child, observed)
+            };
+            let retained = tree.child.is_some()
+                && tree.custody.is_some()
+                && std::fs::read_dir(&records).unwrap().count() == 1;
+            // Always drain through the sole production owner before asserting.
+            tree.terminate(None).unwrap();
+            assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::Interrupted);
+            assert_eq!(
+                retained, !former_order,
+                "the same failed observation must retain recovery authority"
+            );
+            assert!(tree.is_reaped());
+            assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+        }
     }
 
     #[test]

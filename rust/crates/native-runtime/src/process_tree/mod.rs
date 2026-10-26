@@ -731,9 +731,14 @@ impl ProcessTree {
         Ok(())
     }
 
-    /// Whether containment cleanup succeeded and the direct child was reaped.
+    /// Whether containment cleanup, child reaping and recovery retirement succeeded.
     #[must_use]
     pub const fn is_reaped(&self) -> bool {
+        // Recovery authority is part of retirement on every platform. An
+        // unlink/accounting failure must remain retryable on the same owner.
+        if self.custody.is_some() {
+            return false;
+        }
         #[cfg(unix)]
         return self.child.is_none()
             && self.native_child.is_none()
