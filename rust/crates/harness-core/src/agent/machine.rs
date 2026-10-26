@@ -111,7 +111,8 @@ impl AgentState {
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
             conversation_tail: adopted.conversation_tail,
-            status_tail: 0,
+            // The creating commit wrote the first status (`Idle`).
+            status_tail: 1,
             phase: Phase::Idle,
             open_children: BTreeSet::new(),
             archive_pending: BTreeSet::new(),
