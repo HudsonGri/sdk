@@ -210,6 +210,25 @@ class EvidencePolicy(unittest.TestCase):
             with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "Node same-artifact identity"):
                 POLICY.check_observations(reference)
 
+    def test_real_actor_store_is_partial_with_three_semantic_failures(self):
+        POLICY.check_actor_store(MANIFEST["actor_store_observations"]["actor-store-v1"])
+
+    def test_rehashed_actor_store_cannot_promote_unsupported_scope(self):
+        original = MANIFEST["actor_store_observations"]["actor-store-v1"]
+        fields = ("runtime_qualified", "readiness_qualified", "keep_contract_qualified", "qualified_modes", "complete_executable_provenance", "full_obligation_qualified")
+        for field in fields:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = self.copy_file(root, original["repo_receipt"])
+                receipt = json.loads(target.read_bytes())
+                for capture in receipt["captures"]:
+                    self.copy_file(root, capture["repo_path"])
+                receipt[field] = ["hosted"] if field == "qualified_modes" else True
+                target.write_text(json.dumps(receipt))
+                reference = dict(original, sha256=POLICY.sha256(target))
+                with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "cannot qualify|missing Store executable"):
+                    POLICY.check_actor_store(reference)
+
     def copy_evidence(self, root, receipt):
         self.copy_file(root, receipt["repo_log"])
         for source in receipt["executed_oracle_sources"]:

@@ -1,0 +1,1 @@
+{"command": ["cargo", "test", "--locked", "-p", "acyclic-actors", "--all-features", "--lib", "memory_atomic_history", "--", "--nocapture"], "exit": 101, "expected": 101, "seconds": 9.621282692009117}

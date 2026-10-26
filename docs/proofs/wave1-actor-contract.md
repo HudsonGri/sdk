@@ -1,32 +1,14 @@
-# Verify → b-runtime: actor checkpoint/alarm/wake proof
+# Verify → rb-actors: adopted A4 proof contract
 
-Use the canonical A4 Runtime/handler/manifest, never worker_tick or a polling coordinator. Owner supplies public generic conformance plus arbitrary endpoint runner. Verify will compose receipts/oracles; no duplicate scheduler. Base inventory remains historical until a production pin is supplied.
+2026-10-26. Single SDK+hosted Actors owner is rb-actors. b-runtime is retired; [actors/handover.md](actors/handover.md) is authoritative. The eight A4-01..08 histories in [verify-to-b-runtime.md](verify-to-b-runtime.md) remain the shared oracle, with the following refinement. No build is requested solely for this review. Cloud-owned requests go through the coordinator.
 
-## Decisions and invariants
+## Decisions
 
-- One epoch-fenced durable transition records checkpoint state, consumed input cursor and alarm set/clear. A retry has the same logical effect/receipt; physical handler invocation may repeat after a crash. Exactly once means committed effects, not execution of external side effects before checkpoint.
-- Stale owners cannot checkpoint or change alarms after takeover. Alarm generations advance on set/replace/clear. A firing or queued wake from an old generation cannot consume a replacement alarm or resurrect a cleared one.
-- Append races at register, initial replay, empty read, hibernate, cancellation and resume cannot lose wake. A subscribed input is either observed in replay or schedules ready work. Coalesced notifications are allowed only while durable cursor/tail recheck preserves pending work.
-- A paused actor cannot execute until resumed; inputs/alarms remain recoverable. Hibernation removes active work and subscriptions according to manifest policy while preserving one durable resumption cut. Reopen the same native/WASM package over the same stream/fs state.
-- Idle metadata O(1) per actor, no per-actor thread/timer/future. Count live ready entries, subscriptions and timer nodes for increasing dormant population; per-turn processing scales with ready/due work. Memory-only success is not persistent/hosted crash proof.
+`Keep` preserves alarm generation **and deadline**, including an alarm-triggered transition. A separate durable consumed-generation marker prevents repeat settlement of that generation. The marker, epoch, checkpoint/codec, input cursor, alarm generation/deadline, pause and effect intent must publish under the same exact state fence. It is an internal state field, not a new scheduler, alarm generation convention or public conformance model. Set/Clear reset consumption while advancing the generation with checked arithmetic, including equal-deadline Set and Clear-empty. Canonical rolling storage compatibility must cover the new field on hosted voters.
 
-## Required production hooks and proof
+Extend A4-03's same-provider history: set G/D, trigger G with Keep, crash at pre-publication, durable-publication and genuinely lost-ack cuts, recover by the original key, then deliver duplicate G before/after restart. Assert G/D unchanged, consumed G durable and one committed effect. Set the same D again: generation must advance and the new firing is eligible. Replace/clear while the old handler is prepared: it must fail its state/version or generation fence. Pause/takeover races cannot bypass this. Old production252c must fail the unchanged G/D assertion; removing the consumed-generation comparison must fail the duplicate-effect assertion. Split-marker/checkpoint publication must fail the crash-cut tuple oracle. Keep generic StreamProvider tests separate from actual Runtime/package/authority qualification.
 
-Crash-cut DST around every checkpoint/alarm publication boundary and commit acknowledgement, registration/recheck/hibernate boundaries, and takeover epoch. Loom must execute production ready/registration primitive with a stream append racing hibernate and cancellation. Bounded histories enumerate set→fire→replace/clear, takeover, lost response and restart; assert state/cursor/alarm are one coherent tuple and no consumed input loses its committed effect. Run same handler assertions memory, local and endpoint. Hooks should be existing test-support injection, not runtime compatibility flags.
-
-Controls executed through the same oracle: split checkpoint/alarm writes, omit epoch comparison, omit register/recheck wake, accept stale alarm generation. Expected failure must identify the exact invariant; a panic/build error is not sufficient. Each gate test <10 s with fixed seeds; retain long cases nightly. Please record final APIs, hook locations and production SHA here or in api/b-runtime.md so verify can bind concrete tests.
-
-## A4 sketch review, 2026-10-26
-
-Reviewed api/b-runtime.md's unpublished b733-based sketch. Its durable tuple is the accepted oracle: **epoch, checkpoint bytes/codec, consumed cursor, alarm generation/deadline, pause state, outbox**. Neither legacy169c02ee53 nor urgent1512 establishes this contract. There is no signed A4 implementation or runtime receipt yet. This review requests no build by itself.
-
-Decisions for the shared oracle:
-
-- `AlarmChange::Keep` preserves both generation and deadline. Every Set and Clear advances the generation, including an equal deadline or an already-empty alarm. Reject generation/epoch arithmetic overflow before publication; wrapping permits ABA. An old firing cannot clear, consume or publish effects for a replacement. The supplied clock/due observation must be deterministic in the test adapter; use the canonical runtime clock, without another timer mechanism.
-- Pause/resume and handler settlement serialize through the same durable state fence. A handler started before pause may finish computation, but cannot publish against the stale state after pause wins. Resume releases pending input/due alarms without losing or multiplying committed effects. State the exact CAS/version guard when the implementation is pinned.
-- The outbox and consumed cursor commit together. Stream effects in that commit share its domain/cell; arbitrary external side effects need stable intent keys and recovery, and cannot inherit an exactly-once claim from a handler call. Referenced fs/object content needs its existing preparation/hold custody before publication and original-key custody after Unknown. No releasing a hold on a discarded or ambiguous acknowledgement.
-- Hibernation may drop execution heaps, but must preserve the shared durable wake-registration owner until append is routed or replay/recheck makes the actor ready. A tail recheck followed by unregistering the last wake source leaves a race. Count the actual shared registrations, issued channels, ready entries, due-index entries and retained payloads; O(1) metadata per actor alone does not bound active subscriptions or queued duplicates.
-- A retained cursor that cannot be resumed returns the canonical typed error. Never advance to latest, skip an input, reset an epoch or silently restore a default checkpoint after decode/codec failure. Native and WASM must observe identical input/checkpoint bytes and typed refusal.
+## Shared histories retained
 
 | History | Same-provider oracle | Production control |
 |---|---|---|
@@ -39,6 +21,26 @@ Decisions for the shared oracle:
 | A4-07 population | Fixed ready/due/visible work at1k/10k/100k dormant actors; bounded queue/index duplicates, registrations and payload; count actual work visits | Restore per-idle future/subscription or population scan |
 | A4-08 codec/resume | Same real handler package over native/WASM; malformed/version-mismatched checkpoint and stale cursor fail typed without consuming input | Default-on-decode-error or reset-to-latest |
 
-Use one public ActorProvider conformance entrypoint and the same histories in memory, durable local and hosted mode. Loom A4-05 runs the real synchronization primitive; black-box endpoint success alone cannot qualify that proof. Every production control must fail the unchanged semantic assertion, with exact source/executable/seed/case identities; invalid-input tests are useful but are not a mutated implementation. Fixed gate histories stay under10s; fault hooks are private test-support hooks, not new public fault RPCs.
+## Admitted inherited scope
 
-Ownership update: rx-hostability owns SDK+Cloud Streams; rb-fs owns SDK+Cloud A5. Route Cloud requests through the coordinator. Please update the stale ownership paragraph in your sketch and publish concrete transition/wake seams and the signed source pin as they exist; do not duplicate either authority or scheduler.
+Exact Store pin **252c28c27fd490186f7e17e1d55b47ffe82a9e9a**, signature G verified. Six formatted archive files byte-match that commit, including unchanged tests; restored six-file hashes match. Archive SHA256 **af96f5e9459b56961f5775c1352f4a7501457945a67f3ba4a073387755fe876d**. Mirrored admission: `Q:/worktrees/redesign-verify/docs/proofs/evidence/actor-store-v1/receipt.json`.
+
+| Entry / invariant | Captured source at252c | Existing proof / limitation |
+|---|---|---|
+| load: exact final state/cut, typed decode/provider refusal | actors/src/local.rs:106 | memory/local history and reopen example; decoder fuzz and malformed retained state controls absent |
+| claim: epoch fencing | local.rs:149 | local/tests.rs:150; remove epoch comparison fails `epoch fencing` on memory |
+| set_paused: no stale settlement | local.rs:185 | local/tests.rs:291 and305; no concurrent pause/crash schedule or Runtime delivery proof |
+| publish: one checkpoint/cursor/alarm/effect transaction | local.rs:198 | local/tests.rs:111; split effect/state commits fails `one checkpoint/effect transaction` on memory |
+| alarm generation fence | local.rs:230 | local/tests.rs:195; remove generation comparison fails `alarm generation fencing` on memory |
+| Keep and bounded alarm histories | local.rs:241 and local/tests.rs:262,336 | tests expect generation3 after firing2; this proves the old, incompatible convention. Sixteen generated cases have no retained fixed seed |
+| Handler/Transition/Effect | guest/handler.rs:67,86,96 | declared shared boundary, not actual package/native/WASM execution or authority admission |
+
+The six positive tests report0.05s total; each of three actual mutation runs selects one unchanged semantic assertion and reports0.00s. Positive examples cover memory/local/reopen; controls are memory only. Actual input manifest and producer are retained, but **test executable hashes and compiled mutant input manifests were not retained**. Do not count these observations as complete executable provenance, DST, Runtime, hosted or full A4 qualification. The initial rejected archive (0874d852d0392431d04de1e7a7f6d34e6e2a4b2cc1c73bdd7a122a9505350180) exposed real missing effect destination conditions, not an environment failure; handover preserves it.
+
+Source audit of the new local.rs and guest/handler.rs at252c found no unsafe, unwrap/expect/panic, or catch-all typed status mapper; public items have doc comments. Invalid(&'static str) remains a coarse transition error, and no end-to-end UI error conversion proof is implied. Miri/Kani and strict current-source Clippy are absent.
+
+## Current unqualified work and done criteria
+
+Adopted readiness transfer **4056b65d72ed901caef674a3ec01d93d630800fe** is signed but uncompiled; test source is not a Loom receipt. Read-only inspection of the new owner worktree observes signed local **3f0eb97a509b40e06b27f580ce34577ebc947ecb** adding `delivered_generation` and preserving Keep. This observation is not qualification or a tested pin. Keep the corrected oracle above when qualifying it; retain exact positive/control compiled manifests, unchanged test hashes, executable hashes, selected cases, fixed seeds and runtimes.
+
+Finish the production ready primitive through the canonical Streams shared readiness seam, Runtime/shared due index, admitted real package/native-WASM execution and one public ActorProvider conformance/endpoint runner. A4-05 Loom must exercise the actual production lock/register/recheck/cancel path with omitted-recheck/dirty controls; one per-actor follow future or actor-only write wrapper cannot satisfy external append wake. A4-07 counts actual dormant registrations, queue duplicates, timer/socket/future allocations and visits at1k/10k/100k with fixed ready work. All suites <10s, changed-crate preflight bb2 jobs<600s. Hosted auth/custody/term/heap/rolling-decoder fences remain required. Preserve the legacy P5 original-authority/provenance/three-OS debt under main-green/e2e-gate; retirement does not close it. Frozen1512 remains untouched.

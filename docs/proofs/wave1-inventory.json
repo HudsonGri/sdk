@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T02:33:49.699294+00:00",
+  "generated_at": "2026-10-26T02:50:22.756171+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -100,6 +100,13 @@
       "strict crate cleanliness: four unchanged baseline Clippy warnings remain; new HST source has zero diagnostics",
       "optional CA support remains in owner provider-conformance runner, not this older five-case endpoint runner"
     ]
+  },
+  "actor_store_observations": {
+    "actor-store-v1": {
+      "repo_receipt": "docs/proofs/evidence/actor-store-v1/receipt.json",
+      "sha256": "5e3d73177266334e026ab78bbe759dd6b0574fbacbffa8c464913c10f2f41a44",
+      "qualification": "partial Store output and signed source join only; executable/mutant manifests absent; Runtime/readiness/Keep and full A4 unqualified"
+    }
   },
   "runner": {
     "file": "rust/crates/stream/examples/wave1-conformance.rs",
@@ -315,10 +322,10 @@
   "obligations": [
     {
       "id": "actors.checkpoint-alarm",
-      "owner": "b-runtime",
+      "owner": "rb-actors",
       "risk": "data_loss_or_corruption",
-      "invariant": "Epoch-fenced checkpoint, consumed cursor and alarm set/clear are one durable transition; retries repeat logical receipt, stale owner/alarm generation cannot publish. Pause state and outbox share the same durable tuple; settlement racing pause/takeover is state-version fenced. Keep preserves alarm generation; every Set/Clear advances it with checked overflow. Unknown retains original-key/preparation custody.",
-      "proof_specification": "Real Runtime crash-cut DST and canonical commit/epoch loom; same native/WASM package across providers. A4-01..04/06/08 in verify-to-b-runtime.md add whole-tuple crash cuts, pause/settle races, equal-deadline/clear-empty/overflow, outbox holds and typed checkpoint/cursor failure; no external-I/O exactly-once inference.",
+      "invariant": "Epoch-fenced checkpoint, consumed cursor and alarm set/clear are one durable transition; retries repeat logical receipt, stale owner/alarm generation cannot publish. Pause state and outbox share the same durable tuple; settlement racing pause/takeover is state-version fenced. Keep preserves alarm generation; every Set/Clear advances it with checked overflow. Unknown retains original-key/preparation custody. Keep preserves deadline as well as generation; firing consumption is separately fenced in the same tuple so duplicate firing cannot publish twice.",
+      "proof_specification": "Real Runtime crash-cut DST and canonical commit/epoch loom; same native/WASM package across providers. Adopted A4-01..04/06/08 and consumed-generation refinement in verify-to-rb-actors.md add whole-tuple crash cuts, pause/settle races, equal-deadline/clear-empty/overflow, outbox holds and typed checkpoint/cursor failure; no external-I/O exactly-once inference.",
       "negative_controls": [
         {
           "mutation": "split checkpoint/alarm",
@@ -336,11 +343,14 @@
       "required_hooks_or_decisions": [
         "A4 handler/manifest/Runtime signatures",
         "checkpoint/alarm crash and trusted-clock hooks",
-        "concrete durable CAS state-version/epoch guard and signed implementation",
+        "Runtime integration of Store exact durable CAS state-version/epoch guard",
         "alarm generation checked arithmetic and deterministic clock seam",
-        "outbox/preparation hold ownership across Unknown; native/WASM checkpoint bytes"
+        "outbox/preparation hold ownership across Unknown; native/WASM checkpoint bytes",
+        "tested Store252c violates accepted Keep semantics; rb-actors correction remains unqualified",
+        "atomic consumed-generation marker with replacement/clear/restart control",
+        "exact mutant input manifests and executable hashes missing from inherited Store receipt"
       ],
-      "implementation_state": "a4_sketch_only_no_signed_implementation_or_runtime_receipt",
+      "implementation_state": "signed_store_252c_partial_observation_ready_4056_uncompiled_runtime_absent",
       "source": [],
       "modes": {
         "memory": {
@@ -363,7 +373,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "actor_store_observation": "actor-store-v1"
     },
     {
       "id": "client.cursor-reducer",
@@ -1517,7 +1528,7 @@
     },
     {
       "id": "actors.wake-hibernate",
-      "owner": "b-runtime",
+      "owner": "rb-actors",
       "risk": "liveness",
       "invariant": "Append racing registration/replay/hibernate/cancel/resume cannot disappear; pause preserves inputs; hibernation retains a resumption cut. Shared durable wake owner survives the last tail check and heap hibernation; no unregister-after-recheck lost-wake window.",
       "proof_specification": "Production ready-registration primitive loom and DST around append/wake/hibernate crash cuts.",
@@ -1539,7 +1550,7 @@
         "real ready queue and wake-registration hook",
         "A4-05 real shared wake registration lifetime, append/pause/resume/cancel interleavings"
       ],
-      "implementation_state": "a4_sketch_only_no_signed_implementation_or_runtime_receipt",
+      "implementation_state": "signed_store_252c_partial_observation_ready_4056_uncompiled_runtime_absent",
       "source": [],
       "modes": {
         "memory": {
@@ -1562,7 +1573,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "actor_store_observation": "actor-store-v1"
     },
     {
       "id": "fs.canonical-root",
@@ -1663,7 +1675,7 @@
     },
     {
       "id": "actors.idle-bounds",
-      "owner": "b-runtime",
+      "owner": "rb-actors",
       "risk": "resource_bounds",
       "invariant": "O(1) idle metadata per actor, no idle per-actor thread/timer/future; ready work proportional to ready/due actors.",
       "proof_specification": "Production allocation/subscription/timer counts under increasing dormant actor population; bounded deterministic gate and larger nightly.",
@@ -1681,7 +1693,7 @@
         "real scheduler work/live-resource counters",
         "A4-07 actual registration/channel/queue/due-index/payload counters at fixed ready work; O(1) metadata alone insufficient"
       ],
-      "implementation_state": "a4_sketch_only_no_signed_implementation_or_runtime_receipt",
+      "implementation_state": "signed_store_252c_partial_observation_ready_4056_uncompiled_runtime_absent",
       "source": [],
       "modes": {
         "memory": {
@@ -1704,7 +1716,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "actor_store_observation": "actor-store-v1"
     },
     {
       "id": "client.demand-bounds",

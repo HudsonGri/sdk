@@ -1,0 +1,91 @@
+   Compiling acyclic-actors v0.2.0 (/work/src/rust/crates/actors)
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawAlarmInfo"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawHandle"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawCaller"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawHandle"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | other 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "UncheckedGuestEventResult"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | other 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+    Finished `test` profile [optimized] target(s) in 8.73s
+  Executable unittests src/lib.rs (/work/target/debug/deps/acyclic_actors-5c73b829ac5f52bf)
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawAlarmInfo"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawHandle"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawCaller"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "RawHandle"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | other 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | try_from = "UncheckedGuestEventResult"
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+warning: failed to parse serde attribute
+  | 
+  | other 
+  | 
+  = note: ts-rs failed to parse this attribute. It will be ignored.
+    Finished `test` profile [optimized] target(s) in 0.17s
+     Running unittests src/lib.rs (/work/target/debug/deps/acyclic_actors-5c73b829ac5f52bf)
+
+running 1 test
+
+thread 'local::tests::memory_epoch_alarm_pause_fences' (6963) panicked at rust/crates/actors/src/local/tests.rs:195:5:
+alarm generation fencing
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test local::tests::memory_epoch_alarm_pause_fences ... FAILED
+
+failures:
+
+failures:
+    local::tests::memory_epoch_alarm_pause_fences
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 50 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p acyclic-actors --lib`

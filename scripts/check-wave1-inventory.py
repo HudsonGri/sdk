@@ -216,6 +216,40 @@ def check_handover(reference):
     require(receipt["rb_fs"]["state"] == "owner_reported_no_raw_receipt", "hosted report cannot qualify raw execution")
 
 
+def check_actor_store(reference):
+    path = source_path(reference["repo_receipt"])
+    require(sha256(path) == reference["sha256"], "actor Store admission changed")
+    receipt = json.loads(path.read_bytes())
+    require(receipt["kind"] == "partial_actor_store_observation_not_full_a4_qualification" and not receipt["full_obligation_qualified"] and receipt["positive_proofs"] == receipt["negative_controls_detected"] == 0, "partial Store output cannot qualify full A4")
+    require(not receipt["qualified_modes"] and not receipt["runtime_qualified"] and not receipt["readiness_qualified"] and not receipt["keep_contract_qualified"], "Store cannot qualify Runtime, readiness, Keep or another mode")
+    require(not receipt["complete_executable_provenance"] and receipt["positive"]["executable_sha256"] is None, "missing Store executable hashes cannot become complete provenance")
+    require(receipt["owner"] == "rb-actors" and receipt["retired_owner"] == "b-runtime", "actor ownership transfer differs")
+    for capture in receipt["captures"]:
+        captured = source_path(capture["repo_path"])
+        require(sha256(captured) == capture["sha256"] and captured.stat().st_size == capture["bytes"], "actor Store capture changed")
+    base = path.parent
+    load = lambda name: json.loads((base / "run" / name).read_bytes())
+    formatted = load("formatted.json")
+    require(formatted == load("restored.json") == receipt["formatted_source"] and len(formatted) == 6 and receipt["formatted_files_match_signed_pin"] and receipt["restored_source_matches"], "actor Store restoration/source join differs")
+    for name, digest in formatted.items():
+        require(sha256(base / "source" / name) == digest, "actor Store formatted source differs")
+    require(sha256(base / "run/sources.json") == receipt["source_manifest_sha256"] and sha256(base / "producer.sh") == load("sources.json")[".bb-a4-store.sh"], "actor Store producer/input identity differs")
+    require(receipt["store_pin"] == "252c28c27fd490186f7e17e1d55b47ffe82a9e9a" and receipt["ready_pin"] == "4056b65d72ed901caef674a3ec01d93d630800fe", "actor Store and readiness pins differ")
+    for pin in (receipt["store_pin"], receipt["ready_pin"]):
+        require((base / ("signature-" + pin[:12] + ".txt")).read_text().startswith(pin + " G "), "actor signed source capture differs")
+    positive = (base / "run/positive.log").read_text()
+    tests = ["memory_atomic_history", "memory_epoch_alarm_pause_fences", "bounded_alarm_histories", "local_atomic_history", "reopen_preserves_the_complete_committed_tuple", "local_epoch_alarm_pause_fences"]
+    require(receipt["positive"]["selected"] == 6 and receipt["positive"]["runtime_reported_seconds"] == 0.05 and receipt["positive"]["modes"] == ["memory", "local"] and load("positive.json")["exit"] == 0 and "6 passed; 0 failed; 0 ignored;" in positive and "finished in 0.05s" in positive and all(f"local::tests::{test} ... ok" in positive for test in tests), "actor Store positive selection/outcomes differ")
+    expected = [("epoch", "epoch fencing", "memory_epoch_alarm_pause_fences"), ("alarm", "alarm generation fencing", "memory_epoch_alarm_pause_fences"), ("split", "one checkpoint/effect transaction", "memory_atomic_history")]
+    require(len(receipt["observed_controls"]) == 3, "actor Store control selection differs")
+    for observed, (label, assertion, test) in zip(receipt["observed_controls"], expected):
+        log = (base / "run" / (label + "-negative.log")).read_text()
+        require((observed["label"], observed["assertion"], observed["test"]) == (label, assertion, test) and observed["mode"] == "memory" and observed["executable_sha256"] is None and observed["mutant_source_sha256"] is None, "actor Store control scope/provenance differs")
+        require(load(label + "-negative.json")["exit"] == 101 and "0 passed; 1 failed; 0 ignored;" in log and "finished in 0.00s" in log and assertion in log and f"local::tests::{test} ... FAILED" in log and "error[E" not in log, "actor Store control lacks exact semantic failure")
+    source = (base / "source/rust/crates/actors/src/local.rs").read_text()
+    require("AlarmChange::Keep if matches!(trigger, Trigger::Alarm { .. }) => Some(None)" in source, "old Store Keep mismatch requires a new review")
+
+
 def check_append_eof(reference):
     path = source_path(reference["repo_receipt"])
     require(sha256(path) == reference["sha256"], "append EOF receipt changed")
@@ -271,6 +305,8 @@ def check(require_qualified):
             require(entry["partial_proof"] in inventory["partial_proofs"], f"missing partial proof: {entry['id']}")
         for observation in entry.get("handover_observations", []):
             require(observation in inventory["handover_observations"], f"missing handover observation: {entry['id']}")
+        if entry["id"].startswith("actors."):
+            require(entry["owner"] == "rb-actors" and entry.get("actor_store_observation") in inventory["actor_store_observations"], "actor entry requires current owner and scoped Store observation")
         for control in entry["negative_controls"]:
             if control["status"] == "detected":
                 require(control["receipt"] in inventory["evidence"], f"missing control receipt: {entry['id']}")
@@ -285,6 +321,8 @@ def check(require_qualified):
     for reference in inventory.get("handover_observations", {}).values():
         check_handover(reference)
     check_hst_reporting(inventory["hst_reporting"])
+    for reference in inventory.get("actor_store_observations", {}).values():
+        check_actor_store(reference)
     for reference in inventory.get("partial_proofs", {}).values():
         check_append_eof(reference)
     cleanliness = inventory["cleanliness"]
