@@ -468,7 +468,6 @@ impl Error {
         use crate::wire::ErrorCode;
         match self.cause() {
             Self::TaskFiles(error) => match error.as_ref() {
-                #[cfg(feature = "filesystem")]
                 crate::task_volume::Error::FileRead(error) => error.code(),
                 crate::task_volume::Error::FenceConflict
                 | crate::task_volume::Error::Unauthorized => ErrorCode::Unauthorized,
@@ -572,12 +571,23 @@ impl Error {
     /// classes all read through this one function, so a wrapped cause keeps its class.
     fn cause(&self) -> &Self {
         match self {
-            #[cfg(feature = "filesystem")]
             Self::TaskFiles(error) => match error.as_ref() {
                 crate::task_volume::Error::FileRead(inner) => inner.cause(),
                 _ => self,
             },
             _ => self,
+        }
+    }
+
+    /// A provider exchange has definitively failed after its own bounded recovery.
+    /// Native work, storage and uncertain publication errors are never provider outcomes.
+    #[must_use]
+    pub(crate) fn is_model_failure(&self) -> bool {
+        match self.cause() {
+            Self::ModelUnavailable { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::ModelDiagnostic { .. } => true,
+            _ => false,
         }
     }
 
