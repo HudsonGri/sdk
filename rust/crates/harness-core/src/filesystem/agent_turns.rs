@@ -371,7 +371,11 @@ where
         Box::pin(async move {
             let file = match input {
                 ModelContent::Part(ModelContentPart::File { file, .. }) => Some(file),
-                _ => None,
+                ModelContent::Parts(parts) => parts.iter().find_map(|part| match part {
+                    ModelContentPart::File { file, .. } => Some(file),
+                    _ => None,
+                }),
+                ModelContent::Part(_) | ModelContent::Text(_) => None,
             };
             let (journal, mut authority, files) = self.journal(agent, file)?;
             authority.effects = Some(Arc::new(FilesystemTurnEffects::new(
