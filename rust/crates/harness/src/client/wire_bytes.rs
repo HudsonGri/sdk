@@ -49,14 +49,14 @@ fn decode<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Erro
 pub(super) mod digest {
     use serde::{Deserializer, Serializer, de::Error as _};
 
-    pub(in super::super) fn serialize<S: Serializer>(
+    pub(in crate::client) fn serialize<S: Serializer>(
         bytes: &[u8; 32],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         super::serialize(bytes, serializer)
     }
 
-    pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(in crate::client) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<[u8; 32], D::Error> {
         super::decode(deserializer)?

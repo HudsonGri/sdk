@@ -40,6 +40,7 @@ enum Reply<'a> {
         id: &'a IntentId,
         /// Canonical Streams CommitRequest protobuf bytes, not a second request
         /// schema. The original identity, conditions and payloads stay intact.
+        #[serde(with = "super::wire_bytes")]
         commit: Vec<u8>,
     },
 }
@@ -147,11 +148,22 @@ mod tests {
         let reply: serde_json::Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(reply["kind"], "unknown");
         assert_eq!(reply["id"], "caller-owned-intent");
-        let commit: Vec<u8> = serde_json::from_value(reply["commit"].clone()).unwrap();
+        #[derive(Deserialize)]
+        struct Custody {
+            #[serde(with = "crate::client::wire_bytes")]
+            commit: Vec<u8>,
+        }
+        assert!(reply["commit"].is_object(), "binary custody uses the canonical byte codec");
+        let custody: Custody = serde_json::from_value(reply.clone()).unwrap();
         let recovered = acyclic_stream::wire_codec::commit_from_wire(
-            acyclic_stream::wire::CommitRequest::decode(commit.as_slice()).unwrap(),
+            acyclic_stream::wire::CommitRequest::decode(custody.commit.as_slice()).unwrap(),
         ).unwrap();
         assert_eq!(recovered, request, "recovery must retain key, conditions and every mutation byte");
+        // Actual former field encoding: the same recovery decoder must reject
+        // serde's integer-array spelling instead of accepting two dialects.
+        let mut integer_array = reply;
+        integer_array["commit"] = serde_json::to_value(&custody.commit).unwrap();
+        assert!(serde_json::from_value::<Custody>(integer_array).is_err());
         // The former process boundary only printed Display. The same recovery
         // consumer cannot recover custody from that output.
         assert!(serde_json::from_str::<serde_json::Value>(&error.to_string()).is_err());
