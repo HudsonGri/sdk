@@ -1,0 +1,15 @@
+# Canonical public export join
+
+This is a source-reviewed integration contract, not a generated export inventory or proof. Exact source captures are in `evidence/source-review-20261026/sources.json`; no compiler output or rustdoc fixture was fabricated.
+
+## Decisions
+
+Use sdk-docs' existing `public_api::extract` through its public `build_data`/DocsData projection. `projection::build_family` retains effective exported occurrences, aliases, local implementation members, rendered signatures and compiler source spans. The standing guard must consume those canonical `families[].items[]` records rather than implement another Rust visibility/re-export walker. The lexical scanner remains a conservative source-drift fence.
+
+Join each projected occurrence by package/Cargo target, exact profile, exported path, kind and signature. Rustdoc IDs and line numbers alone are unstable identities. One definition may have multiple exported occurrences; retain each alias and its effective source. Missing/generated/external spans require an explicit provenance join and cannot silently remove an occurrence. Source identity includes exact source-manifest and rustdoc receipt digests, generator/toolchain identity and the checked commit; an unrelated or historical docs bundle cannot admit a changed API.
+
+The canonical `ProfileSpec::id` already binds package, target, defaults and features. `rustdoc_profiles::extract_owned_api` already supplies published owner, profile, signature-aware ProjectionKey, rustdoc package/version and docs-present signals. Its explicit Visibility::Public/local-item filtering is not a substitute for the full effective occurrence projection. Use the existing projection for occurrence enumeration and the existing Cargo/profile ownership metadata for availability. DocsData itself has no per-occurrence profile field; a producer must retain the existing profile execution identity alongside each exact projected bundle. Do not infer default/all-features coverage from the bundle label.
+
+Every supported host, OS-gated, feature and WASM profile needs explicit status. Missing artifacts, zero selected exports, private rustdoc receipts, unsupported format, source mismatch and missing profile evidence refuse qualification. The existing sdk-docs checked format adapter owns compiler format conversion. Compare canonical exported-occurrence multisets with proof registrations; every new/changed signature requires its invariant and admitted receipt, even when a private definition's source is unchanged. Exact source registration alone does not prove an occurrence's complete mode contract.
+
+No reusable generated sdk-docs bundle was located in the searched lane artifacts. Building sdk-docs solely for this audit would violate the changed-crate build scope; no such build was started. Next implementation is a consumer of a real canonical producer artifact with its profile/source evidence. Generated RPC/schema, CLI/tool and TS/WASM export joins remain separate pending consumers of their existing canonical generators. The static workflow currently tests policy/refusal behavior only.

@@ -30,6 +30,18 @@ jobs:
             git fetch --no-tags --depth=1 origin "$ARTIFACT_BASE"
           fi
           node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"
+      - name: Verify proof inventory and source registration policies
+        # These test the policies and their refusal paths. Complete provider
+        # qualification and the currently incomplete source delta stay separate.
+        run: |
+          python scripts/test-wave1-inventory.py || {
+            printf '%s\n' 'VERIFY_STATIC_FAILURE step=evidence_policy; recovery: python scripts/test-wave1-inventory.py' >&2
+            exit 1
+          }
+          python scripts/test-proof-coverage.py || {
+            printf '%s\n' 'VERIFY_STATIC_FAILURE step=source_registration_policy; recovery: python scripts/test-proof-coverage.py' >&2
+            exit 1
+          }
       - name: Verify lane artifact gate and its negative control
         run: node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs
       - name: Verify the local cloud fixture's guards and verdict
