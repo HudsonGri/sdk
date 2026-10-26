@@ -327,11 +327,8 @@ mod tests {
         std::fs::create_dir(&record).unwrap();
         let child = tree.child.take().unwrap();
         tree.cleanup_on_drop = false;
-        let error = reject_control_admission(
-            &mut tree,
-            child,
-            io::Error::from(io::ErrorKind::WouldBlock),
-        );
+        let error =
+            reject_control_admission(&mut tree, child, io::Error::from(io::ErrorKind::WouldBlock));
         let retained = tree.custody.is_some() && !tree.is_reaped();
         std::fs::remove_dir(&record).unwrap();
         std::fs::write(&record, captured).unwrap();
