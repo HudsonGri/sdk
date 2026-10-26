@@ -114,6 +114,21 @@ impl Drop for ProcessCustody {
 }
 
 impl Record {
+    /// Keep recovery authority until the original ledger and physical removal
+    /// both accept retirement. A failed cleanup must leave an owned record.
+    pub(super) fn retire(
+        record: &mut Option<Self>,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<()> {
+        if let Some(retained) = record {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
+                retained.remove()
+            })?;
+            record.take();
+        }
+        Ok(())
+    }
+
     /// Removes the record of a tree its owner has observed to be gone.
     pub(super) fn remove(&self) -> io::Result<()> {
         #[cfg(unix)]
@@ -149,6 +164,10 @@ impl Record {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "custody_retirement_tests.rs"]
+mod retirement_tests;
 
 #[cfg(unix)]
 mod unix {

@@ -7,7 +7,7 @@ use super::{ProcessCustody, ProcessTree};
 use std::ffi::OsString;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 
 struct State {
@@ -155,7 +155,7 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
     // The sole waiter owns the actual Child. Cancellation only asks the same
     // tree's containment owner to terminate; it never substitutes PID polling.
-    let mut child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
+    let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
     tree.cleanup_on_drop = false;
     let state = Arc::new(Mutex::new(State {
         tree,
@@ -183,31 +183,28 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     let mut state = state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The Child has crossed its physical wait. Keep all original custody
-    // records and output leases until the same owner has drained descendants.
-    let terminated = state.tree.terminate_descendants();
-    // Unix retains WNOWAIT custody until after the process group has been
-    // terminated, so a reaped leader's PID cannot name an unrelated group.
-    let status = child.wait();
-    #[cfg(windows)]
-    let closed = state.tree.guard.close(None);
-    let retired = state
-        .tree
-        .custody
-        .as_ref()
-        .map_or(Ok(()), super::custody::Record::remove);
-    waited?;
-    terminated?;
-    #[cfg(windows)]
-    closed?;
-    retired?;
+    let status = retire_after_observation(&mut state.tree, child, waited)?;
     if let Some(failure) = state.failure.take() {
         return Err(failure);
     }
-    let status = status?;
     let code = if state.cancelled { 124 } else { exit_code(status) };
     completion.retired(code, state.cancelled)?;
     Ok(code)
+}
+
+fn retire_after_observation(
+    tree: &mut ProcessTree,
+    child: Child,
+    observed: io::Result<()>,
+) -> io::Result<ExitStatus> {
+    // Restore the original child before entering the one ordered retirement
+    // API. Failed observation leaves both child and durable recovery record
+    // owned; the adapter never removes records or closes containment itself.
+    tree.child = Some(child);
+    observed?;
+    let status = tree.try_wait(None)?.ok_or(io::ErrorKind::WouldBlock)?;
+    tree.terminate(None)?;
+    Ok(status)
 }
 
 fn exit_code(status: ExitStatus) -> i32 {
@@ -225,6 +222,27 @@ fn exit_code(status: ExitStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_host_observation_keeps_child_and_recovery_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let custody = ProcessCustody::open(root.path()).unwrap();
+        let mut command = super::super::tests::command("exit-code", root.path());
+        let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).unwrap();
+        let child = tree.child.take().unwrap();
+        tree.cleanup_on_drop = false;
+        assert_eq!(
+            retire_after_observation(&mut tree, child, Err(io::ErrorKind::Interrupted.into()))
+                .unwrap_err().kind(),
+            io::ErrorKind::Interrupted,
+        );
+        assert!(tree.child.is_some(), "failed wait must retain the original child");
+        assert!(tree.custody.is_some(), "failed wait must retain recovery authority");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+        tree.terminate(None).unwrap();
+        assert!(tree.is_reaped());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn process_host_options_stop_at_the_literal_executable() {

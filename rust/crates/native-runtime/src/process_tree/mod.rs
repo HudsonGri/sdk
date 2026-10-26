@@ -669,9 +669,7 @@ impl ProcessTree {
                 })?;
             }
             self.guard.close(meter)?;
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             Ok(())
         }
     }
@@ -715,9 +713,7 @@ impl ProcessTree {
             }
             // The exited leader still holds its PID, so no new tree's record
             // can take this name before it is removed.
-            if let Some(record) = self.custody.take() {
-                record.remove()?;
-            }
+            custody::Record::retire(&mut self.custody, meter)?;
             let (reaped, recorded) =
                 platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
             if reaped.is_some() {
