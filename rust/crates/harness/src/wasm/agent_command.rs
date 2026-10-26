@@ -22,6 +22,20 @@ pub struct WasmAgentCommand {
 
 #[wasm_bindgen]
 impl WasmAgentCommand {
+    /// Canonical pre-copy limits, shared with endpoint conformance drivers.
+    #[wasm_bindgen(js_name = maximumCommandBytes)]
+    pub fn maximum_command_bytes() -> u32 {
+        MAX_AGENT_COMMAND_BYTES as u32
+    }
+    #[wasm_bindgen(js_name = maximumInvocationBytes)]
+    pub fn maximum_invocation_bytes() -> u32 {
+        acyclic_stream::MAX_COMMAND_BYTES as u32
+    }
+    #[wasm_bindgen(js_name = maximumReplyBytes)]
+    pub fn maximum_reply_bytes() -> u32 {
+        MAX_AGENT_REPLY_BYTES as u32
+    }
+
     /// Snapshot only after the encoded byte length passes the Rust limit.
     #[wasm_bindgen(constructor)]
     pub fn new(encoded: &Uint8Array) -> Result<WasmAgentCommand, JsValue> {
@@ -46,6 +60,21 @@ impl WasmAgentCommand {
     pub fn value(&self) -> Result<JsValue, JsValue> {
         let value = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
         super::json::to_js_admitted(&value)
+    }
+
+    /// Pure preflight for all fixture/client inputs before any dispatch starts.
+    #[wasm_bindgen(js_name = validateInvocation)]
+    pub fn validate_invocation(&self, encoded: &Uint8Array) -> Result<(), JsValue> {
+        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+            if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
+                Err(command_error(CommandError::Capacity))
+            } else {
+                Ok(())
+            }
+        })?;
+        PreparedAgentInvocation::new(&self.command, bytes.into())
+            .map(|_| ())
+            .map_err(command_error)
     }
 
     /// Execute this command once on the same pool used by AgentClient and
@@ -77,6 +106,16 @@ impl WasmAgentCommand {
             Err(AgentExchangeError::Control(AgentControlFailure::Unknown(request))) => Err(
                 super::agent_client::actor_error(crate::agent::Error::Unknown(request)),
             ),
+            Err(AgentExchangeError::ActorStatus(status)) => {
+                let error = js_sys::Error::new("actor invocation refused");
+                error.set_name("actor_invocation_refused");
+                js_sys::Reflect::set(
+                    error.as_ref(),
+                    &JsValue::from_str("status"),
+                    &JsValue::from_f64(f64::from(status)),
+                )?;
+                Err(error.into())
+            }
             Err(cause) => {
                 let error = js_sys::Error::new(&cause.to_string());
                 error.set_name(cause.code());

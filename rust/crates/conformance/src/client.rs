@@ -4,6 +4,8 @@
 //! This suite neither replaces the endpoint with memory nor creates an agent by
 //! writing records around AgentHost. It checks observation, not turn execution.
 
+pub mod controls;
+
 use acyclic_harness::agent::{AgentPath, AgentRecord as _, ConversationEntry, StatusRecord};
 use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentSelection, DemandError, WireSessionError,

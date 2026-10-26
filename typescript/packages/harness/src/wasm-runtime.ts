@@ -61,7 +61,7 @@ export function assertHarnessWasmExports(value: unknown): void {
     "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "free",
   ], true);
   const commands = hasClass(exports, "WasmAgentCommand", "wasmagentcommand", [
-    "bytes", "value", "reply", "execute", "free",
+    "bytes", "value", "reply", "execute", "validateInvocation", "free",
   ], true);
   const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
   const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
