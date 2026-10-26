@@ -1,4 +1,4 @@
-use crate::{DemandError, DemandPolicy, ViewDemand};
+use crate::{DemandError, DemandPolicy, StreamView, StreamViewPolicy, ViewDemand};
 use acyclic_stream::{
     BoxProviderFuture, BoxProviderStream, StreamError, StreamPath, session::Client, wire, wire_codec,
 };
@@ -74,17 +74,29 @@ pub struct WireSession {
     policy: DemandPolicy,
     demand: ViewDemand,
     follows: BTreeMap<StreamPath, Subscription>,
+    views: BTreeMap<StreamPath, StreamView>,
+    view_policy: StreamViewPolicy,
+    revision: u64,
 }
 
 impl WireSession {
     /// Take the platform-created pool; native and WASM use the same owner.
     #[must_use]
     pub fn new(client: Client, policy: DemandPolicy) -> Self {
+        Self::with_view_policy(client, policy, StreamViewPolicy::default())
+    }
+
+    /// Use caller-selected finite display bounds on the same canonical pool.
+    #[must_use]
+    pub fn with_view_policy(client: Client, policy: DemandPolicy, view_policy: StreamViewPolicy) -> Self {
         Self {
             client,
             policy,
             demand: ViewDemand::default(),
             follows: BTreeMap::new(),
+            views: BTreeMap::new(),
+            view_policy,
+            revision: 0,
         }
     }
 
@@ -108,8 +120,16 @@ impl WireSession {
         )
         .map_err(WireSessionError::Demand)?;
         self.follows.retain(|agent, _| demand.contains_full(agent));
+        self.views.retain(|agent, _| demand.contains_full(agent));
         self.demand = demand;
         Ok(())
+    }
+
+    /// Borrow the exact shared Rust fold for one selected stream. Closing its
+    /// transport retains the final view until the UI removes that interest.
+    #[must_use]
+    pub fn view(&self, stream: &StreamPath) -> Option<&StreamView> {
+        self.views.get(stream)
     }
 
     /// Delegate bounded credential registration to the canonical pool.
@@ -181,9 +201,14 @@ impl WireSession {
         if path != agent {
             return Err(WireSessionError::NotRequested);
         }
+        let revision = self.revision.checked_add(1)
+            .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+        let view = StreamView::new(self.view_policy, resume.next, revision);
         let client = self.client.clone();
         let opening = Box::pin(async move { client.subscribe(subscription).await });
+        self.views.insert(agent.clone(), view);
         self.follows.insert(agent, Subscription::Opening(opening));
+        self.revision = revision;
         Ok(())
     }
 
@@ -230,6 +255,21 @@ impl WireSession {
         match stream.poll_next_unpin(context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Some(Ok(frame))) => {
+                let revision = self.revision.checked_add(1)
+                    .ok_or(WireSessionError::Stream(StreamError::Capacity));
+                let folded = revision.and_then(|revision| {
+                    self.views.get_mut(agent)
+                        .ok_or(WireSessionError::NotOpen)
+                        .and_then(|view| view.apply(&frame, revision).map_err(WireSessionError::Stream))?;
+                    self.revision = revision;
+                    Ok(())
+                });
+                if let Err(error) = folded {
+                    // End a malformed or over-budget fold at this boundary;
+                    // never keep consuming past a failed display transition.
+                    self.follows.remove(agent);
+                    return Poll::Ready(Err(error));
+                }
                 if matches!(frame.body.as_ref(), Some(wire::session_frame::Body::Closed(_))) {
                     self.follows.remove(agent);
                 }
