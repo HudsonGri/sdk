@@ -67,7 +67,7 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
         _destination_custody: work.path(root.path(), None)?.1,
     };
     let before = retirement_work.receipt();
-    let mut proof = mount.retire(&cancellation)?;
+    let proof = mount.retire(&cancellation)?;
     retired(root.path(), &fence, before, &retirement_work)?;
     assert!(mount.source.physically_retired()?);
     assert!(
@@ -77,6 +77,12 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
             .map_err(|_| "session poisoned")?
             .is_none()
     );
+    let MountLifecycleError::Retired(mut proof) = proof
+        .into_result()
+        .expect_err("retirement completion discarded the namespace outcomes")
+    else {
+        return Err("retirement completion changed the original failure owner".into());
+    };
     let (first, second) = proof
         .take_retained_capture_failure()
         .ok_or("drain proof lost the namespace outcomes")?;
@@ -85,6 +91,7 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
         matches!(second, Some(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code)
     );
     assert!(proof.take_retained_capture_failure().is_none());
+    proof.into_result()?;
     assert_eq!(
         retirement_work.receipt().allocation_operations,
         before.allocation_operations

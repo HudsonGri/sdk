@@ -366,7 +366,7 @@ where
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
         self.prepare_unmount_cleanup()?;
-        self.retire(&crate::CancellationToken::new()).map(drop)
+        self.retire(&crate::CancellationToken::new())?.into_result()
     }
 
     /// Prepares namespace cleanup while every route's publication owner is live.
