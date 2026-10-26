@@ -385,7 +385,7 @@ impl<'a> Admission<'a> {
                     "Follow the received child request.",
                     self.parent.narrowed.limits(),
                     Some(&self.plan.project),
-                )
+                )?
                 .await?;
             let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];
             (

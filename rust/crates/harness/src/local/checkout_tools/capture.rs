@@ -291,7 +291,7 @@ where
         (options, policy),
         baseline,
         &cancellation,
-    )
+    )?
     .await?;
     if checkout.has_pending_mutations() {
         let operation = capture_operation(operation, phase);
