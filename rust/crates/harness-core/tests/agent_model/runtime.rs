@@ -59,7 +59,8 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
-    assert!(host.runtime().drain().await.is_empty());
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
     let actors = store(&provider)?;
     let cursor = |state: &Snapshot| state.state().and_then(|s| s.cursor(INBOX));
     assert_eq!(cursor(&actors.load(&host.actor(&root)?).await?), Some(1));
@@ -71,13 +72,15 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
     });
     assert_eq!(host.send(&root, &user(), &record).await?, Delivered::Committed);
     // The root's pending inbox follow holds its waker: the append alone wakes it.
-    assert!(host.runtime().drain().await.is_empty());
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
     let state = actors.load(&host.actor(&child)?).await?;
     assert_eq!(cursor(&state), Some(2));
     assert_eq!(values(&provider, child.inbox()?).await?.len(), 3);
 
     host.host(&child)?;
-    assert!(host.runtime().drain().await.is_empty());
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
     let state = actors.load(&host.actor(&child)?).await?;
     assert_eq!(cursor(&state), Some(3));
     assert!(state.state().and_then(|s| s.checkpoint()).is_some());
