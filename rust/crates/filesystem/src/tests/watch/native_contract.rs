@@ -20,9 +20,7 @@ fn fixture(held: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
     let limits = VolumeLimits::default();
     let options = NativeWatchOptions::new(limits);
     let mut watch = if held {
-        let work =
-            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .map_err(|(error, _)| error)?;
+        let work = native_watch_work()?;
         NativeWatch::open_with_profile_with_native_work(
             directory.path(),
             native_filesystem_profile(),

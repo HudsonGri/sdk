@@ -1,6 +1,12 @@
 use super::*;
 use work::*;
 
+fn native_watch_work() -> Result<crate::NativeMaterializationWork, Box<dyn std::error::Error>> {
+    crate::watch::initialize_native_watch_services()?;
+    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error.into())
+}
+
 #[test]
 fn native_root_identity_encoding_is_exact_and_round_trips() {
     let identity = NativeRootIdentity {
