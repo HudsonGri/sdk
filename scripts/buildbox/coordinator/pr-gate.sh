@@ -48,6 +48,29 @@ if ! python Q:/lanes/gate-affected.py "$W" "$base" --output "$W/.gate-selection.
   exit 1
 fi
 cp "$W/.gate-selection.json" "$log.scope.json"
+# Admit baseline prerequisites before staging or dispatching a candidate.
+# Missing evidence uses the existing exit-5 parking and publication wake-up.
+# Prefer completed tests on the exact prepared base, even when another main
+# phase is red. Historical green coverage only anchors focused qualification
+# when the current workspace tests themselves did not complete successfully.
+if ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase tests --exact 2> "$log.baseline-error") &&
+   ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" 2>> "$log.baseline-error"); then
+  cat "$log.baseline-error" >> "$log"
+  echo "GATE BASELINE #$n: no complete main baseline; verdict deferred log=$log"
+  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE #$n: no complete main baseline; verdict deferred log=$log" >> ~/.codex-fleet/alerts.log
+  exit 5
+fi
+echo "GATE_BASELINE log=$base_log" >> "$log"
+clippy_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase clippy --exact 2>> "$log.baseline-error")
+features_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase features --exact 2>> "$log.baseline-error")
+if [ -z "$clippy_base" ] || [ -z "$features_base" ]; then
+  cat "$log.baseline-error" >> "$log"
+  v="BASELINE #$n: exact-base main check selection step unavailable for $base; recovery command: python Q:/lanes/gate-baseline.py '$W' '$base' --phase features --exact; diagnostics=$log.baseline-error"
+  echo "GATE $v"
+  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 5
+fi
+echo "GATE_CHECKS_BASELINE clippy=$clippy_base features=$features_base" >> "$log"
 # The payload belongs to the reviewed candidate. An independently installed
 # runner can silently omit newly required phases, even with a green footer.
 cp "$W/scripts/pr-gate-checks.sh" "$W/.gate-checks.sh" || {
@@ -133,27 +156,6 @@ if [ "$phase_status" != 0 ]; then
   echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log
   exit "$code"
 fi
-# Prefer completed tests on the exact prepared base, even when another main
-# phase is red. Historical green coverage only anchors focused qualification
-# when the current workspace tests themselves did not complete successfully.
-if ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase tests --exact 2> "$log.baseline-error") &&
-   ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" 2>> "$log.baseline-error"); then
-  cat "$log.baseline-error" >> "$log"
-  echo "GATE BASELINE #$n: no complete main baseline; verdict deferred log=$log"
-  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE #$n: no complete main baseline; verdict deferred log=$log" >> ~/.codex-fleet/alerts.log
-  exit 5
-fi
-echo "GATE_BASELINE log=$base_log" >> "$log"
-clippy_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase clippy --exact 2>> "$log.baseline-error")
-features_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase features --exact 2>> "$log.baseline-error")
-if [ -z "$clippy_base" ] || [ -z "$features_base" ]; then
-  cat "$log.baseline-error" >> "$log"
-  v="BASELINE #$n: exact-base main check selection step unavailable for $base; recovery command: python Q:/lanes/gate-baseline.py '$W' '$base' --phase features --exact; diagnostics=$log.baseline-error"
-  echo "GATE $v"
-  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE ${v#* }" >> ~/.codex-fleet/alerts.log
-  exit 5
-fi
-echo "GATE_CHECKS_BASELINE clippy=$clippy_base features=$features_base" >> "$log"
 test_base_log=""
 if { [ "$rc" != 0 ] || grep -aqE '^GATE_CLIPPY rc=[1-9]' "$log"; } && [ "$rc" != 224 ] && grep -aq '^GATE_DONE rc=' "$log" && ! grep -aq 'No space left on device' "$log"; then
   if ! test_base_log=$(GATE_BASELINE_PRS="$n" python Q:/lanes/gate-test-baseline.py "$W" "$base" "$log" --scope "$W/.gate-selection.json" --baseline-log "$base_log" 2> "$log.baseline-error"); then

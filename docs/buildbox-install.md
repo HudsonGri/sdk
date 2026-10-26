@@ -182,3 +182,18 @@ not prove whole-host CPU saturation or additive per-merge cost. The initial
 Tune the single shape from joined queue waits, per-merge wall time and CPU
 counters after the coordinated cut-over; do not claim realized savings before
 those measurements exist.
+
+PR baseline admission uses the single selector block in coordinator/pr-gate.sh
+immediately after affected-package planning, before runner staging or remote
+dispatch. Tests prefer completed exact-base phases, retaining the historical
+green coverage anchor only for focused qualification. Clippy and features
+require completed evidence from the exact prepared base. Missing evidence
+returns exit 5 to the existing baseline queue; only verified publication wakes
+that parked request. An incomplete prerequisite never starts a candidate build.
+The captured-old control in `baseline-admission.test.py` demonstrates the
+previous ordering dispatching before the same real selector refuses admission.
+
+A candidate payload that already finished before baseline admission was moved
+retains its original log and receipts. There is currently no canonical
+verdict-only continuation API, so preservation alone grants no PASS or merge
+and does not authorize automatically rebuilding that candidate.
