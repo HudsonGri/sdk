@@ -171,50 +171,64 @@ mod tests {
 
     #[test]
     fn failed_external_retirement_keeps_the_canonical_recovery_owner() {
-        let root = tempfile::tempdir().unwrap();
-        let records = root.path().join("custody");
-        let custody = ProcessCustody::open(&records).unwrap();
-        let mut tree = ProcessTree::spawn_in_custody(
-            &mut super::super::tests::command("partial", root.path()),
-            &custody,
-        )
-        .unwrap();
-        super::super::tests::ready(root.path(), "partial-ready", || {
-            tree.try_wait(None).map_or(true, |status| status.is_some())
-        });
-        let record = std::fs::read_dir(&records)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        // A real failed unlink, rather than a synthetic process result.
-        std::fs::remove_file(&record).unwrap();
-        std::fs::create_dir(&record).unwrap();
-        tree.terminate_descendants().unwrap();
-        let child = tree.child.take().unwrap();
-        super::super::platform::wait_without_reaping(&child).unwrap();
-        let mut state = State {
-            tree,
-            cancelled: false,
-            failure: None,
-        };
-        let failed = retire_child(&mut state, child).is_err();
-        let retained = state.tree.custody.is_some() && !state.tree.is_reaped();
-        #[cfg(unix)]
-        let unreaped = state.tree.child.is_some();
-        // Restore the actual failed filesystem boundary before assertions so
-        // even an old implementation's failed oracle can drain its owner.
-        std::fs::remove_dir(&record).unwrap();
-        state.tree.terminate(None).unwrap();
-        assert!(failed);
-        assert!(retained);
-        #[cfg(unix)]
-        assert!(
-            unreaped,
-            "failed record retirement must retain the unreaped child"
-        );
-        assert!(state.tree.is_reaped());
-        assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+        for former_order in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let records = root.path().join("custody");
+            let custody = ProcessCustody::open(&records).unwrap();
+            let mut tree = ProcessTree::spawn_in_custody(
+                &mut super::super::tests::command("partial", root.path()),
+                &custody,
+            )
+            .unwrap();
+            super::super::tests::ready(root.path(), "partial-ready", || {
+                tree.try_wait(None).map_or(true, |status| status.is_some())
+            });
+            let record = std::fs::read_dir(&records)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            // A real failed unlink, rather than a synthetic process result.
+            std::fs::remove_file(&record).unwrap();
+            std::fs::create_dir(&record).unwrap();
+            tree.terminate_descendants().unwrap();
+            let mut child = tree.child.take().unwrap();
+            super::super::platform::wait_without_reaping(&child).unwrap();
+            let mut state = State {
+                tree,
+                cancelled: false,
+                failure: None,
+            };
+            let failed = if former_order {
+                // Actual pre-integration ordering from 579657faa7: reap the
+                // child, close its Job, then attempt record removal directly.
+                child.wait().unwrap();
+                #[cfg(windows)]
+                state.tree.guard.close(None).unwrap();
+                state.tree.custody.as_ref().unwrap().remove().is_err()
+            } else {
+                retire_child(&mut state, child).is_err()
+            };
+            let retained = state.tree.custody.is_some() && !state.tree.is_reaped();
+            #[cfg(unix)]
+            let unreaped = state.tree.child.is_some();
+            // Restore the filesystem boundary and explicitly retire the old
+            // control's record before assertions; neither case leaves work.
+            std::fs::remove_dir(&record).unwrap();
+            if former_order {
+                super::super::custody::Record::retire(&mut state.tree.custody, None).unwrap();
+            }
+            state.tree.terminate(None).unwrap();
+            assert!(failed);
+            assert!(retained);
+            #[cfg(unix)]
+            assert_eq!(
+                unreaped, !former_order,
+                "failed record retirement must retain the unreaped child"
+            );
+            assert!(state.tree.is_reaped());
+            assert_eq!(std::fs::read_dir(&records).unwrap().count(), 0);
+        }
     }
 }
