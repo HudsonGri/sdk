@@ -134,6 +134,47 @@ The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
 `Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
 native model-session acceptance.
 
+The canonical scripted qualifier also exposes one selected scenario to an
+acceptance caller that already owns its admitted artifacts, process scope,
+fixture environment, output directory and cancellation:
+
+```js
+import {scriptedScenario, runScriptedScenario} from './tests/hosts/qualify-scripted.mjs';
+
+const scenario = scriptedScenario(artifacts, codex, 'managed:lifecycle');
+const receipt = await runScriptedScenario({
+  scenario, processes, directory, env, cwd, expired,
+});
+```
+
+This call runs exactly one scenario. It creates no process scope, profile or
+timer, and does not stage artifacts again. The returned
+`acyclic.plugin.scripted-scenario/v1` receipt records the selection, exit status,
+elapsed seconds, expiry and acceptance; `NAME.log` is created exclusively in
+the caller's output directory. Callers retain that receipt with their source,
+artifact and host admission proofs.
+
+Supported selections and required inputs are:
+
+| Selection | Admitted executables |
+| --- | --- |
+| `managed:lifecycle`, `managed:recursive`, `managed:resume` | Acyclic, GraphCoder and Codex 0.164.0 or later |
+| `managed:bounded-framing` | Acyclic only |
+| `scale:codex`, `scale:claude-code`, `scale:pi` | Acyclic and GraphCoder with resource instrumentation |
+
+For standalone framing, the same qualifier stages only its required binary
+from Cargo's JSON output and uses the shared fixture and case-budget owners:
+
+```sh
+node plugin/tests/hosts/qualify-scripted.mjs CARGO_JSON FRESH_OUTPUT managed:bounded-framing
+```
+
+Managed-session and scale fixtures currently require Linux POSIX launch tools.
+Their captured native initialization records and scripted process behavior
+do not establish live model acceptance. Windows generic process transport does
+not translate these fixture executables; a Windows fixture launch contract and
+macOS selected-case qualification remain separate acceptance work.
+
 Captured Codex version output and its command, package integrity, binary hashes
 and capture provenance live in `rust/crates/harness/fixtures/hosts/`. The shared
 harness owns the version-admission test. Malformed controls are explicit
