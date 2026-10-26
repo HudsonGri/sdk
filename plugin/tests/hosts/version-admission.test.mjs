@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
+import { environment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
 
 const recovery = "Set ACYCLIC_TEST_BINARY, ACYCLIC_TEST_CODEX_OLD and ACYCLIC_TEST_CODEX_CURRENT to admitted native executables; run node --test --test-reporter=tap --test-concurrency=1 plugin/tests/hosts/version-admission.test.mjs";
 function required(name) {
@@ -23,20 +24,18 @@ for (const [command, version] of [["install", "old"], ["doctor", "old"], ["docto
     let step = "create isolated host profile";
     try {
       fixture = hostFixtureDirectory("version-admission-");
-      const home = join(fixture, "home"), temporary = join(fixture, "tmp");
-      const codexHome = join(home, "codex-fixture"), bin = join(fixture, "bin");
-      for (const directory of [home, temporary, codexHome, bin]) mkdirSync(directory);
+      const home = join(fixture, "home"), bin = join(fixture, "bin");
+      mkdirSync(bin);
+      const env = environment(home, {
+        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`, LANG: "C.UTF-8",
+      });
+      const codexHome = env.CODEX_HOME;
       const codex = join(bin, process.platform === "win32" ? "codex.exe" : "codex");
       copyFileSync(hosts[version], codex);
       chmodSync(codex, 0o700);
       const config = join(codexHome, "config.toml");
       const original = '# Version admission fixture; contains no login.\nmodel = "fixture-unused"\n';
       writeFileSync(config, original, { flag: "wx" });
-      const env = {
-        PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
-        HOME: home, USERPROFILE: home, CODEX_HOME: codexHome,
-        TMPDIR: temporary, TEMP: temporary, TMP: temporary, LANG: "C.UTF-8",
-      };
       for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "E2E_PROCESS_HOST"]) {
         if (process.env[key]) env[key] = process.env[key];
       }

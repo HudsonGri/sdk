@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
+import { environment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
 
 const recovery = "Set ACYCLIC_TEST_BINARY to the admitted shipping executable; run node --test --test-reporter=tap --test-concurrency=1 plugin/tests/hosts/settings-publication.test.mjs";
 const binary = process.env.ACYCLIC_TEST_BINARY;
@@ -18,14 +19,10 @@ for (const host of ["claude-code", "pi"]) {
     let step = "create isolated settings fixture";
     try {
       fixture = hostFixtureDirectory("settings-publication-");
-      const home = join(fixture, "home"), temporary = join(fixture, "tmp");
+      const home = join(fixture, "home");
       const settings = join(fixture, "settings with spaces");
-      for (const directory of [home, temporary, settings]) mkdirSync(directory);
-      const env = {
-        PATH: process.env.PATH ?? "", HOME: home, USERPROFILE: home,
-        CODEX_HOME: join(home, "unused-codex-profile"), CLAUDE_CONFIG_DIR: home,
-        TMPDIR: temporary, TEMP: temporary, TMP: temporary, LANG: "C.UTF-8",
-      };
+      mkdirSync(settings);
+      const env = environment(home, { PATH: process.env.PATH ?? "", LANG: "C.UTF-8" });
       for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "E2E_PROCESS_HOST"]) {
         if (process.env[key]) env[key] = process.env[key];
       }
