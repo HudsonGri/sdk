@@ -64,6 +64,9 @@ mod plan_panel;
 #[cfg(feature = "tui")]
 pub use plan_panel::PlanPanel;
 mod interests;
+pub use acyclic_harness_client::{
+    PageDirection, PageRequest, PageWindow, PageWindowError, PageWindowPolicy, WindowPage,
+};
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;
