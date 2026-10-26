@@ -49,6 +49,23 @@ impl std::fmt::Display for WireSessionError {
 
 impl std::error::Error for WireSessionError {}
 
+impl WireSessionError {
+    /// Stable classification, including the original provider refusal code.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Demand(DemandError::InvalidPolicy) => "invalid_policy",
+            Self::Demand(DemandError::SelectedCapacity) => "selected_capacity",
+            Self::Demand(DemandError::ExpandedCapacity) => "expanded_capacity",
+            Self::NotRequested => "not_requested",
+            Self::AlreadyOpen => "already_open",
+            Self::NotOpen => "not_open",
+            Self::InvalidSubscription => "invalid_subscription",
+            Self::Stream(error) => error.code(),
+        }
+    }
+}
+
 /// One owner for view-selected logical follows on the canonical Streams pool.
 /// The pool alone owns physical connections, cursor recovery and receive credit.
 /// This layer adds no queue, reconnect loop or per-agent transport task.
