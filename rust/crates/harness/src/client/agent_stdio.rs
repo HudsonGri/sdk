@@ -124,3 +124,36 @@ pub async fn run_agent_jsonl(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath};
+
+    #[test]
+    fn unknown_process_receipt_preserves_original_commit_custody() {
+        let path = StreamPath::new("harness/agents/01010101010101010101010101010101").unwrap();
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Absent { path: StreamPath::new(format!("{path}/closed")).unwrap() }],
+            mutations: vec![CommitMutation::Append { path, records: vec![vec![0, 255, 128, 7].into()] }],
+            idempotency_key: IdempotencyKey::new(vec![7; 32]).unwrap(),
+        };
+        let error = LocalAgentError::Unknown {
+            id: IntentId::try_from("caller-owned-intent").unwrap(),
+            request: Box::new(request.clone()),
+        };
+        let mut output = Vec::new();
+        assert!(write_agent_unknown(&error, &mut output).unwrap());
+        let reply: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(reply["kind"], "unknown");
+        assert_eq!(reply["id"], "caller-owned-intent");
+        let commit: Vec<u8> = serde_json::from_value(reply["commit"].clone()).unwrap();
+        let recovered = acyclic_stream::wire_codec::commit_from_wire(
+            acyclic_stream::wire::CommitRequest::decode(commit.as_slice()).unwrap(),
+        ).unwrap();
+        assert_eq!(recovered, request, "recovery must retain key, conditions and every mutation byte");
+        // The former process boundary only printed Display. The same recovery
+        // consumer cannot recover custody from that output.
+        assert!(serde_json::from_str::<serde_json::Value>(&error.to_string()).is_err());
+    }
+}
