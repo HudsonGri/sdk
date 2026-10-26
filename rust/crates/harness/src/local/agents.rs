@@ -187,9 +187,10 @@ impl LocalHarness {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
-        let stream = self.agent_stream.clone().ok_or_else(|| {
-            Error::Unsupported("an embedded harness has no agent stream".into())
-        })?;
+        let stream = self
+            .agent_stream
+            .clone()
+            .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
         let limits = TurnLimits {
             maximum_bytes: self.limits.file_bytes,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -200,7 +201,7 @@ impl LocalHarness {
             FilesystemTurnHost::new(
                 stream.clone(),
                 self.files.clone(),
-                authority,
+                authority.clone(),
                 Arc::new(Executors(Arc::downgrade(self))),
                 limits,
             )
@@ -215,7 +216,11 @@ impl LocalHarness {
                 within,
                 ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 Arc::new(SystemClock),
-                Arc::new(FilesystemSpawnVolumes::new(self.files.clone())),
+                Arc::new(FilesystemSpawnVolumes::new(
+                    self.files.clone(),
+                    authority,
+                    self.limits.file_bytes,
+                )),
             )
             .map_err(storage)?,
         );
