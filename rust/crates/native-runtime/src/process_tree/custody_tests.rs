@@ -3,7 +3,7 @@
 //! without custody demonstrably survives the same kill.
 #![cfg(any(target_os = "linux", windows))]
 
-use super::{ProcessCustody, ProcessTree};
+use super::{ProcessCustody, ProcessCustodyLease, ProcessTree};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -81,7 +81,11 @@ fn custody_owner_helper() {
         return churn(&root);
     }
     let mut command = program(&root);
-    let tree = if mode == "custodied" {
+    let lease = (mode == "leased")
+        .then(|| ProcessCustodyLease::acquire(&root.join("fleet")).expect("native lease"));
+    let tree = if let Some(lease) = &lease {
+        Some(ProcessTree::spawn_in_custody(&mut command, lease.custody()).expect("leased spawn"))
+    } else if mode == "custodied" {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
         Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
     } else {
@@ -271,6 +275,29 @@ fn reopened_owner_fence_returns_only_after_the_killed_owners_tree_is_dead() {
     }
     assert!(exited, "a killed owner's tree outlived the fence");
     assert_eq!(fs::read_dir(&processes).expect("records").count(), 0);
+}
+
+#[test]
+fn leased_successor_fences_the_killed_native_owner_before_admission() {
+    let root = tempfile::tempdir().expect("root");
+    let mut owner = owner("leased", root.path());
+    let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
+    #[cfg(windows)]
+    let records = root.path().join("fleet/trees");
+    #[cfg(windows)]
+    let custodian = Watch::new(custodian_of(&records)).expect("running custodian");
+    owner.kill().expect("kill native owner");
+    owner.wait().expect("reap native owner");
+    let successor = ProcessCustodyLease::acquire(&root.path().join("fleet"))
+        .expect("serialized recovery admission");
+    let exited = watch.exited();
+    if !exited {
+        watch.kill();
+    }
+    assert!(exited, "successor admitted before physical retirement");
+    #[cfg(windows)]
+    assert!(custodian.exited(), "successor admitted before pipe custody retired");
+    assert_eq!(successor.custody().fence_stale().expect("empty fence"), 0);
 }
 
 /// The PID of the custodian the only record in `processes` names.

@@ -102,16 +102,13 @@ def main():
             libtest = "import sys; assert sys.argv.count('--test-threads=4')==1; print('test result: ok. 1 passed; 0 failed;')"
             assert commands.run([python, "-c", libtest], cwd=source, name="libtest-adapter", sha256=checksum, libtest=True) == 0
             lease = (
-                "import ctypes; k=ctypes.WinDLL('kernel32',use_last_error=True); "
-                "k.OpenMutexW.argtypes=[ctypes.c_uint32,ctypes.c_bool,ctypes.c_wchar_p]; "
-                "k.OpenMutexW.restype=ctypes.c_void_p; "
-                "k.WaitForSingleObject.argtypes=[ctypes.c_void_p,ctypes.c_uint32]; "
-                "k.CloseHandle.argtypes=[ctypes.c_void_p]; "
-                "h=k.OpenMutexW(0x100000,False,'Global\\\\AcyclicWindowsTestRun'); assert h; "
-                "assert k.WaitForSingleObject(h,0)==0x102, 'fleet lease escaped'; "
-                "assert k.CloseHandle(h); print('fleet exclusion passed')"
+                "import msvcrt,sys; "
+                "f=open(sys.argv[1],'r+b'); "
+                "exec(\"try:\\n msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1)\\n\"
+                "\"except OSError:\\n pass\\nelse:\\n raise AssertionError('fleet lease escaped')\"); "
+                "f.close(); print('fleet exclusion passed')"
             )
-            assert commands.run([python, "-c", lease], cwd=source, name="cross-command-fleet-exclusion", sha256=checksum) == 0
+            assert commands.run([python, "-c", lease, str(commands.lease_root / "owner.lock")], cwd=source, name="cross-command-fleet-exclusion", sha256=checksum) == 0
             import_source = records / "import-source"
             import_source.mkdir()
             imported = import_source / "runner.py"
@@ -229,7 +226,7 @@ def main():
         selection_probes(module, records, source, python, checksum)
         for label in ("empty-first", "empty-last", "all-empty", "failure", "listing", "malformed-empty"):
             rows = json.loads((records / label / "results.json").read_text(encoding="utf-8"))
-            lease_wait_seconds += rows[0]["lease_wait_seconds"]
+            lease_wait_seconds += sum(row["lease_wait_seconds"] for row in rows)
     finally:
         if old_key is None:
             os.environ.pop("RUNNER_PROBE_API_KEY", None)

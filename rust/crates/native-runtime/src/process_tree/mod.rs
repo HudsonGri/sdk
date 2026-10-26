@@ -18,7 +18,7 @@ mod custodian;
 #[cfg(windows)]
 mod custodian_admission;
 mod custody;
-pub use custody::ProcessCustody;
+pub use custody::{ProcessCustody, ProcessCustodyLease};
 #[cfg(unix)]
 mod warden;
 

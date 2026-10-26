@@ -46,7 +46,8 @@ pub use process_tree::PreparedClosedProcess;
 #[cfg(not(target_arch = "wasm32"))]
 pub use process_tree::run_external_process_host;
 pub use process_tree::{
-    CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessInput, ProcessOutput, ProcessTree,
+    CaptureInput, ProcessCaptureFailure, ProcessCustody, ProcessCustodyLease, ProcessInput,
+    ProcessOutput, ProcessTree,
 };
 
 mod file;

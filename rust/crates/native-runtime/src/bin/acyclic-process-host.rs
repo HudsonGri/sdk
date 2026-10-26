@@ -9,7 +9,7 @@ fn main() {
         Ok(code) => code,
         Err(error) => {
             eprintln!(
-                "step=process-host-admission-or-drain failed: {error}; recovery=acyclic-process-host [--completion ABSOLUTE_FILE] ABSOLUTE_EXECUTABLE ARGS"
+                "step=process-host-admission-or-drain failed: {error}; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT] [--completion ABSOLUTE_FILE] ABSOLUTE_EXECUTABLE ARGS"
             );
             125
         }

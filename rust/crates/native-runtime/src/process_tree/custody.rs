@@ -25,6 +25,60 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
+
+/// Serialized admission to a durable process-custody directory.
+///
+/// The native owner keeps this lease through physical retirement. If that
+/// owner dies, its successor takes the same OS lock and fences the retained
+/// records before it can spawn. No caller-process mutex participates.
+pub struct ProcessCustodyLease {
+    custody: ProcessCustody,
+    _lock: crate::FileLock,
+    waited: Duration,
+}
+
+impl ProcessCustodyLease {
+    /// Locks `root/owner.lock`, then fences `root/trees` before admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a filesystem, lock or physical-retirement error without
+    /// admitting a command. The root must have one stable shared identity.
+    pub fn acquire(root: &Path) -> io::Result<Self> {
+        fs::create_dir_all(root)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(root.join("owner.lock"))?;
+        let start = Instant::now();
+        let lock = crate::FileLock::acquire(file, crate::FileLockMode::Exclusive)?;
+        let waited = start.elapsed();
+        // Lock acquisition must precede recovery: fencing first could kill a
+        // different invocation that still legitimately holds this lease.
+        let custody = ProcessCustody::open(&root.join("trees"))?;
+        custody.fence_stale()?;
+        Ok(Self {
+            custody,
+            _lock: lock,
+            waited,
+        })
+    }
+
+    /// The already-fenced custody used for every admitted child.
+    #[must_use]
+    pub fn custody(&self) -> &ProcessCustody {
+        &self.custody
+    }
+
+    /// Time blocked acquiring the lease, excluding physical recovery work.
+    #[must_use]
+    pub const fn waited(&self) -> Duration {
+        self.waited
+    }
+}
 
 /// One owner's directory of live process-tree records.
 pub struct ProcessCustody {

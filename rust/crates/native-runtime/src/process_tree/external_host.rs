@@ -3,7 +3,7 @@
 //! This module owns no Job, process-group enumeration or reaper. Both ordinary
 //! external commands and `ConPTY` transports enter through `ProcessCustody`.
 
-use super::{ProcessCustody, ProcessTree};
+use super::{ProcessCustody, ProcessCustodyLease, ProcessTree};
 use std::ffi::OsString;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -24,6 +24,7 @@ struct Invocation {
     arguments: Vec<OsString>,
     inherit_input: bool,
     custody: Option<PathBuf>,
+    lease: Option<PathBuf>,
     completion: Option<PathBuf>,
 }
 
@@ -32,17 +33,23 @@ impl Invocation {
         let mut arguments = arguments.into_iter();
         let mut inherit_input = false;
         let mut custody = None;
+        let mut lease = None;
         let mut completion = None;
         while let Some(argument) = arguments.next() {
             if argument == "--inherit-input" && !inherit_input {
                 inherit_input = true;
-            } else if argument == "--custody" || argument == "--completion" {
+            } else if argument == "--custody"
+                || argument == "--completion"
+                || argument == "--lease"
+            {
                 let path = arguments.next().ok_or_else(invalid_arguments)?;
                 if !Path::new(&path).is_absolute() {
                     return Err(invalid_arguments());
                 }
                 let destination = if argument == "--custody" {
                     &mut custody
+                } else if argument == "--lease" {
+                    &mut lease
                 } else {
                     &mut completion
                 };
@@ -50,11 +57,15 @@ impl Invocation {
                     return Err(invalid_arguments());
                 }
             } else if Path::new(&argument).is_absolute() {
+                if custody.is_some() && lease.is_some() {
+                    return Err(invalid_arguments());
+                }
                 return Ok(Self {
                     executable: argument,
                     arguments: arguments.collect(),
                     inherit_input,
                     custody,
+                    lease,
                     completion,
                 });
             } else {
@@ -68,7 +79,7 @@ impl Invocation {
 fn invalid_arguments() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "step=process-host-arguments; recovery=acyclic-process-host [--custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE] [--inherit-input] ABSOLUTE_EXECUTABLE ARGS",
+        "step=process-host-arguments; recovery=acyclic-process-host [--lease ABSOLUTE_ROOT | --custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE] [--inherit-input] ABSOLUTE_EXECUTABLE ARGS",
     )
 }
 
@@ -86,11 +97,12 @@ impl Completion {
         .map(Self)
     }
 
-    fn retired(&mut self, code: i32, cancelled: bool) -> io::Result<()> {
+    fn retired(&mut self, code: i32, cancelled: bool, lease_wait: std::time::Duration) -> io::Result<()> {
         if let Some(file) = &mut self.0 {
+            let lease_wait_seconds = lease_wait.as_secs_f64();
             writeln!(
                 file,
-                "{{\"schema\":\"acyclic.process-custody-completion.v1\",\"process_tree_retired\":true,\"exit_code\":{code},\"cancelled\":{cancelled}}}"
+                "{{\"schema\":\"acyclic.process-custody-completion.v2\",\"process_tree_retired\":true,\"exit_code\":{code},\"cancelled\":{cancelled},\"lease_wait_seconds\":{lease_wait_seconds}}}"
             )?;
             file.sync_all()?;
         }
@@ -133,11 +145,14 @@ impl Drop for Directory {
 /// through the same custodian before resuming it.
 ///
 /// `--completion ABSOLUTE_FILE` exclusively reserves a receipt before launch
-/// and writes its v1 completion only after physical process-tree retirement.
+/// and writes its v2 completion only after physical process-tree retirement.
 /// Failed admission or drain never produces a completed receipt. It confers
 /// no mount-retirement capability. `--custody ABSOLUTE_DIRECTORY` reuses the
 /// shared custody fence before admission; the caller must already serialize
 /// this directory's owners. Without it the invocation has private custody.
+/// `--lease ABSOLUTE_ROOT` instead uses the shared native file-lock owner and
+/// fences its durable custody before any child launch. It is mutually exclusive
+/// with `--custody`. Lease wait is reported separately from retirement work.
 ///
 /// This is an executable entry point: the caller must exit after it returns.
 /// The control reader can still be blocked on stdin after a normal command
@@ -145,17 +160,25 @@ impl Drop for Directory {
 pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) -> io::Result<i32> {
     let invocation = Invocation::parse(arguments)?;
     let mut completion = Completion::open(invocation.completion.as_deref())?;
-    let directory = invocation
-        .custody
-        .is_none()
+    let lease = invocation
+        .lease
+        .as_deref()
+        .map(ProcessCustodyLease::acquire)
+        .transpose()?;
+    let directory = (invocation.custody.is_none() && lease.is_none())
         .then(Directory::create)
         .transpose()?;
-    let custody_path = invocation
+    let custody = invocation
         .custody
         .as_deref()
         .or_else(|| directory.as_ref().map(|directory| directory.0.as_path()))
+        .map(ProcessCustody::acquire)
+        .transpose()?;
+    let custody = lease
+        .as_ref()
+        .map(ProcessCustodyLease::custody)
+        .or(custody.as_deref())
         .ok_or_else(invalid_arguments)?;
-    let custody = ProcessCustody::acquire(custody_path)?;
     let mut command = Command::new(invocation.executable);
     command
         .args(invocation.arguments)
@@ -166,7 +189,7 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
         })
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
+    let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
     // The sole waiter owns the actual Child. Cancellation only asks the same
     // tree's containment owner to terminate; it never substitutes PID polling.
     let child = tree.child.take().ok_or(io::ErrorKind::NotFound)?;
@@ -212,7 +235,13 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     } else {
         exit_code(status)
     };
-    completion.retired(code, state.cancelled)?;
+    completion.retired(
+        code,
+        state.cancelled,
+        lease
+            .as_ref()
+            .map_or(std::time::Duration::ZERO, ProcessCustodyLease::waited),
+    )?;
     Ok(code)
 }
 
@@ -267,6 +296,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_lease_excludes_successors_until_the_custody_owner_releases_it() {
+        let root = tempfile::tempdir().unwrap();
+        let lease = ProcessCustodyLease::acquire(root.path()).unwrap();
+        let open = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(root.path().join("owner.lock"))
+                .unwrap()
+        };
+        assert_eq!(
+            crate::FileLock::try_acquire(open(), crate::FileLockMode::Exclusive)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(lease.custody().fence_stale().unwrap(), 0);
+        drop(lease);
+        let successor = ProcessCustodyLease::acquire(root.path()).unwrap();
+        assert_eq!(successor.custody().fence_stale().unwrap(), 0);
+    }
+
+    #[test]
+    fn serial_admission_rejects_failed_stale_recovery_before_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let lease = ProcessCustodyLease::acquire(root.path()).unwrap();
+        let mut tree = ProcessTree::spawn_in_custody(
+            &mut super::super::tests::command("partial", root.path()),
+            lease.custody(),
+        )
+        .unwrap();
+        super::super::tests::ready(root.path(), "partial-ready", || {
+            tree.try_wait(None).map_or(true, |status| status.is_some())
+        });
+        let records = root.path().join("trees");
+        let path = std::fs::read_dir(&records)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let captured = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        drop(lease);
+        // Former caller-only serialization had no recovery admission. Its
+        // open succeeds at this real failed-unlink boundary; the shared
+        // serial entry point must reject before admitting any child.
+        let former_admitted = ProcessCustody::open(&records).is_ok();
+        let rejected = ProcessCustodyLease::acquire(root.path()).is_err();
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, captured).unwrap();
+        tree.terminate(None).unwrap();
+        assert!(former_admitted);
+        assert!(rejected);
+        assert!(tree.is_reaped());
+    }
+
+    #[test]
+    fn leased_host_rejects_ambiguous_custody_and_preserves_literal_arguments() {
+        let executable = std::env::current_exe().unwrap().into_os_string();
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().as_os_str().to_owned();
+        let parsed = Invocation::parse([
+            "--lease".into(),
+            path.clone(),
+            executable.clone(),
+            "--lease".into(),
+        ])
+        .unwrap();
+        assert_eq!(parsed.lease.as_deref(), Some(root.path()));
+        assert_eq!(parsed.arguments, ["--lease"]);
+        for arguments in [
+            vec!["--lease".into(), "relative".into(), executable.clone()],
+            vec![
+                "--lease".into(),
+                path.clone(),
+                "--lease".into(),
+                path.clone(),
+                executable.clone(),
+            ],
+            vec![
+                "--custody".into(),
+                path.clone(),
+                "--lease".into(),
+                path,
+                executable,
+            ],
+        ] {
+            assert_eq!(
+                Invocation::parse(arguments).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
     fn failed_control_admission_retires_through_the_original_process_owner() {
         for former_order in [false, true] {
             let root = tempfile::tempdir().unwrap();
@@ -291,8 +417,7 @@ mod tests {
             } else {
                 (reject_control_admission(&mut tree, child, admission), None)
             };
-            let completed = tree.is_reaped()
-                && std::fs::read_dir(&records).unwrap().count() == 0;
+            let completed = tree.is_reaped() && std::fs::read_dir(&records).unwrap().count() == 0;
             if let Some(child) = retained_for_fixture_cleanup {
                 tree.child = Some(child);
             }
@@ -585,10 +710,12 @@ mod tests {
             Completion::open(Some(&path)).err().unwrap().kind(),
             io::ErrorKind::AlreadyExists
         );
-        completion.retired(17, false).unwrap();
+        completion.retired(17, false, std::time::Duration::ZERO).unwrap();
         let receipt = std::fs::read_to_string(path).unwrap();
         assert!(receipt.contains("\"exit_code\":17"));
         assert!(receipt.contains("\"process_tree_retired\":true"));
+        assert!(receipt.contains("\"schema\":\"acyclic.process-custody-completion.v2\""));
+        assert!(receipt.contains("\"lease_wait_seconds\":0"));
         assert!(!receipt.contains("mount"));
     }
 }

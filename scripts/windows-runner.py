@@ -7,9 +7,9 @@ uses PID-based tree killing. OpenAI Codex <noreply@openai.com>.
 """
 
 from contextlib import contextmanager
-import ctypes
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -108,7 +108,7 @@ class _ControlInput:
 
 
 class Commands:
-    """Exclusive fixture per command; the lease outlives its process host."""
+    """Exclusive fixtures; the native command owner holds the fleet lease."""
 
     def __init__(self, records, source, host, binary=None, *, cancellation=None):
         self.records = Path(records).resolve()
@@ -117,9 +117,8 @@ class Commands:
             raise ValueError("Windows runner records must stay under D:/lane-scratch")
         self.host = Path(host).resolve()
         self.binary = None if binary is None else Path(binary).resolve()
-        self.kernel = None
-        self.mutex = None
-        self.acquired = False
+        self.entered = False
+        self.lease_root = Path("D:/lane-scratch/.acyclic-windows-command-custody")
         self.lease_wait_seconds = 0
         self.results = []
         self.selections = []
@@ -131,34 +130,13 @@ class Commands:
             raise OSError("this runtime adapter requires Windows")
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
-        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
-        self.kernel.CreateMutexW.restype = ctypes.c_void_p
-        self.kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-        self.kernel.ReleaseMutex.argtypes = [ctypes.c_void_p]
-        self.kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-        self.mutex = self.kernel.CreateMutexW(None, False, "Global\\AcyclicWindowsTestRun")
-        if not self.mutex:
-            raise ctypes.WinError(ctypes.get_last_error())
-        print("WIN_TEST_WAITING_FOR_GLOBAL_MUTEX", flush=True)
-        # This is a blocking lease acquisition, never a readiness poll.
-        wait_started = time.monotonic()
-        status = self.kernel.WaitForSingleObject(self.mutex, 0xFFFFFFFF)
-        self.lease_wait_seconds = time.monotonic() - wait_started
-        if status not in (0, 0x80):
-            self.kernel.CloseHandle(self.mutex)
-            self.mutex = None
-            raise ctypes.WinError(ctypes.get_last_error())
-        self.acquired = True
+        self.entered = True
         return self
 
     def __exit__(self, *_):
-        if self.acquired:
-            self.kernel.ReleaseMutex(self.mutex)
-            self.acquired = False
-        if self.mutex:
-            self.kernel.CloseHandle(self.mutex)
-            self.mutex = None
+        # Each synchronous native invocation owns its lease through drain.
+        # Python death cannot release that native owner's file lock.
+        self.entered = False
 
     def _environment(self):
         identity = uuid.uuid4().hex
@@ -247,8 +225,10 @@ class Commands:
     def _run(self, argv, *, cwd, name, sha256, libtest=False,
              prepared_environment=None, profile=False, started=None):
         """The same native process lifecycle for profile bootstrap and commands."""
-        if not self.acquired:
-            raise RuntimeError("Windows fleet lease is not held")
+        if not self.entered:
+            raise RuntimeError("Windows command step=runner-entry; recovery=use Commands as a context manager")
+        wait_before = self.lease_wait_seconds
+        start = time.monotonic() if started is None else started
         if self.cancellation is not None and self.cancellation.requested:
             raise RuntimeError("Windows command step=admit cancelled before launch; "
                                "recovery=create a new Cancellation for a new operation")
@@ -267,7 +247,6 @@ class Commands:
         completions = self.records / "native-completions"
         completions.mkdir(exist_ok=True)
         completion_path = completions / (identity + ".json")
-        start = time.monotonic() if started is None else started
         summaries = []
         log_path = self.records / (identity + ".log")
         proc = None
@@ -276,7 +255,8 @@ class Commands:
         try:
             with log_path.open("x", encoding="utf-8") as log:
                 proc = subprocess.Popen(
-                    [str(self.host), "--completion", str(completion_path), *argv], cwd=cwd, env=env,
+                    [str(self.host), "--lease", str(self.lease_root),
+                     "--completion", str(completion_path), *argv], cwd=cwd, env=env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                 )
@@ -299,7 +279,7 @@ class Commands:
                 control.close()
                 proc.stdin = None
                 proc.communicate()
-        elapsed = time.monotonic() - start
+        wall_seconds = time.monotonic() - start
         cancelled = control.cancelled
         outcome = 130 if cancelled else rc
         verification_error = None
@@ -307,16 +287,23 @@ class Commands:
         try:
             native_completion = json.loads(completion_path.read_text(encoding="utf-8"))
             if (not isinstance(native_completion, dict)
-                    or set(native_completion) != {"schema", "process_tree_retired", "exit_code", "cancelled"}
-                    or native_completion["schema"] != "acyclic.process-custody-completion.v1"
+                    or set(native_completion) != {"schema", "process_tree_retired", "exit_code", "cancelled", "lease_wait_seconds"}
+                    or native_completion["schema"] != "acyclic.process-custody-completion.v2"
                     or native_completion["process_tree_retired"] is not True
                     or type(native_completion["exit_code"]) is not int
                     or native_completion["exit_code"] != rc
-                    or type(native_completion["cancelled"]) is not bool):
+                    or type(native_completion["cancelled"]) is not bool
+                    or type(native_completion["lease_wait_seconds"]) not in (int, float)
+                    or not math.isfinite(native_completion["lease_wait_seconds"])
+                    or native_completion["lease_wait_seconds"] < 0
+                    or native_completion["lease_wait_seconds"] > wall_seconds):
                 raise ValueError("native completion schema or exit differs")
+            self.lease_wait_seconds += native_completion["lease_wait_seconds"]
         except (OSError, ValueError, TypeError, KeyError) as error:
             verification_error = ("Windows command step=native-custody-completion: " + str(error)
                                   + "; recovery=build the source-matched acyclic-process-host through scripts/windows-test.sh")
+        lease_wait_seconds = self.lease_wait_seconds - wait_before
+        elapsed = wall_seconds - lease_wait_seconds
         passed = sum(int(match.group(1)) for value in summaries
                      if (match := re.search(r"\b([0-9]+) passed\b", value)))
         if libtest and outcome == 0 and "--list" not in argv:
@@ -328,7 +315,7 @@ class Commands:
             target=name, executable=str(executable), argv=argv,
             exit=outcome if outcome else (1 if verification_error else 0), process_exit=rc, cancelled=cancelled,
             seconds=round(elapsed, 6), under_10s=elapsed < 10,
-            lease_wait_seconds=self.lease_wait_seconds,
+            lease_wait_seconds=lease_wait_seconds, wall_seconds=round(wall_seconds, 6),
             summaries=summaries, sha256=sha256, fixture=identity,
             log=str(log_path), process_host_sha256=digest(self.host),
             verification_error=verification_error,
