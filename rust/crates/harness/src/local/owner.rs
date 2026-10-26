@@ -323,7 +323,7 @@ impl Owner {
                     .map_err(storage)?;
                 let owner = Self {
                     key: None,
-                    key_ref: Some(key_ref),
+                    key_ref: Some(key_ref.reference()),
                     agent: AgentId::new(),
                     task: TaskId::new(),
                     project,
@@ -331,7 +331,12 @@ impl Owner {
                     workspace_identity,
                     workspace_incarnation,
                 };
-                if owner.publish(directory, &path)? {
+                if owner.publish_as(
+                    directory,
+                    &path,
+                    acyclic_native_runtime::RenameMode::NoReplace,
+                    Some(&key_ref),
+                )? {
                     owner
                 } else {
                     Self::load(&path)?
@@ -398,7 +403,12 @@ impl Owner {
             let directory = path
                 .parent()
                 .ok_or_else(|| Error::Invalid("owner has no parent".into()))?;
-            owner.publish_as(directory, path, acyclic_native_runtime::RenameMode::Replace)?;
+            owner.publish_as(
+                directory,
+                path,
+                acyclic_native_runtime::RenameMode::Replace,
+                None,
+            )?;
         }
         Ok(owner)
     }
@@ -426,11 +436,13 @@ impl Owner {
         }
     }
 
+    #[cfg(test)]
     fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
         self.publish_as(
             directory,
             path,
             acyclic_native_runtime::RenameMode::NoReplace,
+            None,
         )
     }
 
@@ -439,6 +451,7 @@ impl Owner {
         directory: &Path,
         path: &Path,
         mode: acyclic_native_runtime::RenameMode,
+        signing_key: Option<&acyclic_native_runtime::signing_key::ProvisionalSigningKey>,
     ) -> Result<bool> {
         use acyclic_native_runtime::{owner_record, private_file};
         let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
@@ -469,11 +482,15 @@ impl Owner {
             return Ok(true);
         }
         let observe = |stage| {
+            if let Some(key) = signing_key {
+                key.observe_publication(stage);
+            }
             #[cfg(test)]
             publication::step(match stage {
                 private_file::PublicationStage::Created => 0,
                 private_file::PublicationStage::Synced => 2,
                 private_file::PublicationStage::Published => 3,
+                private_file::PublicationStage::Installed => return Ok(()),
             })?;
             #[cfg(not(test))]
             let _ = stage;
