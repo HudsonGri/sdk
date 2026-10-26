@@ -167,16 +167,19 @@ pub enum Wait {
 /// Next control after a turn step, and whether to send `ChildDone`.
 #[must_use]
 pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
-    let next = |mode, turn| Control {
-        mode,
-        turn,
-        ..control
-    };
+    const fn next(control: Control, mode: Mode, turn: bool) -> Control {
+        Control {
+            mode,
+            turn,
+            ..control
+        }
+    }
     match wait {
-        Wait::Continue => (next(Mode::Running, true), false),
-        Wait::Approval => (next(Mode::Approval, true), false),
+        Wait::Continue => (next(control, Mode::Running, true), false),
+        Wait::Approval => (next(control, Mode::Approval, true), false),
         Wait::Until(deadline) => (
             next(
+                control,
                 Mode::Alarm(if deadline < CONTINUE_NOW {
                     CONTINUE_NOW
                 } else {
@@ -186,7 +189,7 @@ pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
             ),
             false,
         ),
-        Wait::Input => (next(Mode::Idle, false), false),
+        Wait::Input => (next(control, Mode::Idle, false), false),
         Wait::Done => report(control),
     }
 }

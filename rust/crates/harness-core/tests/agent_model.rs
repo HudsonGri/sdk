@@ -522,3 +522,68 @@ async fn first_input_must_adopt_this_agent() -> Result {
     assert!(adopted_step.outs.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
+    const AGENTS: u32 = 10_000;
+    let provider = MemoryStream::new(acyclic_stream::MemoryLimits::default());
+    let mut paths = Vec::new();
+    for index in 0..AGENTS {
+        let mut bytes = [0; 16];
+        bytes[..4].copy_from_slice(&index.to_le_bytes());
+        paths.push(create(&provider, AgentId::from_bytes(bytes)).await?);
+    }
+    // A send names only its recipient: the same conditions, mutations and
+    // committed facts whether the domain holds one agent or ten thousand, and
+    // no other agent's streams are read or written.
+    let mut shapes = Vec::new();
+    for agent in [&paths[0], &paths[paths.len() / 2], &paths[paths.len() - 1]] {
+        let tail = inbox_tail(&provider, agent).await?;
+        let request = send(agent, tail, &user(), &cancel("c1"))?;
+        let touched: Vec<_> = request
+            .conditions
+            .iter()
+            .map(|condition| match condition {
+                CommitCondition::Head { path, .. }
+                | CommitCondition::Tail { path, .. }
+                | CommitCondition::Absent { path } => path.clone(),
+            })
+            .collect();
+        assert!(touched.iter().all(|path| path.as_str().starts_with(agent.as_str())));
+        let Submitted::Committed(envelope) = submit(&provider, request.clone()).await? else {
+            panic!("send to a dormant agent did not commit");
+        };
+        shapes.push((request.conditions.len(), request.mutations.len(), envelope.mutations.len()));
+    }
+    assert!(shapes.windows(2).all(|pair| pair[0] == pair[1]));
+    assert_eq!(shapes[0], (2, 1, 1));
+    for agent in [&paths[1], &paths[paths.len() - 2]] {
+        assert_eq!(inbox_tail(&provider, agent).await?, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
+    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/inbox_record");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(corpus)? {
+        let entry = entry?;
+        let name = entry.file_name().into_string().map_err(|_| "corpus name")?;
+        let data = std::fs::read(entry.path())?;
+        let Some((selector, bytes)) = data.split_first() else {
+            continue;
+        };
+        let accepted = match selector % 4 {
+            0 => InboxRecord::decode(bytes).map(|record| record.encode().map(drop)).is_ok(),
+            1 => StatusRecord::decode(bytes).is_ok(),
+            2 => Closed::decode(bytes).is_ok(),
+            _ => AgentPath::try_from(String::from_utf8(bytes.to_vec())?).is_ok(),
+        };
+        let expected = !matches!(name.as_str(), "unknown-field" | "path-bad-id");
+        assert_eq!(accepted, expected, "corpus seed {name}");
+        seen += 1;
+    }
+    assert!(seen >= 13);
+    Ok(())
+}
