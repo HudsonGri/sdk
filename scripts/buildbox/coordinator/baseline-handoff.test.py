@@ -108,6 +108,8 @@ class BaselineHandoffTests(unittest.TestCase):
                                          'if previous == identity:\n            return False')
                     self.assertNotEqual(old, source)
                     selected_queue.write_text(old)
+                    for dependency in ['gate-baseline.py', 'gate-clippy.py']:
+                        (root/dependency).write_bytes((HERE/dependency).read_bytes())
                 wake = root/'wake.sh'
                 wake.write_text(f'echo WAKE >> "{root / "wakes"}"\n'
                     f'claimed=$({shlex.quote(sys.executable)} "{HERE / "gate-queue.py"}" "{state}" take pending) || exit $?\n'
@@ -156,12 +158,20 @@ class BaselineHandoffTests(unittest.TestCase):
 
     def test_main_completion_before_parking_resumes_direct_and_bisect_paths(self):
         probe = drain.DispatchTests()
+        head = 'da7eee5758388031eb27ec958582cab95bb78651'
+        with tempfile.TemporaryDirectory() as tmp:
+            lint = Path(tmp)/'clippy.log'
+            lint.write_text((HERE/'fixtures/main-32b799-complete-clippy.txt').read_text().replace(
+                '32b79969bc504e875bb6e9f65611bf0d02ea45e9', head))
+            self.check_completion_orders(probe, head, lint)
+
+    def check_completion_orders(self, probe, head, lint):
         for bisect, negative in [(False, False), (True, False), (False, True)]:
             with self.subTest(bisect=bisect, former_parking=negative):
                 body = ('if [ "$*" = "1 2 3" ]; then exit 1; fi\n' if bisect else '')
                 body += f'''if [ ! -f "$GATE_STATE/published" ]; then
 touch "$GATE_STATE/published"
-python "$GATE_LANES/gate-queue.py" "$GATE_STATE" baseline-ready da7eee {shlex.quote(str(CAPTURED))}
+python "$GATE_LANES/gate-queue.py" "$GATE_STATE" baseline-ready {head} {shlex.quote(str(lint))} {shlex.quote(str(CAPTURED))}
 exit 5
 fi
 exit 0

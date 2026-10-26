@@ -32,6 +32,9 @@ class BaselineAdmissionTests(unittest.TestCase):
                 raise AssertionError('captured baseline evidence changed: '+record['file'])
         if sha256((FIXTURE/'former-pr-gate.sh.txt').read_bytes()).hexdigest() != origin['former_sha256']:
             raise AssertionError('negative control must execute the pinned deployed coordinator')
+        prior = json.loads((HERE/'fixtures/baseline-ready-before.origin.json').read_text())
+        if sha256((HERE/'fixtures/baseline-ready-before.py.txt').read_bytes()).hexdigest() != prior['sha256']:
+            raise AssertionError('publication negative must execute the pinned committed queue')
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -75,6 +78,59 @@ class BaselineAdmissionTests(unittest.TestCase):
     def complete(self):
         (self.logs/(self.head+'.log')).write_text((FIXTURE/'main-phases.txt').read_text().replace(BASE,self.head))
         (self.logs/'clippy'/(self.head+'.log')).write_text((FIXTURE/'main-clippy.txt').read_text().replace(BASE,self.head))
+
+    def publish(self, head=None, paths=None, script=None):
+        return subprocess.run([sys.executable, '-B', str(script or HERE/'gate-queue.py'),
+            str(self.state), 'baseline-ready', head or self.head,
+            *map(str, paths if paths is not None else [self.logs/'clippy'/(self.head+'.log'),
+                                                       self.logs/(self.head+'.log')])],
+            capture_output=True, text=True)
+
+    def test_publication_boundary_rejects_unqualified_captures_without_queue_changes(self):
+        queue.park_baseline(self.state, 0, [1495])
+        for mutation in ['missing', 'partial', 'wrong-head', 'missing-source-proof',
+                         'damaged-clippy', 'infra', 'one-phase', 'short-head']:
+            with self.subTest(mutation=mutation):
+                self.complete()
+                lint = self.logs/'clippy'/(self.head+'.log')
+                native = self.logs/(self.head+'.log')
+                paths = [lint, native]
+                head = self.head
+                if mutation == 'missing':
+                    lint.unlink()
+                elif mutation == 'partial':
+                    native.write_text(native.read_text().split('GATE_DONE rc=')[0])
+                elif mutation == 'wrong-head':
+                    native.write_text(native.read_text().replace(self.head, '0'*40))
+                elif mutation == 'missing-source-proof':
+                    native.write_text(native.read_text().split('GATE_MAIN_VERIFIED ')[0])
+                elif mutation == 'damaged-clippy':
+                    lint.write_bytes(native.read_bytes())
+                elif mutation == 'infra':
+                    native.write_text(native.read_text()+'error: GATE_RUNNER_INFRA export failed\n')
+                elif mutation == 'one-phase':
+                    paths = [lint]
+                else:
+                    head = self.head[:7]
+                result = self.publish(head, paths)
+                self.assertEqual(result.returncode, 6, result.stdout+result.stderr)
+                self.assertIn('preparation-INFRA', result.stderr)
+                self.assertEqual(queue.baseline_generation(self.state), 0)
+                self.assertEqual(queue.members(self.state/'pending.txt'), [])
+                self.assertEqual(queue.members(self.state/'baseline-pending.txt'), [1495])
+
+    def test_committed_publication_accepts_actual_interrupted_capture(self):
+        self.complete()
+        native = self.logs/(self.head+'.log')
+        native.write_text(native.read_text().split('GATE_DONE rc=')[0])
+        queue.park_baseline(self.state, 0, [1495])
+        result = self.publish()
+        self.assertEqual(result.returncode, 6, result.stderr)
+        self.assertEqual(queue.baseline_generation(self.state), 0)
+        prior = self.publish(script=HERE/'fixtures/baseline-ready-before.py.txt')
+        self.assertEqual((prior.returncode, prior.stdout.strip()), (0, '1'), prior.stderr)
+        self.assertEqual(queue.baseline_generation(self.state), 1)
+        self.assertEqual(queue.members(self.state/'pending.txt'), [1495])
 
     def run_gate(self, former=False):
         source = (FIXTURE/'former-pr-gate.sh.txt' if former else HERE/'pr-gate.sh').read_text()
@@ -153,9 +209,8 @@ class BaselineAdmissionTests(unittest.TestCase):
         self.complete()
         # These are the real evidence identities consumed by the one queue
         # authority, after the actual selector admits the candidate.
-        evidence = sha256(((self.logs/(self.head+'.log')).read_bytes()+
-                           (self.logs/'clippy'/(self.head+'.log')).read_bytes())).hexdigest()
-        self.assertTrue(queue.publish_baseline(self.state,evidence))
+        published = self.publish()
+        self.assertEqual((published.returncode,published.stdout.strip()),(0,'1'),published.stderr)
         with queue.locked(self.state):
             claimed = queue.take(self.state,['pending'])
         self.assertEqual(claimed,[1495])
@@ -163,12 +218,14 @@ class BaselineAdmissionTests(unittest.TestCase):
         self.assertEqual((result.returncode,count),(0,1),result.stdout+result.stderr)
         with queue.locked(self.state):
             queue.acknowledge(self.state,claimed)
-        self.assertFalse(queue.publish_baseline(self.state,evidence))
+        published = self.publish()
+        self.assertEqual((published.returncode,published.stdout.strip()),(0,'0'),published.stderr)
         self.assertEqual(queue.members(self.state/'baseline-pending.txt'),[])
         # A second parked scope cannot borrow a consumed wake-up just because
         # the coordinator polls the unchanged evidence again.
         queue.park_baseline(self.state,queue.baseline_generation(self.state),[1504])
-        self.assertFalse(queue.publish_baseline(self.state,evidence))
+        published = self.publish()
+        self.assertEqual((published.returncode,published.stdout.strip()),(0,'0'),published.stderr)
         self.assertEqual(queue.members(self.state/'baseline-pending.txt'),[1504])
 
 

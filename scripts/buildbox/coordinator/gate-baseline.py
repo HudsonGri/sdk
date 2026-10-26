@@ -6,6 +6,7 @@ workspace discovery still cannot claim coverage; legacy green runs retain only
 package roots actually observed in their output.
 """
 import argparse
+from hashlib import sha256
 import importlib.util
 import json
 from pathlib import Path
@@ -98,6 +99,36 @@ def check_complete(text, phase):
                 and len(completed) == len(set(completed)) == total)
 
 
+def qualified_phase(text, base, phase):
+    """Use the same exact-source and completion contract at every boundary."""
+    if not re.fullmatch(r'[0-9a-f]{40}', base):
+        return False
+    verification = re.findall(r'^GATE_MAIN_VERIFIED (.+)$', text, re.M)
+    try:
+        proof = json.loads(verification[0]) if len(verification) == 1 else None
+    except ValueError:
+        return False
+    if not isinstance(proof, dict) or proof.get('head') != base or not re.fullmatch(
+            r'[0-9a-f]{64}', str(proof.get('runner_sha256', ''))):
+        return False
+    if re.search(r'^error: GATE_RUNNER_INFRA |^\[buildbox\] (?:HOME guard|cleanup|export) INFRA:', text, re.M):
+        return False
+    return check_complete(text, phase)
+
+
+def publication_identity(base, paths):
+    """Hash the bytes we admitted, before the queue changes any custody."""
+    if len(paths) != 2:
+        raise ValueError('baseline-ready requires exact-main Clippy and feature logs')
+    evidence = {'head': base, 'phases': {}}
+    for phase, path in zip(('clippy', 'features'), paths):
+        data = Path(path).read_bytes()
+        if not qualified_phase(data.decode('utf-8', errors='replace'), base, phase):
+            raise ValueError(f'baseline-ready refuses incomplete or wrong-head {phase} evidence: {path}')
+        evidence['phases'][phase] = sha256(data).hexdigest()
+    return json.dumps(evidence, sort_keys=True, separators=(',', ':'))
+
+
 def select(checkout, base, directory, alerts, phase='tests', exact=False):
     logs = list(directory.glob('[0-9a-f]*.log'))
     if phase != 'tests' or exact:
@@ -115,15 +146,8 @@ def select(checkout, base, directory, alerts, phase='tests', exact=False):
         if not re.search(status + re.escape(log.stem) + r':', alerts):
             continue
         text = log.read_text(encoding='utf-8', errors='replace')
-        if exact:
-            verification = re.findall(r'^GATE_MAIN_VERIFIED (.+)$', text, re.M)
-            try:
-                proof = json.loads(verification[0]) if len(verification) == 1 else None
-            except ValueError:
-                proof = None
-            if not isinstance(proof, dict) or proof.get('head') != base or not re.fullmatch(r'[0-9a-f]{64}', str(proof.get('runner_sha256', ''))):
-                continue
-        if not (eligible(text) if phase == 'tests' and not exact else check_complete(text, phase)):
+        if not (qualified_phase(text, base, phase) if exact else
+                eligible(text) if phase == 'tests' else check_complete(text, phase)):
             continue
         if subprocess.run(['git', '-C', str(checkout), 'merge-base', '--is-ancestor', log.stem, base], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
             return log
