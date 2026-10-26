@@ -1,0 +1,183 @@
+//! The agent host on the A4 runtime: create, wake on inbox append, spawn, archive.
+
+use super::{Result, adopted, id, intent, user, values};
+use acyclic_actors::{
+    addressing::ActorReference,
+    domain::ActorLimits,
+    local::{Snapshot, Store, SystemClock},
+};
+use acyclic_harness_core::agent::*;
+use acyclic_stream::{MemoryStream, StreamPath};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
+/// Spawns child `c` on its first turn and idles afterwards.
+#[derive(Default)]
+struct Spawner(AtomicUsize);
+
+impl TurnDriver for Spawner {
+    fn step<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _cursor: u64,
+        _input: Option<TurnInput>,
+    ) -> TurnFuture<'a> {
+        let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        Box::pin(async move {
+            Ok(TurnStep {
+                checkpoint: None,
+                outs: if first {
+                    vec![Out::Spawn {
+                        intent: intent("c"),
+                        brief: None,
+                        volumes: Vec::new(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+                wait: Wait::Input,
+            })
+        })
+    }
+}
+
+fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
+    Ok(Store::new(provider.clone(), StreamPath::new(ACTORS)?))
+}
+
+#[tokio::test]
+async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor() -> Result {
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        Spawner::default(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let actors = store(&provider)?;
+    let cursor = |state: &Snapshot| state.state().and_then(|s| s.cursor(INBOX));
+    assert_eq!(cursor(&actors.load(&host.actor(&root)?).await?), Some(1));
+    let child = root.child(&AgentId::derive(&root.id(), "c"))?;
+    let record = InboxRecord::ApprovalRequested(ApprovalRequested {
+        child: child.clone(),
+        id: intent("q"),
+    });
+    assert_eq!(
+        host.send(&root, &user(), &record).await?,
+        Delivered::Committed
+    );
+    // The root's pending inbox follow holds its waker: the append alone wakes it.
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = actors.load(&host.actor(&child)?).await?;
+    assert_eq!(cursor(&state), Some(2));
+    assert_eq!(values(&provider, child.inbox()?).await?.len(), 3);
+
+    host.host(&child)?;
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let state = actors.load(&host.actor(&child)?).await?;
+    assert_eq!(cursor(&state), Some(3));
+    assert!(state.state().and_then(|s| s.checkpoint()).is_some());
+
+    let by = intent("archive");
+    assert_eq!(
+        host.archive(&root, &user(), &by).await?,
+        Delivered::Committed
+    );
+    let late = InboxRecord::ApprovalRequested(ApprovalRequested {
+        child,
+        id: intent("late"),
+    });
+    assert_eq!(host.send(&root, &user(), &late).await?, Delivered::Closed);
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -> Result {
+    use acyclic_harness_core::{
+        conversation::{VolumeClass, VolumeOwner, VolumeRef},
+        resources::ProviderRef,
+    };
+    use acyclic_stream::StreamError;
+
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        Spawner::default(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    let done = InboxRecord::ChildDone(ChildDone {
+        child: root.child(&id(2))?,
+        outcome: AgentOutcome::Succeeded { result: None },
+    });
+    assert_eq!(
+        host.send(&root, &user(), &done).await?,
+        Delivered::Committed
+    );
+    let another = InboxRecord::Cancel(Control {
+        by: user(),
+        id: intent("next"),
+    });
+    assert_eq!(
+        host.send(&root, &user(), &another).await?,
+        Delivered::Committed
+    );
+    assert_eq!(
+        host.send(&root, &user(), &done).await?,
+        Delivered::Committed
+    );
+    let changed = InboxRecord::ChildDone(ChildDone {
+        child: root.child(&id(2))?,
+        outcome: AgentOutcome::Failed {
+            message: "changed".into(),
+        },
+    });
+    assert!(matches!(
+        host.send(&root, &user(), &changed).await,
+        Err(Error::Stream(StreamError::IdempotencyMismatch))
+    ));
+    assert_eq!(values(&provider, root.inbox()?).await?.len(), 3);
+
+    // Recover an unobserved creation receipt after the actor has advanced.
+    assert!(host.runtime().drain().await.is_empty());
+    assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
+    let mut changed = adopted(id(1));
+    changed.volumes.push(VolumeBinding {
+        name: "private".into(),
+        volume: VolumeRef::new(
+            ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
+            "changed".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(id(1).to_bytes())),
+            &mut None,
+        )?,
+    });
+    assert!(matches!(
+        host.create(&intent("create"), changed).await,
+        Err(Error::Stream(StreamError::IdempotencyMismatch))
+    ));
+    assert_eq!(
+        host.archive(&root, &user(), &intent("archive")).await?,
+        Delivered::Committed
+    );
+    assert_eq!(
+        host.send(&root, &user(), &done).await?,
+        Delivered::Committed
+    );
+    assert_eq!(
+        host.archive(&root, &user(), &intent("archive")).await?,
+        Delivered::Committed
+    );
+    Ok(())
+}

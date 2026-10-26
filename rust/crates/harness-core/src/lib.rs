@@ -61,6 +61,7 @@ mod accounting_trace {
     include!("memory_store/retention_scan_trace.rs");
     include!("memory_store/retention_scan_capture.rs");
 }
+pub mod agent;
 pub mod agent_loop;
 pub mod bundle;
 #[doc(hidden)]
@@ -81,8 +82,6 @@ pub mod extension;
 pub mod filesystem;
 pub mod fork;
 pub mod goal;
-#[cfg(feature = "grpc")]
-pub mod grpc;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub mod hooks;
 #[doc(hidden)]

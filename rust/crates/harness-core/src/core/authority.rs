@@ -1,6 +1,12 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
 mod runtime_signing;
+// Streams sessions exist on gRPC hosts and in the browser.
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+mod stream_session;
 mod verified_scope;
 mod workload;
 pub(crate) use verified_scope::VerifiedScope;
@@ -396,13 +402,21 @@ impl AuthorityRoot {
     /// Revokes this workload and every descendant at this runtime's public trust boundary.
     pub fn revoke_workload(&self, scope: &Scope) -> Result<()> {
         self.verifier(&mut None)?.verify(scope, &mut None)?;
-        self.runtime
+        let mut trust = self
+            .runtime
             .public
             .trust
             .write()
-            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?
-            .revoked_block_ids
-            .insert(*scope.proof);
+            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
+        let revision = self
+            .runtime
+            .public
+            .revision
+            .borrow()
+            .checked_add(1)
+            .ok_or_else(|| Error::Storage("runtime trust revision overflow".into()))?;
+        trust.revoked_block_ids.insert(*scope.proof);
+        self.runtime.public.revision.send_replace(revision);
         Ok(())
     }
 
@@ -416,6 +430,17 @@ impl AuthorityRoot {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Scope> {
         self.issue_bound(id, capabilities, agent, None, None, work)
+    }
+
+    /// The same signing custody for another audience, such as one agent's
+    /// conversation. It shares this root's signer and trust.
+    #[must_use]
+    pub fn with_audience(&self, audience: Authority) -> Self {
+        Self {
+            id: self.id.clone(),
+            runtime: std::sync::Arc::clone(&self.runtime),
+            audience,
+        }
     }
 
     /// Gives a workload a delegation handle containing no runtime signing key.
@@ -721,6 +746,7 @@ impl AuthorityVerifier {
             public: std::sync::Arc::new(runtime_signing::PublicAuthority {
                 trust: std::sync::RwLock::new(trust),
                 metadata_key: checkpoint_key,
+                revision: tokio::sync::watch::channel(0).0,
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })

@@ -1,4 +1,4 @@
-//! Transport-neutral client port for injected platform or local endpoints.
+//! Wire validation and projection shared by every client adapter.
 
 use crate::contract::capability;
 pub use crate::wire_validation::{
@@ -14,8 +14,6 @@ use crate::{
         COMPILED_PROTOCOL, decode_authority, decode_scope, encode_authority, validate_protocol,
     },
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::BoxProviderStream as BoxStream;
 
 mod history;
 pub use history::replay_history;
@@ -27,55 +25,6 @@ pub enum ReplayMode {
     Snapshot,
     /// Replay followed by every later accepted event.
     Follow,
-}
-
-/// Complete application-facing wire API.
-pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
-    /// Negotiates the exact protocol and required capabilities before other calls.
-    fn handshake<'a>(
-        &'a self,
-        request: wire::HandshakeRequest,
-    ) -> BoxFuture<'a, Result<wire::HandshakeResponse>>;
-
-    /// Admits one identity-bound command.
-    fn submit<'a>(
-        &'a self,
-        command: wire::CommandEnvelope,
-    ) -> BoxFuture<'a, Result<wire::Admission>>;
-
-    /// Replays validated gapless deliveries through an explicit end boundary.
-    fn replay<'a>(
-        &'a self,
-        request: wire::ResumeRequest,
-        mode: ReplayMode,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<wire::Delivery>>>>;
-
-    /// Sends `ClientFrame::Acknowledge` after the client's durable replay commit.
-    fn acknowledge<'a>(&'a self, request: wire::Acknowledge) -> BoxFuture<'a, Result<()>>;
-
-    /// Authenticates one decoded operation-control scope against host-held trust roots.
-    fn authorize_operation_control<'a>(
-        &'a self,
-        request: &'a OperationControlRequest,
-    ) -> BoxFuture<'a, Result<()>>;
-
-    /// Observes one authenticated durable operation projection.
-    fn observe<'a>(
-        &'a self,
-        request: wire::ObserveRequest,
-    ) -> BoxFuture<'a, Result<wire::OperationStatus>>;
-
-    /// Atomically snapshots then follows authenticated scheduler status changes.
-    fn watch_operation<'a>(
-        &'a self,
-        request: wire::ObserveRequest,
-    ) -> BoxFuture<'a, Result<BoxStream<'static, Result<wire::OperationStatus>>>>;
-
-    /// Requests authenticated idempotent cancellation.
-    fn cancel<'a>(
-        &'a self,
-        request: wire::CancelRequest,
-    ) -> BoxFuture<'a, Result<wire::CancelResponse>>;
 }
 
 /// Requires every stateless command to carry the exact negotiated wire identity.
