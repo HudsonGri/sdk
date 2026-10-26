@@ -20,6 +20,12 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     to_js(&parse_json_bytes(bytes)?)
 }
 
+/// External client fixtures retain exact integers and ordinary object fields.
+#[wasm_bindgen(js_name = decodeClientJson)]
+pub fn decode_client_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    serialize_js(&parse_json_bytes(bytes)?, true)
+}
+
 /// Admits one canonical ref-only execution journal observation through Rust.
 #[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
 pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {

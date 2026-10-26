@@ -5,6 +5,7 @@
 //! writing records around AgentHost. It checks observation, not turn execution.
 
 pub mod controls;
+pub mod tool_output;
 
 use acyclic_harness::agent::{AgentPath, AgentRecord as _, ConversationEntry, StatusRecord};
 use acyclic_harness_client::{
@@ -70,6 +71,14 @@ pub async fn verify<P: StreamProvider + ?Sized>(
     credential: u32,
     fixture: &Fixture,
 ) -> Result<Report, Failure> {
+    validate_fixture(provider, fixture).await?;
+    verify_observation(session, credential, fixture).await
+}
+
+async fn validate_fixture<P: StreamProvider + ?Sized>(
+    provider: &P,
+    fixture: &Fixture,
+) -> Result<(), Failure> {
     fixture
         .entry
         .encode()
@@ -98,6 +107,14 @@ pub async fn verify<P: StreamProvider + ?Sized>(
             ));
         }
     }
+    Ok(())
+}
+
+async fn verify_observation(
+    session: Client,
+    credential: u32,
+    fixture: &Fixture,
+) -> Result<Report, Failure> {
     let selection = || AgentSelection {
         agent: fixture.agent.clone(),
         conversation_from: fixture.conversation_from,

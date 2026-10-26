@@ -1,8 +1,8 @@
 //! Host-provisioned vectors executed only through the shipping public client.
 use super::{Failure, Report, failure};
 use acyclic_harness_client::{
-    AgentCommand, AgentControlFailure, AgentExchangeError, AgentReply, Delivered,
-    PreparedAgentInvocation, PreparedCommand, decode_agent_reply,
+    AgentBinding, AgentCommand, AgentControlFailure, AgentControls, AgentExchangeError, AgentReply,
+    Delivered, PreparedCommand, decode_agent_reply,
 };
 use acyclic_stream::{session::Client, wire_codec};
 use prost::Message as _;
@@ -32,6 +32,8 @@ pub enum ControlExpected {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlFixture {
+    /// One canonical bodyless host binding, identical for every control case.
+    pub binding: Vec<u8>,
     pub cases: Vec<ControlVector>,
 }
 
@@ -77,8 +79,11 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
             "the complete finite control vector set is required",
         ));
     }
+    let binding =
+        AgentBinding::new(&fixture.binding).map_err(|cause| failure("control_fixture", cause))?;
+    let controls = AgentControls::new(session.clone(), credential, binding);
     let mut used = std::collections::BTreeSet::new();
-    let mut total = 0_usize;
+    let mut total = fixture.binding.len();
     // Validate every vector before dispatching any command with side effects.
     for (index, vector) in fixture.cases.iter().enumerate() {
         if CASES.get(index) != Some(&vector.case.as_str()) || !used.insert(vector.case.as_str()) {
@@ -103,11 +108,18 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
         }
         let command = PreparedCommand::from_bytes(vector.command.clone())
             .map_err(|cause| failure("control_fixture", cause))?;
-        PreparedAgentInvocation::new(&command, vector.invocation.clone().into())
+        let invocation = controls
+            .prepare(command)
             .map_err(|cause| failure("control_fixture", cause))?;
+        if invocation.as_bytes().as_ref() != vector.invocation.as_slice() {
+            return Err(failure(
+                "control_fixture",
+                "vector differs from the public host binding",
+            ));
+        }
         let expected_bytes = match &vector.expected {
             ControlExpected::Reply { bytes } => {
-                let command = PreparedCommand::decode(command.as_bytes())
+                let command = PreparedCommand::decode(&vector.command)
                     .map_err(|cause| failure("control_fixture", cause))?;
                 let expected = decode_agent_reply(bytes, &command)
                     .map_err(|cause| failure("control_fixture", cause))?;
@@ -201,16 +213,17 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
             .ok_or_else(|| failure("control_fixture", "unvalidated case"))?;
         let command = PreparedCommand::from_bytes(vector.command.clone())
             .map_err(|cause| failure(case, cause))?;
-        let invocation = PreparedAgentInvocation::new(&command, vector.invocation.clone().into())
+        let invocation = controls
+            .prepare(command)
             .map_err(|cause| failure(case, cause))?;
-        let actual = invocation.execute(session, credential).await;
+        let actual = controls.execute(&invocation).await;
         let matches = match (&vector.expected, actual) {
             (
                 ControlExpected::ActorStatus { status },
                 Err(AgentExchangeError::ActorStatus(actual)),
             ) => *status == actual,
             (ControlExpected::Reply { bytes }, actual) => {
-                let value = PreparedCommand::decode(command.as_bytes())
+                let value = PreparedCommand::decode(&vector.command)
                     .map_err(|cause| failure(case, cause))?;
                 let expected =
                     decode_agent_reply(bytes, &value).map_err(|cause| failure(case, cause))?;

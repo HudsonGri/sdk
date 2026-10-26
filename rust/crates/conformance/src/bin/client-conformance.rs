@@ -20,6 +20,11 @@ fn input_file(path: &str, maximum: usize) -> std::io::Result<Vec<u8>> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("ACYCLIC_CONFORMANCE_TOOL_FIXTURE").is_some()
+        && std::env::var_os("ACYCLIC_CONFORMANCE_CONTROL_FIXTURE").is_some()
+    {
+        return Err("CLIENT_INPUT choose one tool or control fixture".into());
+    }
     let endpoint = std::env::var("ACYCLIC_CONFORMANCE_ENDPOINT")?;
     let token = std::env::var("ACYCLIC_CONFORMANCE_TOKEN")?;
     let credential = std::env::var("ACYCLIC_CONFORMANCE_SESSION_CREDENTIAL")?;
@@ -41,6 +46,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let session = provider.session_client()?;
     session.register_credential(0, credential.into())?;
+    match std::env::var("ACYCLIC_CONFORMANCE_TOOL_FIXTURE") {
+        Ok(path) => {
+            let fixture = serde_json::from_slice(&input_file(&path, 8 * 1024 * 1024)?)?;
+            let report =
+                acyclic_conformance::client::tool_output::verify(&provider, session, 0, &fixture)
+                    .await?;
+            println!("{}", serde_json::to_string(&report)?);
+            return Ok(());
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(error) => return Err(error.into()),
+    }
     match std::env::var("ACYCLIC_CONFORMANCE_CONTROL_FIXTURE") {
         Ok(path) => {
             let fixture = serde_json::from_slice(&input_file(&path, 32 * 1024 * 1024)?)?;
