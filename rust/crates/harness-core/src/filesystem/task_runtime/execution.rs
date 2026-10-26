@@ -1,5 +1,5 @@
 use super::*;
-use crate::conversation::FileRef;
+use crate::conversation::{BoundedContentFuture, FileRef};
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
@@ -96,7 +96,8 @@ where
             ));
         }
         task_context.owned_task_binding(None)?;
-        let admission = self.host.observe_admission(task).await?;
+        let admission =
+            BoundedContentFuture::new(None, || self.host.observe_admission(task))?.await?;
         if !admission.grants.contains("model:generate") {
             return Err(Error::Unauthorized(
                 "task scope lacks model:generate".into(),
@@ -116,17 +117,22 @@ where
         let run_limits = scope.run_limits();
         let operation_id = execution_operation(task, turn, None)?;
         let task_files = match &self.task_files {
-            Some(files) => match files.for_created_task(&task_context, &scope).await? {
+            Some(files) => match BoundedContentFuture::new(None, || {
+                files.for_created_task(&task_context, &scope)
+            })?
+            .await?
+            {
                 Some(created) => Some(Arc::new(created)),
                 None => Some(files.clone()),
             },
             None => None,
         };
-        let journal = self
-            .open_execution_journal(task, fence.clone(), turn, &admission)
-            .await?
-            .with_task_files(task_files)
-            .with_input_verifier(task_context.clone());
+        let journal = BoundedContentFuture::new(None, || {
+            self.open_execution_journal(task, fence.clone(), turn, &admission)
+        })?
+        .await?
+        .with_task_files(task_files)
+        .with_input_verifier(task_context.clone());
         let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?
@@ -170,25 +176,46 @@ where
     /// Replaces or disables compaction while retaining task accounting and fencing.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
-        self.executor = self.executor.with_compaction_policy(policy);
+        self.set_compaction_policy(policy);
+        self
+    }
+
+    /// Binds every model step to the command's retained conversation.
+    #[must_use]
+    pub fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.set_conversation_id(conversation);
         self
     }
 
     /// Sets the output token budget without replacing task ownership or its journal.
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
-        self.executor = self.executor.with_max_output_tokens(maximum)?;
+        self.set_max_output_tokens(maximum)?;
         Ok(self)
     }
 
-    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
-        self.executor = self.executor.with_summary_source(source);
-        self
+    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+    pub(crate) fn set_hooks(&mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) {
+        self.executor.set_hooks(hooks);
     }
 
-    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-    pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
-        self.executor = self.executor.with_hooks(hooks);
-        self
+    pub(crate) fn set_role(&mut self, role: Option<String>) {
+        self.executor.set_role(role);
+    }
+
+    pub(crate) fn set_conversation_id(&mut self, conversation: crate::ConversationId) {
+        self.executor.set_conversation_id(conversation);
+    }
+
+    pub(crate) fn set_summary_source(&mut self, source: Option<Box<FileRef>>) {
+        self.executor.set_summary_source(source);
+    }
+
+    pub(crate) fn set_compaction_policy(&mut self, policy: crate::context::CompactionPolicy) {
+        self.executor.set_compaction_policy(policy);
+    }
+
+    pub(crate) fn set_max_output_tokens(&mut self, maximum: u32) -> Result<()> {
+        self.executor.set_max_output_tokens(maximum)
     }
 
     /// Executes or reconciles using the bound journal and existing stock loop.

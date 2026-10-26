@@ -15,20 +15,42 @@ where
         guard_execution: bool,
         _native_io: Option<&super::super::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(_native_io) = _native_io {
-            let work = _native_io.original_native_work().ok_or_else(|| {
-                observed::boundary(
-                    Some(_native_io),
-                    crate::wire::ErrorCode::Unsupported,
-                    "native suspension requires original observer",
-                )
-            })?;
-            return if guard_execution {
-                self.execution_journal_with_native_work(task, fence, command, work)
+        crate::conversation::BoundedContentFuture::new(_native_io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(_native_io) = _native_io {
+                let work = _native_io.original_native_work().ok_or_else(|| {
+                    observed::boundary(
+                        Some(_native_io),
+                        crate::wire::ErrorCode::Unsupported,
+                        "native suspension requires original observer",
+                    )
+                })?;
+                return if guard_execution {
+                    self.execution_journal_with_native_work(task, fence, command, work)
+                        .await?
+                        .0
+                        .suspend_workflow_command_if_quiescent(revision, command, Some(_native_io))
+                        .await
+                } else {
+                    self.host
+                        .suspend_workflow(
+                            task,
+                            fence,
+                            (revision, Some(command)),
+                            None,
+                            None,
+                            &mut Some(
+                                &mut crate::filesystem::PreparationIo::from_native_work(work)
+                                    .map(crate::store::HistoryWork::new)?,
+                            ),
+                        )
+                        .await
+                };
+            }
+            if guard_execution {
+                self.execution_journal(task, fence.clone(), command)
                     .await?
-                    .0
-                    .suspend_workflow_command_if_quiescent(revision, command, Some(_native_io))
+                    .suspend_workflow_command_if_quiescent(revision, command, None)
                     .await
             } else {
                 self.host
@@ -38,31 +60,12 @@ where
                         (revision, Some(command)),
                         None,
                         None,
-                        &mut Some(
-                            &mut crate::filesystem::PreparationIo::from_native_work(work)
-                                .map(crate::store::HistoryWork::new)?,
-                        ),
+                        &mut None,
                     )
                     .await
-            };
-        }
-        if guard_execution {
-            self.execution_journal(task, fence.clone(), command)
-                .await?
-                .suspend_workflow_command_if_quiescent(revision, command, None)
-                .await
-        } else {
-            self.host
-                .suspend_workflow(
-                    task,
-                    fence,
-                    (revision, Some(command)),
-                    None,
-                    None,
-                    &mut None,
-                )
-                .await
-        }
+            }
+        })?
+        .await
     }
 
     /// Drives an already-claimed lease through the registered machine.
@@ -103,331 +106,412 @@ where
         let admission = self.admission_observed(task, io).await?;
         let fence = observed::lease_fence(lease, io)?;
         let run = || async {
-            let fence = &fence;
-            #[cfg(not(target_arch = "wasm32"))]
-            let context = if let Some(io) = io {
-                let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "worker context requires original native work",
-                })?;
-                self.host
-                    .start_task(
-                        lease,
-                        &mut Some(&mut crate::store::HistoryWork::new(
-                            crate::executor::PreparationIo::from_native_work(work)?,
-                        )),
-                    )
-                    .await?;
-                WorkerContext::Native(
-                    self.task_context_with_native_work(task, fence, work)
-                        .await?,
-                )
-            } else {
-                self.host.start_task(lease, &mut None).await?;
-                WorkerContext::Ordinary(Arc::new(self.task_context(task, fence.clone()).await?))
-            };
-            #[cfg(target_arch = "wasm32")]
-            let context = {
-                self.host.start_task(lease, &mut None).await?;
-                WorkerContext::Ordinary(Arc::new(self.task_context(task, fence.clone()).await?))
-            };
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut session = if let WorkerContext::Native(context) = &context {
-                let work =
-                    io.and_then(|io| io.original_native_work())
-                        .ok_or(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unsupported,
-                            reason: "native worker lost its original observer",
-                        })?;
-                self.open_task_with_native_work(task, fence, Arc::clone(context), work)
-                    .await?
-            } else {
-                let WorkerContext::Ordinary(context) = &context else {
-                    unreachable!()
-                };
-                let journal = self.workflow_journal_with_context(context)?;
-                self.harness
-                    .open_registered_task(task, fence, journal, Some(Arc::clone(context)))
-                    .await?
-            };
-            #[cfg(target_arch = "wasm32")]
-            let mut session = { self.open_task(task, fence.clone()).await? };
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut wake_custody;
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut wake = if let Some(io) = io {
-                let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native wake input requires original observer",
-                })?;
-                let local = crate::executor::PreparationIo::from_native_work(work)?;
-                let wake = self.host.workflow_input(task, fence, Some(&local)).await?;
-                let custody = local.take_native_custody(local.owned_bytes()?)?;
-                wake_custody = Some(custody);
-                wake
-            } else {
-                wake_custody = None;
-                self.host.workflow_input(task, fence, None).await?
-            };
-            #[cfg(target_arch = "wasm32")]
-            let mut wake = self.host.workflow_input(task, fence, None).await?;
-            #[cfg(not(target_arch = "wasm32"))]
-            let mut next_transition = session.latest_transition(io).await?;
-            #[cfg(target_arch = "wasm32")]
-            let mut next_transition = session.latest_transition(None).await?;
-            let mut advanced = 0;
-            loop {
-                let revision = session.checkpoint().revision;
-                let (mut transition, _transition_custody) = next_transition;
-                if advanced == maximum_transitions
-                    && transition.as_ref().is_none_or(|value| {
-                        matches!(value.status, MachineStatus::Suspended)
-                            && !value.commands.is_empty()
-                    })
-                {
-                    return Ok(WorkerTurn::Yielded);
-                }
-                let mut command_input = None;
-                if let Some(transition) = &mut transition {
-                    if !transition.commands.is_empty() {
-                        match self
-                            .dispatch_commands(
-                                task,
-                                &context,
-                                fence,
-                                &transition.commands,
-                                commands,
-                                io,
-                            )
-                            .await?
-                        {
-                            ready @ CommandDispatch::Ready { .. } => command_input = Some(ready),
-                            CommandDispatch::Pending {
-                                command,
-                                guard_execution,
-                            } => {
-                                self.suspend_command(
-                                    task,
-                                    fence,
-                                    revision,
-                                    command,
-                                    guard_execution,
-                                    io,
-                                )
-                                .await?;
-                                return Ok(WorkerTurn::Suspended { task, revision });
-                            }
-                            CommandDispatch::Indeterminate(cause) => {
-                                self.task_host()
-                                    .settle_task(
-                                        task,
-                                        fence,
-                                        Outcome::Indeterminate {
-                                            operation_id,
-                                            cause: crate::IndeterminateCause::Command(cause),
-                                        },
-                                        &mut observed::history(io)?
-                                            .as_mut()
-                                            .map(|work| work as &mut dyn crate::store::HistoryIo),
-                                    )
-                                    .await?;
-                                return Ok(WorkerTurn::Reconciling);
-                            }
-                            CommandDispatch::Failed { message } => {
-                                self.task_host()
-                                    .settle_task(
-                                        task,
-                                        fence,
-                                        Outcome::Failed { message },
-                                        &mut observed::history(io)?
-                                            .as_mut()
-                                            .map(|work| work as &mut dyn crate::store::HistoryIo),
-                                    )
-                                    .await?;
-                                return Ok(WorkerTurn::Completed { task });
-                            }
-                        }
-                    }
-                    let outcome = match &mut transition.status {
-                        MachineStatus::Completed { value } => {
-                            Some(Outcome::Succeeded(std::mem::take(value)))
-                        }
-                        MachineStatus::Failed { message } => Some(Outcome::Failed {
-                            message: std::mem::take(message),
-                        }),
-                        MachineStatus::Suspended => None,
-                    };
-                    if let Some(outcome) = outcome {
-                        self.task_host()
-                            .settle_task(
-                                task,
-                                fence,
-                                outcome,
-                                &mut observed::history(io)?
-                                    .as_mut()
-                                    .map(|work| work as &mut dyn crate::store::HistoryIo),
-                            )
-                            .await?;
-                        return Ok(WorkerTurn::Completed { task });
-                    }
-                }
+            crate::conversation::BoundedContentFuture::new(io, || async {
+                let fence = &fence;
                 #[cfg(not(target_arch = "wasm32"))]
-                let mut wake_input_used = false;
-                let input = if transition.is_none() {
-                    Value::Null
-                } else if let Some(CommandDispatch::Ready { value, .. }) = command_input.as_mut() {
-                    std::mem::take(value)
-                } else if let Some((wake_revision, value)) = &mut wake {
-                    if *wake_revision == revision {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        {
-                            wake_input_used = true;
-                        }
-                        std::mem::take(value)
-                    } else {
-                        self.task_host()
-                            .suspend_workflow(
-                                task,
-                                fence,
-                                (revision, None),
-                                None,
-                                None,
-                                &mut observed::history(io)?
-                                    .as_mut()
-                                    .map(|work| work as &mut dyn crate::store::HistoryIo),
-                            )
-                            .await?;
-                        return Ok(WorkerTurn::Suspended { task, revision });
-                    }
-                } else {
-                    self.task_host()
-                        .suspend_workflow(
-                            task,
-                            fence,
-                            (revision, None),
-                            None,
-                            None,
-                            &mut observed::history(io)?
-                                .as_mut()
-                                .map(|work| work as &mut dyn crate::store::HistoryIo),
-                        )
-                        .await?;
-                    return Ok(WorkerTurn::Suspended { task, revision });
-                };
-                if advanced == maximum_transitions {
-                    return Ok(WorkerTurn::Yielded);
-                }
-                if let Some(io) = io {
-                    let hashed = acyclic_fs::WorkCounters {
-                        bytes_hashed: b"harness/v2/task-worker-step\0".len() as u64 + 24,
-                        ..Default::default()
-                    };
-                    io.preflight(hashed)?;
-                    io.charge(hashed)?;
-                }
-                let bytes = {
-                    let mut digest = blake3::Hasher::new();
-                    digest.update(b"harness/v2/task-worker-step\0");
-                    digest.update(&task.into_bytes());
-                    digest.update(&revision.to_be_bytes());
-                    let mut bytes = [0; 16];
-                    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
-                    bytes
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                let native_input = if let Some(CommandDispatch::Ready {
-                    custody: Some(primary),
-                    additional_custody,
-                    ..
-                }) = command_input.as_mut()
-                {
-                    for incoming in additional_custody {
-                        primary.absorb(incoming).map_err(Error::from)?;
-                    }
-                    let key = native_step_key_with_custody(revision, primary)?;
-                    Some(key)
-                } else {
-                    None
-                };
-                #[cfg(not(target_arch = "wasm32"))]
-                let stepped = if let Some(key) = native_input {
-                    let Some(CommandDispatch::Ready { custody, .. }) = command_input.as_mut()
-                    else {
-                        unreachable!("native key requires retained command custody");
-                    };
-                    let custody = custody.take().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported,
-                        reason: "native input has no original command custody",
-                    })?;
-                    session
-                        .step(
-                            OperationId::from_bytes(bytes),
-                            key,
-                            input,
-                            Some(&crate::filesystem::PreparationIo::from_native_custody(
-                                custody,
-                            )),
-                        )
-                        .await?
-                } else if let Some(io) = io {
+                let context = if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unsupported,
-                        reason: "native step requires original observer",
+                        reason: "worker context requires original native work",
                     })?;
-                    let mut custody = if wake_input_used {
-                        wake_custody.take().ok_or(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Invalid,
-                            reason: "native wake input has no original custody",
+                    crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                        self.host
+                            .start_task(
+                                lease,
+                                &mut Some(&mut crate::store::HistoryWork::new(
+                                    crate::executor::PreparationIo::from_native_work(work)?,
+                                )),
+                            )
+                            .await
+                    })?
+                    .await?;
+                    WorkerContext::Native(
+                        crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                            self.task_context_with_native_work(task, fence, work).await
                         })?
-                    } else {
-                        io.take_native_custody(0)?
-                    };
-                    if !work.shares_ledger(custody.work()) {
-                        drop(input);
-                        return Err(Error::NativeWork {
-                            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                            custody: Some(custody),
-                        });
-                    }
-                    let key = match native_step_key_with_custody(revision, &mut custody) {
-                        Ok(key) => key,
-                        Err(error) => {
-                            drop(input);
-                            return Err(error);
-                        }
-                    };
-                    session
-                        .step(
-                            OperationId::from_bytes(bytes),
-                            key,
-                            input,
-                            Some(&crate::filesystem::PreparationIo::from_native_custody(
-                                custody,
-                            )),
-                        )
-                        .await?
+                        .await?,
+                    )
                 } else {
-                    session
-                        .step(
-                            OperationId::from_bytes(bytes),
-                            IdempotencyKey::new(format!("task-step:{revision}"))?,
-                            input,
-                            None,
-                        )
-                        .await?
+                    crate::conversation::BoundedContentFuture::new(io, || async {
+                        self.host.start_task(lease, &mut None).await
+                    })?
+                    .await?;
+                    WorkerContext::Ordinary(Arc::new(
+                        crate::conversation::BoundedContentFuture::new(io, || async {
+                            self.task_context(task, fence.clone()).await
+                        })?
+                        .await?,
+                    ))
                 };
                 #[cfg(target_arch = "wasm32")]
-                let stepped = session
-                    .step(
-                        OperationId::from_bytes(bytes),
-                        IdempotencyKey::new(format!("task-step:{revision}"))?,
-                        input,
-                        None,
-                    )
+                let context = {
+                    crate::conversation::BoundedContentFuture::new(io, || async {
+                        self.host.start_task(lease, &mut None).await
+                    })?
                     .await?;
-                next_transition = (Some(stepped.0), stepped.1);
-                advanced += 1;
-            }
+                    WorkerContext::Ordinary(Arc::new(
+                        crate::conversation::BoundedContentFuture::new(io, || async {
+                            self.task_context(task, fence.clone()).await
+                        })?
+                        .await?,
+                    ))
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut session = if let WorkerContext::Native(context) = &context {
+                    let work = io.and_then(|io| io.original_native_work()).ok_or(
+                        Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unsupported,
+                            reason: "native worker lost its original observer",
+                        },
+                    )?;
+                    crate::conversation::BoundedContentFuture::new(io, || async {
+                        self.open_task_with_native_work(task, fence, Arc::clone(context), work)
+                            .await
+                    })?
+                    .await?
+                } else {
+                    let WorkerContext::Ordinary(context) = &context else {
+                        unreachable!()
+                    };
+                    let journal = self.workflow_journal_with_context(context)?;
+                    crate::conversation::BoundedContentFuture::new(io, || async {
+                        self.harness
+                            .open_registered_task(task, fence, journal, Some(Arc::clone(context)))
+                            .await
+                    })?
+                    .await?
+                };
+                #[cfg(target_arch = "wasm32")]
+                let mut session = { self.open_task(task, fence.clone()).await? };
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut wake_custody;
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut wake = if let Some(io) = io {
+                    let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native wake input requires original observer",
+                    })?;
+                    let local = crate::executor::PreparationIo::from_native_work(work)?;
+                    let wake = crate::conversation::BoundedContentFuture::new(Some(io), || {
+                        self.host.workflow_input(task, fence, Some(&local))
+                    })?
+                    .await?;
+                    let custody = local.take_native_custody(local.owned_bytes()?)?;
+                    wake_custody = Some(custody);
+                    wake
+                } else {
+                    wake_custody = None;
+                    crate::conversation::BoundedContentFuture::new(io, || {
+                        self.host.workflow_input(task, fence, None)
+                    })?
+                    .await?
+                };
+                #[cfg(target_arch = "wasm32")]
+                let mut wake = crate::conversation::BoundedContentFuture::new(io, || {
+                    self.host.workflow_input(task, fence, None)
+                })?
+                .await?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut next_transition =
+                    crate::conversation::BoundedContentFuture::new(io, || async {
+                        session.latest_transition(io).await
+                    })?
+                    .await?;
+                #[cfg(target_arch = "wasm32")]
+                let mut next_transition =
+                    crate::conversation::BoundedContentFuture::new(io, || async {
+                        session.latest_transition(None).await
+                    })?
+                    .await?;
+                let mut advanced = 0;
+                loop {
+                    let revision = session.checkpoint().revision;
+                    let (mut transition, _transition_custody) = next_transition;
+                    if advanced == maximum_transitions
+                        && transition.as_ref().is_none_or(|value| {
+                            matches!(value.status, MachineStatus::Suspended)
+                                && !value.commands.is_empty()
+                        })
+                    {
+                        return Ok(WorkerTurn::Yielded);
+                    }
+                    let mut command_input = None;
+                    if let Some(transition) = &mut transition {
+                        if !transition.commands.is_empty() {
+                            match crate::conversation::BoundedContentFuture::new(io, || {
+                                self.dispatch_commands(
+                                    task,
+                                    &context,
+                                    fence,
+                                    &transition.commands,
+                                    commands,
+                                    io,
+                                )
+                            })?
+                            .await?
+                            {
+                                ready @ CommandDispatch::Ready { .. } => {
+                                    command_input = Some(ready);
+                                }
+                                CommandDispatch::Pending {
+                                    command,
+                                    guard_execution,
+                                } => {
+                                    self.suspend_command(
+                                        task,
+                                        fence,
+                                        revision,
+                                        command,
+                                        guard_execution,
+                                        io,
+                                    )
+                                    .await?;
+                                    return Ok(WorkerTurn::Suspended { task, revision });
+                                }
+                                CommandDispatch::Indeterminate(cause) => {
+                                    crate::conversation::BoundedContentFuture::new(io, || async {
+                                        self.task_host()
+                                            .settle_task(
+                                                task,
+                                                fence,
+                                                Outcome::Indeterminate {
+                                                    operation_id,
+                                                    cause: crate::IndeterminateCause::Command(
+                                                        cause,
+                                                    ),
+                                                },
+                                                &mut observed::history(io)?.as_mut().map(|work| {
+                                                    work as &mut dyn crate::store::HistoryIo
+                                                }),
+                                            )
+                                            .await
+                                    })?
+                                    .await?;
+                                    return Ok(WorkerTurn::Reconciling);
+                                }
+                                CommandDispatch::Failed { message } => {
+                                    crate::conversation::BoundedContentFuture::new(io, || async {
+                                        self.task_host()
+                                            .settle_task(
+                                                task,
+                                                fence,
+                                                Outcome::Failed { message },
+                                                &mut observed::history(io)?.as_mut().map(|work| {
+                                                    work as &mut dyn crate::store::HistoryIo
+                                                }),
+                                            )
+                                            .await
+                                    })?
+                                    .await?;
+                                    return Ok(WorkerTurn::Completed { task });
+                                }
+                            }
+                        }
+                        let outcome = match &mut transition.status {
+                            MachineStatus::Completed { value } => {
+                                Some(Outcome::Succeeded(std::mem::take(value)))
+                            }
+                            MachineStatus::Failed { message } => Some(Outcome::Failed {
+                                message: std::mem::take(message),
+                            }),
+                            MachineStatus::Suspended => None,
+                        };
+                        if let Some(outcome) = outcome {
+                            crate::conversation::BoundedContentFuture::new(io, || async {
+                                self.task_host()
+                                    .settle_task(
+                                        task,
+                                        fence,
+                                        outcome,
+                                        &mut observed::history(io)?
+                                            .as_mut()
+                                            .map(|work| work as &mut dyn crate::store::HistoryIo),
+                                    )
+                                    .await
+                            })?
+                            .await?;
+                            return Ok(WorkerTurn::Completed { task });
+                        }
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let mut wake_input_used = false;
+                    let input = if transition.is_none() {
+                        Value::Null
+                    } else if let Some(CommandDispatch::Ready { value, .. }) =
+                        command_input.as_mut()
+                    {
+                        std::mem::take(value)
+                    } else if let Some((wake_revision, value)) = &mut wake {
+                        if *wake_revision == revision {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                wake_input_used = true;
+                            }
+                            std::mem::take(value)
+                        } else {
+                            crate::conversation::BoundedContentFuture::new(io, || async {
+                                self.task_host()
+                                    .suspend_workflow(
+                                        task,
+                                        fence,
+                                        (revision, None),
+                                        None,
+                                        None,
+                                        &mut observed::history(io)?
+                                            .as_mut()
+                                            .map(|work| work as &mut dyn crate::store::HistoryIo),
+                                    )
+                                    .await
+                            })?
+                            .await?;
+                            return Ok(WorkerTurn::Suspended { task, revision });
+                        }
+                    } else {
+                        crate::conversation::BoundedContentFuture::new(io, || async {
+                            self.task_host()
+                                .suspend_workflow(
+                                    task,
+                                    fence,
+                                    (revision, None),
+                                    None,
+                                    None,
+                                    &mut observed::history(io)?
+                                        .as_mut()
+                                        .map(|work| work as &mut dyn crate::store::HistoryIo),
+                                )
+                                .await
+                        })?
+                        .await?;
+                        return Ok(WorkerTurn::Suspended { task, revision });
+                    };
+                    if advanced == maximum_transitions {
+                        return Ok(WorkerTurn::Yielded);
+                    }
+                    if let Some(io) = io {
+                        let hashed = acyclic_fs::WorkCounters {
+                            bytes_hashed: b"harness/v2/task-worker-step\0".len() as u64 + 24,
+                            ..Default::default()
+                        };
+                        io.preflight(hashed)?;
+                        io.charge(hashed)?;
+                    }
+                    let bytes = {
+                        let mut digest = blake3::Hasher::new();
+                        digest.update(b"harness/v2/task-worker-step\0");
+                        digest.update(&task.into_bytes());
+                        digest.update(&revision.to_be_bytes());
+                        let mut bytes = [0; 16];
+                        bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+                        bytes
+                    };
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let native_input = if let Some(CommandDispatch::Ready {
+                        custody: Some(primary),
+                        additional_custody,
+                        ..
+                    }) = command_input.as_mut()
+                    {
+                        for incoming in additional_custody {
+                            primary.absorb(incoming).map_err(Error::from)?;
+                        }
+                        let key = native_step_key_with_custody(revision, primary)?;
+                        Some(key)
+                    } else {
+                        None
+                    };
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let stepped = if let Some(key) = native_input {
+                        let Some(CommandDispatch::Ready { custody, .. }) = command_input.as_mut()
+                        else {
+                            unreachable!("native key requires retained command custody");
+                        };
+                        let custody = custody.take().ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unsupported,
+                            reason: "native input has no original command custody",
+                        })?;
+                        crate::conversation::BoundedContentFuture::new(io, || async {
+                            session
+                                .step(
+                                    OperationId::from_bytes(bytes),
+                                    key,
+                                    input,
+                                    Some(&crate::filesystem::PreparationIo::from_native_custody(
+                                        custody,
+                                    )),
+                                )
+                                .await
+                        })?
+                        .await?
+                    } else if let Some(io) = io {
+                        let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unsupported,
+                            reason: "native step requires original observer",
+                        })?;
+                        let mut custody = if wake_input_used {
+                            wake_custody.take().ok_or(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Invalid,
+                                reason: "native wake input has no original custody",
+                            })?
+                        } else {
+                            io.take_native_custody(0)?
+                        };
+                        if !work.shares_ledger(custody.work()) {
+                            drop(input);
+                            return Err(Error::NativeWork {
+                                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                                custody: Some(custody),
+                            });
+                        }
+                        let key = match native_step_key_with_custody(revision, &mut custody) {
+                            Ok(key) => key,
+                            Err(error) => {
+                                drop(input);
+                                return Err(error);
+                            }
+                        };
+                        crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                            session
+                                .step(
+                                    OperationId::from_bytes(bytes),
+                                    key,
+                                    input,
+                                    Some(&crate::filesystem::PreparationIo::from_native_custody(
+                                        custody,
+                                    )),
+                                )
+                                .await
+                        })?
+                        .await?
+                    } else {
+                        crate::conversation::BoundedContentFuture::new(io, || async {
+                            session
+                                .step(
+                                    OperationId::from_bytes(bytes),
+                                    IdempotencyKey::new(format!("task-step:{revision}"))?,
+                                    input,
+                                    None,
+                                )
+                                .await
+                        })?
+                        .await?
+                    };
+                    #[cfg(target_arch = "wasm32")]
+                    let stepped = crate::conversation::BoundedContentFuture::new(io, || async {
+                        session
+                            .step(
+                                OperationId::from_bytes(bytes),
+                                IdempotencyKey::new(format!("task-step:{revision}"))?,
+                                input,
+                                None,
+                            )
+                            .await
+                    })?
+                    .await?;
+                    next_transition = (Some(stepped.0), stepped.1);
+                    advanced += 1;
+                }
+            })?
+            .await
         };
         deadline::run(
             &self.host,

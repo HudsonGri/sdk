@@ -119,6 +119,7 @@ impl StockExecution<'_> {
         reason: ToolFailureKind,
         cause: ToolFailureCause,
     ) -> Result<crate::model::ToolResultContent> {
+        let _order = self.journal_order.mutex().lock().await;
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
@@ -193,20 +194,23 @@ impl StockExecution<'_> {
         prior_messages: &mut Vec<ModelMessage>,
         hook_context: &mut Vec<ModelMessage>,
     ) -> Result<ExecutionProgress<()>> {
-        let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
-        let call = self.settle_tool_call(
-            journal,
-            operation_id,
-            step,
-            invocation,
-            invocation_index,
-            prior_messages,
-            hook_context,
-        );
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_work().is_some() {
-            return span.scope(call).await;
-        }
-        traced(span, call).await
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
+            let call = self.settle_tool_call(
+                journal,
+                operation_id,
+                step,
+                invocation,
+                invocation_index,
+                prior_messages,
+                hook_context,
+            );
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if self.native_work().is_some() {
+                return span.scope(call).await;
+            }
+            traced(span, call).await
+        })?
+        .await
     }
 }

@@ -464,7 +464,7 @@ impl PathTrie {
         let mut available = (*remaining_work).min(MAXIMUM_WORK);
         let before = available;
         let result = (|| {
-            let (bytes, validation_work) = super::compilation::preparation(
+            let (bytes, validation_work, uniform) = super::compilation::preparation(
                 policy,
                 capability,
                 super::names::folds_unicode(resource.config),
@@ -483,7 +483,8 @@ impl PathTrie {
             if resource.config.validate().is_err() || resource.generation > resource.head {
                 return Err(InvalidPolicy("generation exceeds head"));
             }
-            let patterns = CompiledPatterns::new(policy, principal, resource, context, capability)?;
+            let patterns =
+                CompiledPatterns::new(policy, principal, resource, context, capability, uniform)?;
             let CompiledStates {
                 alphabet,
                 states,
@@ -638,8 +639,12 @@ impl PathTrie {
         if let Some(binding) = &self.shared {
             let policy = state / self.states.len();
             let ceiling = state % self.states.len();
-            return Ok(binding.policy.step(policy, ch)? * self.states.len()
-                + self.ceiling_step(ceiling, ch)?);
+            let next_policy = binding.policy.step(policy, ch)?;
+            let next_ceiling = self.ceiling_step(ceiling, ch)?;
+            return next_policy
+                .checked_mul(self.states.len())
+                .and_then(|index| index.checked_add(next_ceiling))
+                .ok_or(InvalidPolicy("invalid compiled path"));
         }
         self.ceiling_step(state, ch)
     }
@@ -656,6 +661,7 @@ impl PathTrie {
             .get(state)
             .and_then(|node| node.transitions.get(symbol))
             .copied()
+            .filter(|next| *next < self.states.len())
             .ok_or(InvalidPolicy("invalid compiled path"))
     }
 
@@ -876,6 +882,7 @@ fn terminal(transitions: Vec<usize>, decisions: [Outcome; 12]) -> State {
 }
 
 struct CompiledPatterns<'a> {
+    uniform: bool,
     nfa: Nfa,
     starts: Vec<usize>,
     rules: BTreeMap<&'a str, (usize, usize)>,
@@ -893,6 +900,7 @@ impl<'a> CompiledPatterns<'a> {
         resource: Resource<'_>,
         context: Context,
         capability: &Capability,
+        uniform: bool,
     ) -> Result<Self, InvalidPolicy> {
         let mut nfa = Nfa::default();
         let mut starts = Vec::new();
@@ -912,9 +920,12 @@ impl<'a> CompiledPatterns<'a> {
             }
             if super::decision::rule_matches(rule, principal, resource, context) {
                 spend(&mut text_left, rule.resource.path.len())?;
-                let key = super::names::fold(&rule.resource.path, resource.config);
-                let (start, end) =
-                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
+                let (start, end) = if uniform {
+                    (starts.len(), starts.len())
+                } else {
+                    let key = super::names::fold(&rule.resource.path, resource.config);
+                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?
+                };
                 starts.push(start);
                 rules.insert(rule.id.as_str(), end);
             }
@@ -922,9 +933,12 @@ impl<'a> CompiledPatterns<'a> {
         for grant in capability.layers.iter().flatten() {
             if grant.resource.matches_view(resource) {
                 spend(&mut text_left, grant.resource.path.len())?;
-                let key = super::names::fold(&grant.resource.path, resource.config);
-                let (start, end) =
-                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
+                let (start, end) = if uniform {
+                    (starts.len(), starts.len())
+                } else {
+                    let key = super::names::fold(&grant.resource.path, resource.config);
+                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?
+                };
                 starts.push(start);
                 grants.insert(std::ptr::from_ref(grant), end);
             }
@@ -945,6 +959,7 @@ impl<'a> CompiledPatterns<'a> {
             .map(|(index, (id, end))| (id, (end, index)))
             .collect();
         Ok(Self {
+            uniform,
             nfa,
             starts,
             rules,
@@ -964,16 +979,7 @@ impl<'a> CompiledPatterns<'a> {
         available: &mut usize,
         reserve: &mut impl FnMut(usize) -> Result<(), InvalidPolicy>,
     ) -> Result<CompiledStates, InvalidPolicy> {
-        let uniform = policy
-            .layers
-            .iter()
-            .flatten()
-            .all(|rule| rule.resource.path == "**")
-            && capability
-                .layers
-                .iter()
-                .flatten()
-                .all(|grant| grant.resource.path == "**");
+        let uniform = self.uniform;
         reserve(super::compilation::determinization(
             self.nfa.nodes.len(),
             self.symbols.len(),
@@ -983,7 +989,7 @@ impl<'a> CompiledPatterns<'a> {
         let states = if uniform {
             // Every active pattern accepts every canonical path, including
             // root. One terminal state replaces subset construction.
-            spend(available, self.nfa.nodes.len())?;
+            spend(available, self.starts.len())?;
             spend(
                 available,
                 (policy.layers.len()
@@ -992,7 +998,7 @@ impl<'a> CompiledPatterns<'a> {
                     + capability.layers.iter().map(Vec::len).sum::<usize>())
                     * 24,
             )?;
-            let subset: Vec<_> = (0..self.nfa.nodes.len()).collect();
+            let subset = self.starts;
             vec![terminal(
                 vec![0; self.symbols.len() + 1],
                 outcomes(
@@ -1043,4 +1049,123 @@ struct CompiledStates {
     states: Vec<State>,
     rule_ids: Vec<String>,
     valid_until: Option<u64>,
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod uniform_preparation_tests {
+    use super::*;
+
+    #[test]
+    fn universal_paths_keep_finite_work_and_corrupt_transitions_fail_closed() {
+        let mut policy: Policy = serde_json::from_slice(super::super::INITIAL_POLICY).unwrap();
+        let capability: Capability = serde_json::from_str(
+            r#"{"layers":[[{"actions":["read","write","create"],"resource":{"lineage_root":null,"volume":null,"generations":"all","path":"**"}}]],"expires_at":null}"#,
+        ).unwrap();
+        let principal = Principal {
+            kind: super::super::PrincipalKind::Agent,
+            id: "worker".into(),
+            lineage: vec![],
+            groups: Default::default(),
+            roles: Default::default(),
+            tags: Default::default(),
+            attributes: Default::default(),
+        };
+        let resource = Resource {
+            config: crate::VolumeConfig::portable(crate::Lifecycle::Durable),
+            lineage: &[],
+            volume: "project",
+            generation: 1,
+            head: 1,
+            path: "",
+        };
+        let compile = |policy: &Policy, capability: &Capability, budget| {
+            let mut remaining = budget;
+            let result = PathTrie::compile_with_work(
+                policy,
+                &principal,
+                resource,
+                Context {
+                    now: 1,
+                    approvals: 0,
+                },
+                capability,
+                &mut remaining,
+                |_| Ok(()),
+            );
+            (result, remaining)
+        };
+        let ((result, remaining), prepared): (_, Vec<&'static str>) =
+            acyclic_test_support::differential::observe(
+                || (),
+                |()| compile(&policy, &capability, 512),
+            );
+        assert!(prepared.is_empty(), "universal paths built a redundant NFA");
+        let view = result.unwrap();
+        assert!(remaining > 0);
+        assert!(view.decide(Action::Read, "a/b", 1).allowed);
+        let ((program, remaining), prepared): (_, Vec<&'static str>) =
+            acyclic_test_support::differential::observe(
+                || (),
+                |()| {
+                    let mut remaining = 512;
+                    let program = shared::CompiledPolicy::compile_with_work(
+                        &policy,
+                        resource.config,
+                        &mut remaining,
+                        |_| Ok(()),
+                    );
+                    (program, remaining)
+                },
+            );
+        assert!(
+            prepared.is_empty(),
+            "shared universal paths built a redundant NFA"
+        );
+        assert!(remaining > 0);
+        let mut remaining = MAXIMUM_WORK;
+        let program = std::sync::Arc::new(program.unwrap());
+        let bound = program
+            .bind_with_work(
+                &principal,
+                resource,
+                Context {
+                    now: 1,
+                    approvals: 0,
+                },
+                &capability,
+                &mut remaining,
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert!(bound.decide(Action::Read, "a/b", 1).allowed);
+
+        policy.layers[0][0].resource.path = "a/**".into();
+        let ((result, _), prepared): (_, Vec<&'static str>) =
+            acyclic_test_support::differential::observe(
+                || (),
+                |()| compile(&policy, &capability, MAXIMUM_WORK),
+            );
+        let view = result.unwrap();
+        assert!(!prepared.is_empty());
+        assert!(!view.decide(Action::Read, "b", 1).allowed);
+
+        // A compiled graph has only private, compiler-issued state indices.
+        // Even a corrupted edge must deny the entire subtree rather than
+        // panic or return permissions accumulated before reaching that edge.
+        let capability: Capability = serde_json::from_str(
+            r#"{"layers":[[{"actions":["read","write","create"],"resource":{"lineage_root":null,"volume":null,"generations":"all","path":"a/**"}}]],"expires_at":null}"#,
+        ).unwrap();
+        let (view, _) = compile(&policy, &capability, MAXIMUM_WORK);
+        let mut view = view.unwrap();
+        assert_ne!(view.subtree_action_mask("", 1), 0);
+        let edge = view
+            .states
+            .first_mut()
+            .unwrap()
+            .transitions
+            .first_mut()
+            .unwrap();
+        *edge = usize::MAX;
+        assert_eq!(view.subtree_action_mask("", 1), 0);
+    }
 }

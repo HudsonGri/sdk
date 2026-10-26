@@ -34,5 +34,5 @@ fn command_dispatch_future_stays_bounded() {
             .execute_observed(context, fence, command, Value::Null, false, None)
     });
     eprintln!("command dispatch future: {bytes} bytes");
-    assert!(bytes <= 16_384, "command dispatch future is {bytes} bytes");
+    assert!(bytes <= 1024, "command dispatch future is {bytes} bytes");
 }

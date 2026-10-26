@@ -13,7 +13,7 @@ impl PathTrie {
             path.state
         } else {
             let Ok(state) = self.step(path.state, '/') else {
-                return actions;
+                return 0;
             };
             state
         };
@@ -48,7 +48,7 @@ impl PathTrie {
             actions |= self.action_mask(state, now);
             for ch in symbols.iter().copied().chain(std::iter::once(other)) {
                 let Ok(next) = self.step(state, ch) else {
-                    continue;
+                    return 0;
                 };
                 let Some(visited) = self.state_index(next).and_then(|index| seen.get_mut(index))
                 else {

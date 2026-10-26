@@ -95,99 +95,107 @@ impl LocalHarness {
         prompt: Option<&str>,
         publisher: &dyn ContentPublisher,
     ) -> Result<FileRef> {
-        if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
-            return Ok(reference);
-        }
-        let path = manifest_path(operation);
-        if path.len() > self.limits.path_bytes {
-            return Err(Error::Invalid(
-                "context manifest path exceeds path bound".into(),
-            ));
-        }
-        #[cfg(any(test, feature = "hooks"))]
-        let hooks =
-            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
-        #[cfg(any(test, feature = "hooks"))]
-        let hook_configuration = if hooks.is_empty() {
-            None
-        } else {
-            Some(hooks.publish(publisher, self.limits).await?)
-        };
-        let policy = ContextDiscoveryPolicy::default();
-        let limits = ContextDiscoveryLimits::default();
-        let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
-        let mut work = crate::context::DiscoveryWork {
-            limits: ContextDiscoveryLimits {
-                instruction_bytes: maximum,
-                ..limits
-            },
-            ..Default::default()
-        };
-        let discovery = self
-            .instructions(&policy.instruction_names, publisher, &mut work)
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
+                return Ok(reference);
+            }
+            let path = manifest_path(operation);
+            if path.len() > self.limits.path_bytes {
+                return Err(Error::Invalid(
+                    "context manifest path exceeds path bound".into(),
+                ));
+            }
+            #[cfg(any(test, feature = "hooks"))]
+            let hooks =
+                crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings))
+                    .await?;
+            #[cfg(any(test, feature = "hooks"))]
+            let hook_configuration = if hooks.is_empty() {
+                None
+            } else {
+                Some(hooks.publish(publisher, self.limits).await?)
+            };
+            let policy = ContextDiscoveryPolicy::default();
+            let limits = ContextDiscoveryLimits::default();
+            let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+            let mut work = crate::context::DiscoveryWork {
+                limits: ContextDiscoveryLimits {
+                    instruction_bytes: maximum,
+                    ..limits
+                },
+                ..Default::default()
+            };
+            let discovery = crate::conversation::BoundedContentFuture::new(None, || {
+                self.instructions(&policy.instruction_names, publisher, &mut work)
+            })?
             .await?;
-        let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
-        let manifest =
-            ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
-        #[cfg(any(any(test, feature = "native-execution"), feature = "hooks"))]
-        let mut manifest = manifest;
-        #[cfg(any(test, feature = "native-execution"))]
-        if let Some(workspace) = &self.workspace {
-            manifest
-                .conventions
-                .push(workspace.context_line().to_owned());
-            if self.checkout_context {
-                #[cfg(test)]
-                self.environment_reads
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let task = crate::runtime::task_id_for_admission(operation);
-                // Parented tasks acquire a fresh per-owner mount during tool
-                // execution. A switched native mount is likewise selected
-                // later. Neither can truthfully advertise the parent path.
-                let cwd = if self.admission_parent(task).await?.is_none()
-                    && !(workspace.mounted.is_some()
-                        && workspace.selected_view().await?.0.is_some())
-                {
-                    Some(workspace.path.as_path())
-                } else {
-                    None
-                };
-                let physical_git = cwd.is_some()
-                    && matches!(
-                        acyclic_fs::GitCompatStore::load(
-                            &workspace.store,
-                            workspace.view().workspace().id(),
+            let (goal, plans) = crate::conversation::BoundedContentFuture::new(None, || {
+                self.file_guidance(prompt.unwrap_or_default())
+            })?
+            .await?;
+            let manifest =
+                ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
+            #[cfg(any(any(test, feature = "native-execution"), feature = "hooks"))]
+            let mut manifest = manifest;
+            #[cfg(any(test, feature = "native-execution"))]
+            if let Some(workspace) = &self.workspace {
+                manifest
+                    .conventions
+                    .push(workspace.context_line().to_owned());
+                if self.checkout_context {
+                    #[cfg(test)]
+                    self.environment_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let task = crate::runtime::task_id_for_admission(operation);
+                    // Parented tasks acquire a fresh per-owner mount during tool
+                    // execution. A switched native mount is likewise selected
+                    // later. Neither can truthfully advertise the parent path.
+                    let cwd = if self.admission_parent(task).await?.is_none()
+                        && !(workspace.mounted.is_some()
+                            && workspace.selected_view().await?.0.is_some())
+                    {
+                        Some(workspace.path.as_path())
+                    } else {
+                        None
+                    };
+                    let physical_git = cwd.is_some()
+                        && matches!(
+                            acyclic_fs::GitCompatStore::load(
+                                &workspace.store,
+                                workspace.view().workspace().id(),
+                            )
+                            .await,
+                            Ok(None)
+                        );
+                    let model = self.admission_model(task).await?;
+                    manifest.environment = Some(
+                        environment::gather(
+                            cwd,
+                            self.clock.now_unix_millis(),
+                            &model.name,
+                            &self.environment_platform,
+                            physical_git,
                         )
                         .await,
-                        Ok(None)
                     );
-                let model = self.admission_model(task).await?;
-                manifest.environment = Some(
-                    environment::gather(
-                        cwd,
-                        self.clock.now_unix_millis(),
-                        &model.name,
-                        &self.environment_platform,
-                        physical_git,
-                    )
-                    .await,
-                );
+                }
             }
-        }
-        #[cfg(any(test, feature = "hooks"))]
-        manifest.sources.extend(hook_configuration);
-        let bytes = manifest.encode(self.limits)?;
-        Ok(publisher
-            .stage_once(
-                manifest_operation(operation),
-                &path,
-                &bytes,
-                "application/json",
-                "context-manifest.json",
-                crate::conversation::ContentAccess::default(),
-            )?
-            .await?
-            .0)
+            #[cfg(any(test, feature = "hooks"))]
+            manifest.sources.extend(hook_configuration);
+            let bytes = manifest.encode(self.limits)?;
+            Ok(publisher
+                .stage_once(
+                    manifest_operation(operation),
+                    &path,
+                    &bytes,
+                    "application/json",
+                    "context-manifest.json",
+                    crate::conversation::ContentAccess::default(),
+                )?
+                .await?
+                .0)
+        })?
+        .await
     }
 
     async fn instructions(

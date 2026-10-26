@@ -77,6 +77,10 @@ impl Bounded {
 }
 
 impl HttpTransport for Bounded {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recording_enabled(&self) -> bool {
+        self.inner.recording_enabled()
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             let (mut response, deadlines) = self.exchange(self.inner.send(request), None).await?;

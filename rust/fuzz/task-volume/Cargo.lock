@@ -171,7 +171,6 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "sha2",
- "sse-stream",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -179,6 +178,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -191,6 +191,7 @@ dependencies = [
  "acyclic-native-runtime",
  "acyclic-stream",
  "arrayvec",
+ "async-stream",
  "async-trait",
  "base64 0.22.1",
  "blake3",
@@ -198,6 +199,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "futures",
+ "hex",
  "http",
  "js-sys",
  "jsonschema",
@@ -213,7 +215,6 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "sha2",
- "sse-stream",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -279,6 +280,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "futures",
+ "httpdate",
  "js-sys",
  "loom",
  "pin-project-lite",
@@ -401,6 +403,28 @@ name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "async-trait"
@@ -2672,6 +2696,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -3163,22 +3188,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
-]
-
-[[package]]
-name = "sse-stream"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d385160fc0fba84f7b9cc8ef3263e410d0e3ca7ab4927f1356df33145ace69a4"
-dependencies = [
- "bytes",
- "futures-util",
- "http-body",
- "http-body-util",
- "memchr",
- "pin-project-lite",
- "simdutf8",
- "thiserror",
 ]
 
 [[package]]

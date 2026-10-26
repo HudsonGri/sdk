@@ -244,3 +244,51 @@ fn in_place_charges_equal_a_verified_sum_for_every_counter() {
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "performance_native.rs"]
 mod native;
+
+#[test]
+fn zero_delta_fields_are_checked_without_additions() {
+    for field in 0..24 {
+        let mut work = WorkCounters::UNCHARGED;
+        let mut delta = WorkCounters::UNCHARGED;
+        *counter_fields(&mut delta)[field] = 7;
+        super::ADDITIVE_STEPS.with(|count| count.set(0));
+        work.charge(&delta, &WorkBudget::UNBOUNDED).unwrap();
+        assert_eq!(
+            super::ADDITIVE_STEPS.with(std::cell::Cell::get),
+            if field == 22 { 0 } else { 2 }
+        );
+        assert_eq!(work, delta);
+        // A zero change still checks standing work against every field.
+        let mut denied = WorkBudget::UNBOUNDED;
+        *counter_fields(&mut denied)[field] = 6;
+        let before = work;
+        assert_eq!(
+            work.charge(&WorkCounters::UNCHARGED, &denied),
+            before.verify(denied)
+        );
+        assert_eq!(work, before);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(256))]
+    #[test]
+    fn sparse_charges_preserve_overflow_priority_and_exact_errors(
+        before in proptest::array::uniform24(proptest::prop_oneof![proptest::strategy::Just(0_u64),proptest::strategy::Just(u64::MAX),proptest::prelude::any::<u64>()]),
+        change in proptest::array::uniform24(proptest::prop_oneof![proptest::strategy::Just(0_u64),proptest::strategy::Just(1_u64),proptest::prelude::any::<u64>()]),
+        maximum in proptest::array::uniform24(proptest::prelude::any::<u64>()),
+    ) {
+        let mut work = WorkCounters::UNCHARGED;
+        let mut delta = WorkCounters::UNCHARGED;
+        let mut budget = WorkBudget::UNCHARGED;
+        for (field, value) in counter_fields(&mut work).into_iter().zip(before) { *field = value; }
+        for (field, value) in counter_fields(&mut delta).into_iter().zip(change) { *field = value; }
+        for (field, value) in counter_fields(&mut budget).into_iter().zip(maximum) { *field = value; }
+        let expected = work.checked_add(delta).and_then(|sum| sum.verify(budget).map(|()| sum));
+        proptest::prop_assert_eq!(work.admit(&delta, &budget),expected.map(|_| ()));
+        let prior = work;
+        proptest::prop_assert_eq!(work.charge(&delta, &budget),expected.map(|_| ()));
+        proptest::prop_assert_eq!(work,expected.unwrap_or(prior));
+    }
+}

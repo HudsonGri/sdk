@@ -34,7 +34,9 @@ pub async fn capture_watch_batch<
         )
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
-    let result = async {
+    let mut frame_accounting =
+        crate::kernel::allocation::KernelAccounting::native(&native, cancellation);
+    let mut frame = crate::heap_future::with_accounting(&mut frame_accounting, |_| async {
         let checkout = &mut candidate;
         let meter = &scope.native;
         cancellation.check()?;
@@ -469,8 +471,10 @@ pub async fn capture_watch_batch<
             next_sequence,
             capture: batch.receipt,
         })
-    }
-    .await;
+    })
+    .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
     let receipt = capture_scope_result(scope, result)?;
     cancellation
         .commit_if_live(|| *checkout = candidate)

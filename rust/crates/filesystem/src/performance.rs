@@ -182,6 +182,8 @@ macro_rules! additive_counters {
         )
     };
 }
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use additive_counters;
 
 impl WorkCounters {
     /// Whether every allowance is finite, for bounded operation admission.
@@ -212,7 +214,7 @@ impl WorkCounters {
     /// Exact `self + other` per additive counter. An unbounded (`u64::MAX`) counter of
     /// `self` stays unbounded; any other overflow is an error. The peak allocation keeps
     /// `self`'s value.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn checked_add_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
         self.exact_cumulative(other, self, u64::checked_add)
     }
@@ -220,7 +222,7 @@ impl WorkCounters {
     /// Exact `self + other` on every additive counter `limit` bounds. A counter `limit`
     /// leaves unbounded (`u64::MAX`) keeps `self`'s value, since nothing is ever charged
     /// against it. Any other overflow is an error. The peak allocation keeps `self`'s value.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn checked_add_bounded(
         &self,
         other: &Self,
@@ -233,20 +235,21 @@ impl WorkCounters {
     /// unbounded counter that holds a reservation has exactly that much less left, so
     /// refunding it restores the limit. Any underflow is an error, never clamped. The
     /// peak allocation keeps `self`'s value.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub(crate) fn checked_sub_cumulative(&self, other: &Self) -> Result<Self, WorkError> {
         self.exact_cumulative(other, &Self::default(), u64::checked_sub)
     }
 
     /// `apply` on every additive counter, except that a counter `unbounded` leaves at
     /// `u64::MAX` keeps `self`'s value.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     fn exact_cumulative(
         &self,
         other: &Self,
         unbounded: &Self,
         apply: fn(u64, u64) -> Option<u64>,
     ) -> Result<Self, WorkError> {
+        CUMULATIVE_PASSES.with(|passes| passes.set(passes.get() + 1));
         let mut inexact = false;
         let mut exact = |left: u64, right: u64, unbounded: u64| {
             if unbounded == u64::MAX {
@@ -362,10 +365,15 @@ impl WorkCounters {
         macro_rules! check {
             ($($field:ident),*) => {
                 $({
-                    #[cfg(test)]
-                    ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
-                    let (value, overflowed) = self.$field.overflowing_add(delta.$field);
-                    overflow |= overflowed;
+                    let value = if delta.$field == 0 {
+                        self.$field
+                    } else {
+                        #[cfg(test)]
+                        ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
+                        let (value, overflowed) = self.$field.overflowing_add(delta.$field);
+                        overflow |= overflowed;
+                        value
+                    };
                     within &= value <= budget.$field;
                 })*
             };
@@ -427,9 +435,11 @@ impl WorkCounters {
         macro_rules! add_in_place {
             ($($field:ident),*) => {
                 $({
-                    #[cfg(test)]
-                    ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
-                    self.$field = self.$field.wrapping_add(delta.$field);
+                    if delta.$field != 0 {
+                        #[cfg(test)]
+                        ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
+                        self.$field = self.$field.wrapping_add(delta.$field);
+                    }
                 })*
             };
         }
@@ -616,6 +626,8 @@ impl WorkCounters {
     #[inline]
     pub fn remaining(self, budget: WorkBudget) -> Result<WorkBudget, WorkError> {
         self.verify_within(&budget)?;
+        #[cfg(test)]
+        REMAINING_PROJECTIONS.with(|count| count.set(count.get() + 1));
         Ok(WorkBudget {
             authority_records_read: budget.authority_records_read - self.authority_records_read,
             authority_records_appended: budget.authority_records_appended
@@ -645,6 +657,27 @@ impl WorkCounters {
             materializations: budget.materializations - self.materializations,
         })
     }
+
+    // The shared validator is also the complete no-projection path. Keep the
+    // ordinary public remaining() path direct: no empty output is initialized.
+    pub(crate) fn remaining_into(
+        &self,
+        budget: &WorkBudget,
+        output: Option<&mut WorkBudget>,
+    ) -> Result<(), WorkError> {
+        match output {
+            Some(output) => {
+                *output = self.remaining(*budget)?;
+                Ok(())
+            }
+            None => self.verify_within(budget),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static REMAINING_PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Hard upper bounds admitted before one operation begins.
@@ -681,6 +714,9 @@ std::thread_local! { pub(crate) static VERIFICATION_PASSES: std::cell::Cell<usiz
 
 #[cfg(test)]
 std::thread_local! { pub(crate) static ADDITIVE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+std::thread_local! { pub(crate) static CUMULATIVE_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[cfg(test)]
 std::thread_local! { pub(crate) static VERIFICATION_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

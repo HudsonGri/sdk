@@ -211,16 +211,23 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
         .unwrap(),
     )
     .unwrap();
-    // Exact snapshot of capture using the stable inline projection. Request
-    // headers and segments are staged only when dispatch is claimed.
-    // The response context helper drops its copied ContextInput before
-    // accounting/staging: one allocation and eight peak bytes in this fixture.
-    // This is not a growing allowance; restoring extra preparation must still fail.
-    // The table is feature-independent: the boxed source projection, whose
-    // size follows cfg-gated filesystem state, is added from its type.
+    // Physical future allocations follow their concrete cfg-dependent types.
+    // The fixed table counts request/journal data; it never absorbs frame growth.
+    let (capture, resolve) = response_frame_bytes();
     let mut expected = expected[format!("preparation.{invalid}")].clone();
-    expected[3] =
-        (expected[3].as_u64().unwrap() + crate::context::source_projection_future_bytes()).into();
+    let add = |value: &mut serde_json::Value, bytes: u64| {
+        *value = (value.as_u64().unwrap() + bytes).into();
+    };
+    add(
+        &mut expected[3],
+        capture
+            + if invalid {
+                0
+            } else {
+                resolve + crate::context::source_projection_future_bytes()
+            },
+    );
+    add(&mut expected[5], if invalid { capture } else { resolve });
     let actual = serde_json::json!(differential::allocation_counts(new.4));
     prop_assert!(
         old.0 == new.0 && old.1 == new.1 && old.2 == new.2 && actual == expected,
@@ -244,4 +251,36 @@ fn restoring_redundant_preparations_fails_the_exact_allocation_guard() {
             .to_string()
             .contains("exact preparation allocation differs")
     );
+}
+
+fn response_frame_bytes() -> (u64, u64) {
+    fn capture<F>(
+        _: impl FnOnce(
+            &'static StockExecution<'static>,
+            &'static dyn ExecutionJournal,
+            &'static TurnInput,
+            u32,
+            &'static [ModelMessage],
+            u64,
+        ) -> F,
+    ) -> u64 {
+        std::mem::size_of::<F>() as u64
+    }
+    fn resolve<F>(
+        _: impl FnOnce(
+            &'static StockExecution<'static>,
+            &'static dyn ExecutionJournal,
+            (&'static TurnInput, u32, &'static [ModelMessage]),
+            (ResponseProjection, Option<ContextAccounting>),
+            crate::model::PreparedModelRequest,
+            &'static [ExecutionRecord],
+            &'static mut DispatchPhase,
+        ) -> F,
+    ) -> u64 {
+        std::mem::size_of::<F>() as u64
+    }
+    (
+        capture(StockExecution::capture_response),
+        resolve(StockExecution::resolve_response_accounting),
+    )
 }

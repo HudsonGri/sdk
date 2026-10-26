@@ -3,9 +3,10 @@ use crate::{
     context::{Context, ModelContextCapacity, SummaryBoundary, SummarySource, ThresholdCompaction},
     conversation::ContentPublisher,
     filesystem::ModelTaskCommand,
-    local::tests::{volume, volume_config},
+    local::tests::bootstrap::{Bootstrap, VolumeInitialized},
     model::{ModelContent, ModelMessage, ModelRole},
 };
+use acyclic_test_support::differential;
 
 #[derive(Clone, Copy, Debug)]
 enum Case {
@@ -21,8 +22,33 @@ enum Case {
     Policy,
 }
 
-#[tokio::test]
-async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
+#[test]
+fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
+    // Observe this current-thread runtime, just like a tokio::test, including
+    // every await. Reintroducing per-case volume creation fails this work bound.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(crate::local::storage)?;
+    let (result, initialized) = differential::observe::<_, _, VolumeInitialized>(
+        || runtime,
+        |runtime| runtime.block_on(pre_dispatch_cases()),
+    );
+    result?;
+    eprintln!(
+        "pre-dispatch fixture initializations: {}",
+        initialized.len()
+    );
+    assert_eq!(
+        initialized,
+        [VolumeInitialized],
+        "repeated durable fixture creation"
+    );
+    Ok(())
+}
+
+async fn pre_dispatch_cases() -> Result<()> {
+    let bootstrap = Bootstrap::new().await?;
     for case in [
         Case::OutputZero,
         Case::Projection,
@@ -35,8 +61,6 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
         Case::Accounting,
         Case::Policy,
     ] {
-        let directory = tempfile::tempdir().map_err(crate::local::storage)?;
-        let project = volume(directory.path()).await?;
         let capacity = ModelContextCapacity {
             context_tokens: if matches!(case, Case::SummaryInput) {
                 8192
@@ -59,21 +83,25 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
         if matches!(case, Case::RequestLimit) {
             limits.context_messages = 1;
         }
-        let (_conversation_directory, mut harness) = if matches!(case, Case::MandatoryCapacity) {
+        // The conversation-capacity case owns its distinct authority fixture;
+        // every other case restores independent bytes from the one closed seed.
+        let (_directory, mut harness) = if matches!(case, Case::MandatoryCapacity) {
             let (directory, mut harness) = super::super::poll_sweep::conversation_harness().await?;
             harness.provider = provider.clone();
-            (Some(directory), harness)
+            (directory, harness)
         } else {
-            (
-                None,
-                LocalHarness::open(
-                    volume_config(directory.path(), project, provider.clone())?
-                        .without_default_tools()
-                        .limits(limits)
-                        .compaction(CompactionPolicy::Disabled),
-                )
-                .await?,
+            let directory = bootstrap.restore()?;
+            let harness = LocalHarness::open(
+                bootstrap
+                    .config(directory.path(), provider.clone())?
+                    .limits(limits)
+                    .compaction(CompactionPolicy::Disabled),
             )
+            .await?;
+            assert_eq!(harness.signed.agent(), bootstrap.agent);
+            assert!(provider.requests().is_empty());
+            assert!(harness.current_turn().await?.0.is_none());
+            (directory, harness)
         };
         if matches!(
             case,
@@ -83,10 +111,15 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
                 | Case::Accounting
                 | Case::Policy
         ) {
+            let mut retention = crate::context::CompactionRetention::default();
+            if matches!(case, Case::MandatorySource) {
+                // Conventions are late User messages; this case explicitly retains them.
+                retention.roles.push(ModelRole::User);
+            }
             harness.compaction = CompactionPolicy::Threshold(ThresholdCompaction {
                 response_reserve_tokens: 16_384,
                 recent_tokens: if matches!(case, Case::Policy) { 0 } else { 100 },
-                ..Default::default()
+                retention,
             });
         }
         let operation = OperationId::new();
@@ -119,6 +152,8 @@ async fn every_pre_dispatch_site_is_a_failed_closable_turn() -> Result<()> {
         )
         .await?;
         let mut command = ModelTaskCommand {
+            conversation_id: None,
+            role: None,
             context_manifest: reference.clone(),
             summary_source: None,
             input: ModelContent::Text(if matches!(case, Case::Projection) {

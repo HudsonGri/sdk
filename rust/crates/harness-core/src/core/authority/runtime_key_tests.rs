@@ -59,7 +59,7 @@ fn issuance_receipts_and_metadata_share_runtime_prepared_keys() -> Result<()> {
 }
 
 #[test]
-fn admitted_history_entry_points_authenticate_each_chain_once() -> Result<()> {
+fn admitted_history_entry_points_reuse_evidence_and_recheck_current_trust() -> Result<()> {
     #[derive(Clone, Copy, Debug)]
     enum Entry {
         Record,
@@ -133,33 +133,88 @@ fn admitted_history_entry_points_authenticate_each_chain_once() -> Result<()> {
         &mut None,
     )?;
     for entry in [Entry::Record, Entry::Event, Entry::Live, Entry::Effect] {
-        let (verified, signatures) = acyclic_test_support::differential::observe(
-            || (),
-            |()| match entry {
-                Entry::Record => workload::verify_record(
-                    &verifier,
-                    &event.attestation,
-                    digest,
-                    Some(&event.scope),
-                    &["event:append"],
-                    &mut None,
-                )
-                .map(|_| ()),
-                Entry::Event => verifier.verify_event(&event, &mut None),
-                Entry::Live => workload::live_record(&verifier, &event, &mut None).map(|_| ()),
-                Entry::Effect => verifier.verify_effect(&observation, &mut None),
-            },
-        );
+        let verify = || match entry {
+            Entry::Record => workload::verify_record(
+                &verifier,
+                &event.attestation,
+                digest,
+                Some(&event.scope),
+                &["event:append"],
+                &mut None,
+            )
+            .map(|_| ()),
+            Entry::Event => verifier.verify_event(&event, &mut None),
+            Entry::Live => workload::live_record(&verifier, &event, &mut None).map(|_| ()),
+            Entry::Effect => verifier.verify_effect(&observation, &mut None),
+        };
+        verify()?;
+        let (verified, signatures) =
+            acyclic_test_support::differential::observe(|| (), |()| verify());
         verified?;
         let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
         // Workload: Birth, certified key, two blocks and seal. Receipt:
         // Birth, certified key, one block and seal. Scope inspection and
-        // current-trust rechecks never repeat those nine real signatures.
+        // current-trust rechecks reuse these already authenticated signatures.
         assert_eq!(
             signatures.len(),
-            9,
+            0,
             "duplicate authentication through {entry:?}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn metadata_entry_points_reuse_only_exact_public_signature_evidence() -> Result<()> {
+    let issuer = AuthorityIssuer::new(
+        "metadata-evidence",
+        [101; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "metadata-task".into(),
+        },
+    );
+    let verifier = issuer.copy(&mut None)?.verifier(&mut None)?;
+    let payload = [102; 32];
+    let proof = verifier.canonical_proof(b"metadata-domain", &payload, &mut None)?;
+    let (first, signatures) = acyclic_test_support::differential::observe(
+        || (),
+        |()| verifier.verify_canonical_proof(b"metadata-domain", &payload, &proof, &mut None),
+    );
+    first?;
+    let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+    assert_eq!(signatures.len(), 1);
+    let (again, signatures) = acyclic_test_support::differential::observe(
+        || (),
+        |()| {
+            verifier.copy(&mut None)?.verify_canonical_proof(
+                b"metadata-domain",
+                &payload,
+                &proof,
+                &mut None,
+            )
+        },
+    );
+    again?;
+    let signatures: Vec<acyclic_auth::crypto::SignatureVerification> = signatures;
+    assert!(signatures.is_empty());
+    assert!(
+        verifier
+            .verify_canonical_proof(b"metadata-domain", &[103; 32], &proof, &mut None)
+            .is_err()
+    );
+    assert!(
+        verifier
+            .verify_canonical_proof(b"other-domain", &payload, &proof, &mut None)
+            .is_err()
+    );
+    let other = AuthorityIssuer::new("metadata-evidence", [104; 32], issuer.audience);
+    assert!(
+        other
+            .copy(&mut None)?
+            .verifier(&mut None)?
+            .verify_canonical_proof(b"metadata-domain", &payload, &proof, &mut None)
+            .is_err()
+    );
     Ok(())
 }

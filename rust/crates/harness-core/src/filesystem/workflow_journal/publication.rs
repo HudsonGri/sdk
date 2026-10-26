@@ -6,49 +6,100 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn stage_payload<T: serde::Serialize>(
+    pub(super) async fn stage_payload<T: serde::Serialize + Sync>(
         &self,
         payload: &T,
         transition: Option<(u64, crate::OperationId)>,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        let _bytes;
-        let bytes = match io {
-            Some(io) => io.encode(payload, self.maximum_payload_bytes, false)?,
-            None => serde_json::to_vec(payload)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .into(),
-        };
-        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        if bytes.len() as u64 > self.maximum_payload_bytes {
-            return Err(Error::Invalid(
-                "workflow payload exceeds private-file limit".into(),
-            ));
-        }
-        let (_path, path) = {
-            let path = match transition {
-                Some((revision, operation)) => crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!(
-                            ".system/workflows/{}/{revision:020}-{operation}.json",
-                            self.id()
-                        ),
-                        work,
-                    )
-                })?,
-                None => crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(
-                        format_args!(".system/workflows/{}/admission.json", self.id()),
-                        work,
-                    )
-                })?,
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let _bytes;
+            let bytes = match io {
+                Some(io) => io.encode(payload, self.maximum_payload_bytes, false)?,
+                None => serde_json::to_vec(payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .into(),
             };
-            let held = io
-                .map(|io| io.guard_owned(path.capacity() as u64))
-                .transpose()?;
-            (held, path)
-        };
-        let (_key, key) = {
+            _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            if bytes.len() as u64 > self.maximum_payload_bytes {
+                return Err(Error::Invalid(
+                    "workflow payload exceeds private-file limit".into(),
+                ));
+            }
+            let (_path, path) = {
+                let path = match transition {
+                    Some((revision, operation)) => crate::executor::with_history_io(io, |work| {
+                        crate::executor::preparation_format(
+                            format_args!(
+                                ".system/workflows/{}/{revision:020}-{operation}.json",
+                                self.id()
+                            ),
+                            work,
+                        )
+                    })?,
+                    None => crate::executor::with_history_io(io, |work| {
+                        crate::executor::preparation_format(
+                            format_args!(".system/workflows/{}/admission.json", self.id()),
+                            work,
+                        )
+                    })?,
+                };
+                let held = io
+                    .map(|io| io.guard_owned(path.capacity() as u64))
+                    .transpose()?;
+                (held, path)
+            };
+            let (_key, key) = self.payload_key(transition, io)?;
+            let maximum = io
+                .map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
+                .transpose()?
+                .unwrap_or(u64::MAX);
+            let (_grant, grant) = {
+                let grant = crate::executor::with_history_io(io, |work| {
+                    ContentGrant::verify(
+                        &self.verifier,
+                        &self.scope,
+                        &self.volume,
+                        VolumeOperation::Write,
+                        maximum,
+                        work,
+                    )
+                })?;
+                let held = io
+                    .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
+                    .transpose()?;
+                (held, grant)
+            };
+            self.host
+                .put_content_impl(
+                    &self.volume,
+                    &grant,
+                    &path,
+                    &bytes,
+                    "application/json",
+                    if transition.is_some() {
+                        "transition.json"
+                    } else {
+                        "admission.json"
+                    },
+                    self.maximum_payload_bytes,
+                    &key,
+                    Some(InternalContentClass::Workflow),
+                    None,
+                    None,
+                    io,
+                )
+                .await
+        })?
+        .await
+    }
+
+    fn payload_key<'i>(
+        &self,
+        transition: Option<(u64, crate::OperationId)>,
+        io: Option<&'i PreparationIo>,
+    ) -> Result<(Option<super::super::DecodeReservation<'i>>, IdempotencyKey)> {
+        let (held, key) = {
             let key = match transition {
                 Some((_, operation)) => crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(
@@ -68,47 +119,7 @@ where
                 .transpose()?;
             (held, key)
         };
-        let key = IdempotencyKey::new(key)?;
-        let maximum = io
-            .map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
-        let (_grant, grant) = {
-            let grant = crate::executor::with_history_io(io, |work| {
-                ContentGrant::verify(
-                    &self.verifier,
-                    &self.scope,
-                    &self.volume,
-                    VolumeOperation::Write,
-                    maximum,
-                    work,
-                )
-            })?;
-            let held = io
-                .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
-                .transpose()?;
-            (held, grant)
-        };
-        self.host
-            .put_content_impl(
-                &self.volume,
-                &grant,
-                &path,
-                &bytes,
-                "application/json",
-                if transition.is_some() {
-                    "transition.json"
-                } else {
-                    "admission.json"
-                },
-                self.maximum_payload_bytes,
-                &key,
-                Some(InternalContentClass::Workflow),
-                None,
-                None,
-                io,
-            )
-            .await
+        Ok((held, IdempotencyKey::new(key)?))
     }
 
     pub(super) async fn append_reference(
@@ -267,7 +278,10 @@ where
         if existing != *record {
             return Err(Error::Conflict("workflow operation identity reused".into()));
         }
-        self.verify_command_payloads(&existing, io).await?;
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_command_payloads(&existing, io)
+        })?
+        .await?;
         Ok(Some(existing))
     }
 
@@ -295,13 +309,19 @@ where
             io.check_cancellation()?;
         }
         if let Some(owner) = &self.owner {
-            self.verify_observation_owner(owner, false, io).await?;
+            crate::conversation::BoundedContentFuture::new(io, || {
+                self.verify_observation_owner(owner, false, io)
+            })?
+            .await?;
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let (_admission, admission) = {
-            let admission = self.read_admission(io).await?.ok_or_else(|| {
-                Error::Conflict("workflow transition has no retained admission".into())
-            })?;
+            let admission =
+                crate::conversation::BoundedContentFuture::new(io, || self.read_admission(io))?
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Conflict("workflow transition has no retained admission".into())
+                    })?;
             let held = io
                 .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
@@ -315,7 +335,10 @@ where
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let (history_hold, (revision, existing)) = {
                 let (revision, existing) =
-                    self.verified_history(&admission, record, true, io).await?;
+                    crate::conversation::BoundedContentFuture::new(io, || {
+                        self.verified_history(&admission, record, true, io)
+                    })?
+                    .await?;
                 let history_hold = io
                     .map(|io| io.guard_owned(io.owned_since(before)?))
                     .transpose()?;
@@ -327,7 +350,10 @@ where
                         "workflow operation identity is already bound".into(),
                     ));
                 }
-                self.verify_command_payloads(&existing, io).await?;
+                crate::conversation::BoundedContentFuture::new(io, || {
+                    self.verify_command_payloads(&existing, io)
+                })?
+                .await?;
                 drop(history_hold);
                 return Ok(());
             }
@@ -338,7 +364,10 @@ where
             }
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        self.verify_command_payloads(record, io).await?;
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_command_payloads(record, io)
+        })?
+        .await?;
         let (_reference, reference) = {
             let reference = self
                 .stage_payload(
@@ -355,7 +384,10 @@ where
         {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let (_staged, staged) = {
-                let staged = self.read_record(&reference, false, false, io).await?;
+                let staged = crate::conversation::BoundedContentFuture::new(io, || {
+                    self.read_record(&reference, false, false, io)
+                })?
+                .await?;
                 let held = io
                     .map(|io| io.guard_owned(io.owned_since(before)?))
                     .transpose()?;
@@ -367,8 +399,8 @@ where
                 ));
             }
         }
-        let appended = self
-            .append_reference(
+        let appended = crate::conversation::BoundedContentFuture::new(io, || {
+            self.append_reference(
                 &self.path,
                 idempotency_key.as_str(),
                 expected_revision,
@@ -376,28 +408,38 @@ where
                 &reference,
                 io,
             )
-            .await;
+        })?
+        .await;
         match appended {
             Ok(true) => Ok(()),
-            Ok(false) => match self.reconcile(record, io).await? {
+            Ok(false) => match crate::conversation::BoundedContentFuture::new(io, || {
+                self.reconcile(record, io)
+            })?
+            .await?
+            {
                 Some(_) => Ok(()),
                 None => Err(Error::Conflict(
                     "workflow checkpoint or ownership changed".into(),
                 )),
             },
-            Err(Error::Indeterminate(_)) if self.owner.is_none() => match self
-                .reconcile(record, io)
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => {
+                match crate::conversation::BoundedContentFuture::new(io, || {
+                    self.reconcile(record, io)
+                })?
                 .await
-            {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(record.operation_id)),
-                #[cfg(not(target_arch = "wasm32"))]
-                Err(Error::NativeStream {
-                    source: StreamError::Unavailable,
-                    ..
-                }) => Err(Error::Indeterminate(record.operation_id)),
-                Err(error) => Err(error),
-            },
+                {
+                    Ok(Some(_)) => Ok(()),
+                    Ok(None) | Err(Error::Storage(_)) => {
+                        Err(Error::Indeterminate(record.operation_id))
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Err(Error::NativeStream {
+                        source: StreamError::Unavailable,
+                        ..
+                    }) => Err(Error::Indeterminate(record.operation_id)),
+                    Err(error) => Err(error),
+                }
+            }
             Err(error) => Err(error),
         }
     }

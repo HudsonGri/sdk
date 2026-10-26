@@ -1,6 +1,8 @@
 use super::*;
 use crate::WorkBudget;
 
+mod arithmetic;
+
 const APPENDS: u64 = 10;
 const COPIED: u64 = 100;
 const PEAK: u64 = 1 << 20;
@@ -503,4 +505,41 @@ fn a_runtime_failure_is_reported_only_to_the_window_that_failed() {
             .is_none()
     );
     exceeded(&session.runtime_error(plain), "bytes_copied");
+}
+
+#[test]
+fn each_window_transition_has_one_ledger_lease() {
+    let session = root();
+    let window = session.invocation_window().unwrap();
+    WINDOW_LEASES.with(|count| count.set(0));
+    window.charge(appends(1)).unwrap();
+    WINDOW_LEASES.with(|count| assert_eq!(count.get(), 1));
+}
+
+#[test]
+fn unwinding_settles_the_window_before_the_next_invocation() {
+    let session = root();
+    let window = session.invocation_window().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        window.state(|state| {
+            state.charge(appends(3)).unwrap();
+            panic!("after accepted work");
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(
+        window
+            .window
+            .as_ref()
+            .unwrap()
+            .state()
+            .ledger
+            .consumed
+            .authority_records_appended,
+        3
+    );
+    assert_eq!(session.receipt().authority_records_appended, 3);
+    // The original leaf remains failed closed after an unwinding operation.
+    assert!(window.remaining().is_err());
+    assert!(session.remaining().is_err());
 }

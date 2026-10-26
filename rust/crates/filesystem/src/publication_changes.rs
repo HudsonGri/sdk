@@ -89,44 +89,53 @@ impl PublicationChanges {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Self, FsError> {
-        let before = accounting
-            .standalone_parts()
-            .map(|(a, _, _, _)| a.live_bytes());
-        let volume = endpoints
-            .last()
-            .and_then(Option::as_ref)
-            .ok_or(FsError::InvalidDiff)?
-            .root
-            .volume_id;
-        let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
-        let (paths, mut allocation) =
-            crate::workspace::complete_changed_paths(endpoints, maximum, accounting, cancellation)
-                .await
-                .map_err(change_error)?;
-        let control_bytes =
-            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<ChangeData>())
-                .map_err(|_| WorkError::Overflow)? as u64;
-        let mut control = accounting.claim_owned(control_bytes, 1)?;
-        allocation.absorb(&mut control)?;
-        let standalone_bytes = if let Some(before) = before {
-            let (allocations, _, _, _) =
-                accounting.standalone_parts().ok_or(WorkError::Overflow)?;
-            allocations
-                .live_bytes()
-                .checked_sub(before)
-                .ok_or(WorkError::Overflow)?
-        } else {
-            0
-        };
-        Ok(Self(Arc::new(ChangeData {
-            volume,
-            base,
-            root,
-            config,
-            paths,
-            standalone_bytes,
-            _allocation: allocation,
-        })))
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            let before = accounting
+                .standalone_parts()
+                .map(|(a, _, _, _)| a.live_bytes());
+            let volume = endpoints
+                .last()
+                .and_then(Option::as_ref)
+                .ok_or(FsError::InvalidDiff)?
+                .root
+                .volume_id;
+            let maximum = u32::try_from(accounting.remaining()?.items_examined).unwrap_or(u32::MAX);
+            let (paths, mut allocation) = crate::workspace::complete_changed_paths(
+                endpoints,
+                maximum,
+                accounting,
+                cancellation,
+            )
+            .await
+            .map_err(change_error)?;
+            let control_bytes =
+                crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<ChangeData>())
+                    .map_err(|_| WorkError::Overflow)? as u64;
+            let mut control = accounting.claim_owned(control_bytes, 1)?;
+            allocation.absorb(&mut control)?;
+            let standalone_bytes = if let Some(before) = before {
+                let (allocations, _, _, _) =
+                    accounting.standalone_parts().ok_or(WorkError::Overflow)?;
+                allocations
+                    .live_bytes()
+                    .checked_sub(before)
+                    .ok_or(WorkError::Overflow)?
+            } else {
+                0
+            };
+            Ok(Self(Arc::new(ChangeData {
+                volume,
+                base,
+                root,
+                config,
+                paths,
+                standalone_bytes,
+                _allocation: allocation,
+            })))
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     pub(crate) async fn initial<O: AsyncObjectStore>(
@@ -177,50 +186,56 @@ impl PublicationChanges {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Option<Self>, FsError> {
-        let Some((head, current_root, config)) =
-            authority::facts(authority, request, accounting, cancellation).await?
-        else {
-            return Ok(None);
-        };
-        if candidate.volume_id != request.volume_id {
-            return Err(FsError::InvalidDiff);
-        }
-        let limits = DecodeLimits::for_volume(config);
-        let (before, guard) = crate::kernel::read_generation_root_with_limits_and_accounting(
-            objects,
-            current_root,
-            limits,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        if before.volume_id != request.volume_id {
-            return Err(FsError::InvalidDiff);
-        }
-        let bytes = (before.parents.capacity() * std::mem::size_of::<crate::GenerationId>()) as u64;
-        let before = Owned::new(before, guard, bytes);
-        let result = Self::prepare(
-            [
-                Some(NamespaceView {
-                    objects,
-                    config,
-                    root: &before.value,
-                }),
-                Some(NamespaceView {
-                    objects,
-                    config,
-                    root: candidate,
-                }),
-            ],
-            Some(head),
-            request.generation_root,
-            config,
-            accounting,
-            cancellation,
-        )
-        .await;
-        before.retire(accounting)?;
-        result.map(Some)
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            let Some((head, current_root, config)) =
+                authority::facts(authority, request, accounting, cancellation).await?
+            else {
+                return Ok(None);
+            };
+            if candidate.volume_id != request.volume_id {
+                return Err(FsError::InvalidDiff);
+            }
+            let limits = DecodeLimits::for_volume(config);
+            let (before, guard) = crate::kernel::read_generation_root_with_limits_and_accounting(
+                objects,
+                current_root,
+                limits,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            if before.volume_id != request.volume_id {
+                return Err(FsError::InvalidDiff);
+            }
+            let bytes =
+                (before.parents.capacity() * std::mem::size_of::<crate::GenerationId>()) as u64;
+            let before = Owned::new(before, guard, bytes);
+            let result = Self::prepare(
+                [
+                    Some(NamespaceView {
+                        objects,
+                        config,
+                        root: &before.value,
+                    }),
+                    Some(NamespaceView {
+                        objects,
+                        config,
+                        root: candidate,
+                    }),
+                ],
+                Some(head),
+                request.generation_root,
+                config,
+                accounting,
+                cancellation,
+            )
+            .await;
+            before.retire(accounting)?;
+            result.map(Some)
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 }
 

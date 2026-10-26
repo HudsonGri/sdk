@@ -6,7 +6,8 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) io: Option<&'a PreparationIo>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
-    pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
+    pub(in crate::executor) summary: Option<(&'a ContextPipeline, Option<u32>)>,
+    pub(in crate::executor) journal_order: JournalOrder<'a>,
     /// Resolved on first use, after `context` and `io` are fixed.
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
     pub(in crate::executor) records:
@@ -18,6 +19,21 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) request_cache:
         tokio::sync::Mutex<crate::executor::retained_request::RequestCache<'a>>,
     pub(in crate::executor) content_admission: crate::executor::ExecutionJournalCacheId,
+}
+
+/// One ordering point for a turn's journal transactions and streamed model events.
+pub(in crate::executor) enum JournalOrder<'a> {
+    Owned(tokio::sync::Mutex<()>),
+    Borrowed(&'a tokio::sync::Mutex<()>),
+}
+
+impl JournalOrder<'_> {
+    pub(in crate::executor) fn mutex(&self) -> &tokio::sync::Mutex<()> {
+        match self {
+            Self::Owned(mutex) => mutex,
+            Self::Borrowed(mutex) => mutex,
+        }
+    }
 }
 
 /// The turn's compaction policy, resolved once from the original IO, with the
@@ -39,6 +55,7 @@ impl<'a> StockExecution<'a> {
             interactions: None,
             io: None,
             summary: None,
+            journal_order: JournalOrder::Owned(tokio::sync::Mutex::new(())),
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_context: tokio::sync::OnceCell::new(),
@@ -46,6 +63,31 @@ impl<'a> StockExecution<'a> {
             request_cache: tokio::sync::Mutex::new(Default::default()),
             content_admission: Default::default(),
         }
+    }
+    pub(in crate::executor) fn selected_for_turn(
+        &self,
+        input: &TurnInput,
+        step: u32,
+    ) -> Result<&Model> {
+        self.stock.provider.model_for_turn(
+            &self.stock.model,
+            crate::model::ModelTurn {
+                operation_id: input.operation_id,
+                ordinal: u64::from(step),
+                role: if self.summary.is_some() {
+                    "summary"
+                } else {
+                    self.stock.role.as_deref().unwrap_or("root")
+                },
+            },
+            self.native_work(),
+        )
+    }
+
+    pub(in crate::executor) fn recorded_model(&self, recorded: &Model) -> Result<&Model> {
+        self.stock
+            .provider
+            .recorded_model(&self.stock.model, recorded, self.native_work())
     }
     pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {
         #[cfg(feature = "filesystem")]
@@ -209,13 +251,16 @@ pub(in crate::executor) fn native_execution_supported(
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::executor) async fn native_result<T>(
+pub(in crate::executor) async fn native_result<T, F>(
     io: &PreparationIo,
-    operation: impl std::future::Future<Output = Result<T>>,
+    build: impl FnOnce() -> F,
     owned_bytes: impl FnOnce(&T) -> Result<u64>,
-) -> Result<(T, acyclic_fs::NativeAllocation)> {
+) -> Result<(T, acyclic_fs::NativeAllocation)>
+where
+    F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask,
+{
     io.retain_owned(std::mem::size_of::<T>() as u64)?;
-    let output = operation.await?;
+    let output = crate::conversation::BoundedContentFuture::new(Some(io), build)?.await?;
     let retained = owned_bytes(&output)?;
     io.original_native_work()
         .ok_or_else(|| {

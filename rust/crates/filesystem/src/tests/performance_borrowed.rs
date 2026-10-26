@@ -233,7 +233,7 @@ fn item_only_charge_does_one_addition_and_old_path_fails_the_same_bound() {
             }
         });
         let steps = ADDITIVE_STEPS.with(std::cell::Cell::get);
-        assert_eq!(steps, if old { 46 } else { 1 });
+        assert_eq!(steps, if old { 2 } else { 1 });
         assert_eq!(
             steps == 1,
             !old,

@@ -541,7 +541,7 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
                 }
                 2 => {
                     *invalid.pointer_mut("/scratch/workspace_id").unwrap() =
-                        serde_json::json!(vec![0u8; 16])
+                        serde_json::json!(vec![0u8; 16]);
                 }
                 _ => {
                     invalid
@@ -630,106 +630,136 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
     }
 }
 
-#[tokio::test]
-async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
-    for boundary in [1, 2, 3, 4, 5] {
-        for cancelled in [false, true] {
-            let fixture = Fixture::new(project()).await;
-            fixture.lose_ack(boundary).await;
-            let dispatch = fixture.dispatch().await;
-            let before = fixture
-                .provider
-                .observe_resources_with_native_work(
-                    dispatch.effect_id,
-                    dispatch.attempt_id,
-                    &fixture.startup,
-                )
+mod every_lost_ack_reconciles_original_resources_or_cancellation {
+
+    // Each recovery state keeps the original independent durable fixture. The
+    // existing libtest workers can run these states without a serial tail.
+    macro_rules! boundaries {
+        ($($name:ident => $boundary:literal),* $(,)?) => {
+            const INVENTORY: &[(u8, bool)] = &[$(($boundary, false), ($boundary, true)),*];
+            $(mod $name {
+                #[tokio::test]
+                async fn recovered() { super::super::reconcile_lost_ack($boundary, false).await; }
+                #[tokio::test]
+                async fn cancelled() { super::super::reconcile_lost_ack($boundary, true).await; }
+            })*
+        };
+    }
+    boundaries! {
+        after_root_creation => 1,
+        before_result_stage => 2,
+        before_attachments_stage => 3,
+        after_result_stage => 4,
+        after_conversation_bind => 5,
+    }
+
+    #[test]
+    fn inventory_retains_every_boundary_and_cancellation_state() {
+        let expected: Vec<_> = (1..=5)
+            .flat_map(|boundary| [(boundary, false), (boundary, true)])
+            .collect();
+        assert_eq!(
+            INVENTORY, expected,
+            "a root-provider recovery state was omitted"
+        );
+    }
+}
+
+async fn reconcile_lost_ack(boundary: u8, cancelled: bool) {
+    let fixture = Fixture::new(project()).await;
+    fixture.lose_ack(boundary).await;
+    let dispatch = fixture.dispatch().await;
+    let before = fixture
+        .provider
+        .observe_resources_with_native_work(
+            dispatch.effect_id,
+            dispatch.attempt_id,
+            &fixture.startup,
+        )
+        .await
+        .unwrap();
+    let name = fixture
+        .request
+        .binding
+        .scratch
+        .volume
+        .storage_name(&mut None)
+        .unwrap();
+    let query = crate::pi_fork::tests::work();
+    let scratch = fixture
+        .resources
+        .fs
+        .open_workspace(&name, &query, query.cancellation())
+        .await
+        .ok();
+    let workspace = scratch.as_ref().map(|scratch| scratch.id());
+    if let Some(scratch) = scratch {
+        scratch
+            .write_text("/later.txt", "mutable head advanced")
+            .await
+            .unwrap();
+    }
+    let reopened = fixture.reopen().await;
+    if cancelled {
+        fixture
+            .runtime
+            .runtime
+            .task_host()
+            .cancel(fixture.request.binding.task_id)
+            .await
+            .unwrap();
+    }
+    let observed = reopened
+        .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup)
+        .unwrap()
+        .await
+        .unwrap();
+    assert_eq!(observed.is_some(), !cancelled || matches!(boundary, 2 | 4));
+    if let Some(observed) = observed {
+        let EffectStatus::Succeeded { result } = &observed.0.status else {
+            panic!("original resources")
+        };
+        let allocation = reopened
+            .read_with_native_work::<PiRootAllocation>(result, &fixture.startup)
+            .await
+            .unwrap();
+        if let Some(before) = before {
+            assert!(same_allocation(&before.0, &allocation.0));
+        }
+        if let Some(workspace) = workspace {
+            assert_eq!(allocation.0.scratch.workspace_id, workspace.into_bytes());
+        }
+        assert_eq!(
+            reopened
+                .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup)
+                .unwrap()
                 .await
-                .unwrap();
-            let name = fixture
-                .request
-                .binding
-                .scratch
-                .volume
-                .storage_name(&mut None)
-                .unwrap();
-            let query = crate::pi_fork::tests::work();
-            let scratch = fixture
+                .unwrap()
+                .unwrap()
+                .0,
+            observed.0
+        );
+    } else {
+        assert!(
+            fixture
                 .resources
                 .fs
                 .open_workspace(&name, &query, query.cancellation())
                 .await
-                .ok();
-            let workspace = scratch.as_ref().map(|scratch| scratch.id());
-            if let Some(scratch) = scratch {
-                scratch
-                    .write_text("/later.txt", "mutable head advanced")
-                    .await
-                    .unwrap();
-            }
-            let reopened = fixture.reopen().await;
-            if cancelled {
-                fixture
-                    .runtime
-                    .runtime
-                    .task_host()
-                    .cancel(fixture.request.binding.task_id)
-                    .await
-                    .unwrap();
-            }
-            let observed = reopened
-                .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup)
+                .is_err()
+        );
+        assert!(
+            reopened
+                .dispatch_with_native_work(dispatch.clone(), &fixture.startup)
                 .unwrap()
                 .await
-                .unwrap();
-            assert_eq!(observed.is_some(), !cancelled || matches!(boundary, 2 | 4));
-            if let Some(observed) = observed {
-                let EffectStatus::Succeeded { result } = &observed.0.status else {
-                    panic!("original resources")
-                };
-                let allocation = reopened
-                    .read_with_native_work::<PiRootAllocation>(result, &fixture.startup)
-                    .await
-                    .unwrap();
-                if let Some(before) = before {
-                    assert!(same_allocation(&before.0, &allocation.0));
-                }
-                if let Some(workspace) = workspace {
-                    assert_eq!(allocation.0.scratch.workspace_id, workspace.into_bytes());
-                }
-                assert_eq!(
-                    reopened
-                        .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup)
-                        .unwrap()
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .0,
-                    observed.0
-                );
-            } else {
-                assert!(
-                    fixture
-                        .resources
-                        .fs
-                        .open_workspace(&name, &query, query.cancellation())
-                        .await
-                        .is_err()
-                );
-                assert!(
-                    reopened
-                        .dispatch_with_native_work(dispatch.clone(), &fixture.startup)
-                        .unwrap()
-                        .await
-                        .is_err()
-                );
-            }
-            assert_eq!(
-                std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
-                b"original native bytes"
-            );
-        }
+                .is_err()
+        );
     }
+    assert_eq!(
+        std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
+        b"original native bytes"
+    );
 }
 
 #[tokio::test]
@@ -1417,4 +1447,51 @@ fn a_provider_retains_only_plain_data_of_an_observed_allocation() {
     assert!(std::mem::needs_drop::<
         crate::pi_root_allocation::PiRootAllocation,
     >());
+}
+
+#[test]
+fn native_buffer_codec_keeps_the_existing_preparation_owner() {
+    use acyclic_fs::WorkCounters;
+    use acyclic_harness::executor::json::JsonCodecCharge as Charge;
+    let (receipt, trace) = acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+        || {
+            let work = crate::pi_fork::tests::work();
+            let custody = work.claim(0, 0, WorkCounters::UNCHARGED).unwrap();
+            (work, custody)
+        },
+        |(work, mut custody)| {
+            let before = work.receipt();
+            for charge in [
+                Charge::Inspect { items: 1 },
+                Charge::Work { bytes: 3, items: 2 },
+                Charge::CopyAdmission { bytes: 4 },
+                Charge::Copy { bytes: 4 },
+                Charge::AllocationOperation { bytes: 1 },
+                Charge::AllocationOperations { operations: 2 },
+                Charge::Read { bytes: 5 },
+                Charge::Retain { bytes: 8 },
+                Charge::Release { bytes: 8 },
+            ] {
+                super::native_buffer_codec_charge(&mut custody, charge).unwrap();
+            }
+            assert_eq!(custody.bytes(), 0);
+            let after = work.receipt();
+            assert_eq!(after.items_examined - before.items_examined, 3);
+            assert_eq!(after.bytes_encoded - before.bytes_encoded, 3);
+            assert_eq!(after.bytes_copied - before.bytes_copied, 4);
+            assert_eq!(after.source_bytes_read - before.source_bytes_read, 5);
+            assert_eq!(
+                after.allocation_operations - before.allocation_operations,
+                3
+            );
+            after
+        },
+    );
+    assert!(receipt.items_examined >= 3);
+    assert!(
+        !trace
+            .iter()
+            .any(|(kind, _)| *kind == "native-preparation-owner"),
+        "per-event preparation owners: {trace:?}"
+    );
 }

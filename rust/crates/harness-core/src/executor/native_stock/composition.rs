@@ -8,6 +8,11 @@ pub(crate) struct NativeStockExecutor {
 }
 
 impl NativeStockExecutor {
+    /// Retains the role owned by this command without copying its string.
+    pub(crate) fn with_role(mut self, role: Option<String>) -> Self {
+        self.stock.set_role(role);
+        self
+    }
     /// Consumes the command's funded registry; its original PreparationIo retains
     /// that custody until this executor is dropped. Copies the remaining configuration.
     pub(crate) fn new(
@@ -115,9 +120,15 @@ impl NativeStockExecutor {
         self
     }
 
+    /// Carries the command's retained conversation on the original ledger.
+    pub(crate) fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.stock.set_conversation_id(conversation);
+        self
+    }
+
     /// Selects a pinned summary source without copying its retained command data.
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
-        self.stock = self.stock.with_summary_source(source);
+        self.stock.set_summary_source(source);
         self
     }
 
@@ -169,7 +180,7 @@ impl NativeStockExecutor {
             };
             native_result(
                 &io,
-                session.execute_progress(input, journal),
+                || session.execute_progress(input, journal),
                 native_progress_owned_bytes,
             )
             .await

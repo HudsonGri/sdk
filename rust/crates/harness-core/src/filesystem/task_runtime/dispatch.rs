@@ -65,12 +65,12 @@ where
                                 reason: "native command context differs from original task lease",
                             });
                         }
-                        let body = shared
-                            .read_file(
+                        let body = crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                            shared.read_file(
                                 &command.payload,
                                 Some(&crate::executor::PreparationIo::from_native_work(work)?),
-                            )
-                            .await?;
+                            ).await
+                        })?.await?;
                         let payload = crate::filesystem::retain_decoded(io.decode(
                             std::marker::PhantomData::<Value>,
                             &body,
@@ -91,7 +91,7 @@ where
                     }
                     WorkerContext::Ordinary(context) => {
                         let payload = crate::contract::json_from_slice(
-                            &context.read_file(&command.payload, None).await?,
+                            &crate::conversation::BoundedContentFuture::new(io, || context.read_file(&command.payload, None))?.await?,
                         )
                         .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
                         commands

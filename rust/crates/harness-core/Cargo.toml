@@ -43,16 +43,17 @@ model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = []
-wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+wasm = ["dep:web-sys", "acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
-filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+filesystem = ["acyclic-fs/memory", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom", "dep:tempfile"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
 hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
-mcp-http = ["dep:reqwest", "dep:toml"]
+native-http = ["dep:reqwest", "dep:rustls"]
+mcp-http = ["native-http", "dep:toml"]
 mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which"]
 # Native environment access for acyclic-harness-search credentials.
 search-http = []
@@ -72,6 +73,7 @@ acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
+async-stream = "0.3.6"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
@@ -80,7 +82,7 @@ base64 = "=0.22.1"
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
-hex = { workspace = true, optional = true }
+hex.workspace = true
 http.workspace = true
 jsonschema.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
@@ -96,7 +98,6 @@ sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 toml = { workspace = true, optional = true }
-sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
 tonic = { workspace = true, optional = true }
@@ -150,6 +151,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 tokio = { workspace = true, features = ["test-util", "process"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { workspace = true, optional = true, features = ["AbortController", "AbortSignal", "Blob", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true

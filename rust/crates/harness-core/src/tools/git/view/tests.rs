@@ -704,3 +704,15 @@ async fn volume_merge_revalidates_the_execution_owner_without_a_checkout() -> Te
     );
     Ok(())
 }
+
+#[test]
+fn shared_git_dispatch_frame_stays_bounded() {
+    fn size<A, F: std::future::Future>(_: impl FnOnce(A) -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let bytes = size(|(workspace, args): (Workspace<'_>, &[String])| {
+        run_with_guard(workspace, args, || std::future::ready(Ok(())))
+    });
+    eprintln!("shared git dispatch future: {bytes} bytes");
+    assert!(bytes <= 8192, "shared git dispatch future: {bytes}");
+}

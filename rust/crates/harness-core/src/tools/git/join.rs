@@ -1,5 +1,6 @@
 //! Project text markers and retain other conflicting entries for manual edits.
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 impl<F, Fut> WorkspaceGitExecutor<'_, F>
 where
@@ -14,14 +15,18 @@ where
         rebase: bool,
         tracked: &BTreeSet<String>,
     ) -> crate::Result<GitFilesystemResult> {
-        let source = self.workspace(source).await?;
-        let plan = self.plan_join(&source, rebase).await?;
-        let plan = self.without_reserved(plan, operation, rebase).await?;
+        let source = BoundedContentFuture::new(None, || self.workspace(source))?.await?;
+        let plan = BoundedContentFuture::new(None, || self.plan_join(&source, rebase))?.await?;
+        let plan =
+            BoundedContentFuture::new(None, || self.without_reserved(plan, operation, rebase))?
+                .await?;
         let options = ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
         };
-        let (plan, initial) = self.apply_on_exact_base(plan, &source, options).await?;
+        let (plan, initial) =
+            BoundedContentFuture::new(None, || self.apply_on_exact_base(plan, &source, options))?
+                .await?;
         let mut unresolved = false;
         let outcome = if let JoinOutcome::Conflicted {
             conflicts,
@@ -33,7 +38,8 @@ where
                 return Err(Self::error("Git join conflict frontier is incomplete"));
             }
             let paths = conflict_paths(&typed)?;
-            let (candidate, unresolved_here) = self.merge_candidate(typed).await?;
+            let (candidate, unresolved_here) =
+                BoundedContentFuture::new(None, || self.merge_candidate(typed))?.await?;
             unresolved |= unresolved_here;
             let resolutions = super::materialize::prepared(
                 async {
@@ -84,9 +90,10 @@ where
                 "Git join has unresolved conflicts. Edit the conflicted paths, then run `fs merge --continue`, or `fs merge --abort`",
             ));
         }
-        let tracked_paths = self
-            .joined_tracked_paths(operation, target_tree, &generation, tracked)
-            .await?;
+        let tracked_paths = BoundedContentFuture::new(None, || {
+            self.joined_tracked_paths(operation, target_tree, &generation, tracked)
+        })?
+        .await?;
         Ok(GitFilesystemResult::Applied {
             tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
             tracked_paths: Some(tracked_paths),
@@ -201,28 +208,41 @@ where
         acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
         acyclic_fs::JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
     )> {
-        let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
+        let initial = BoundedContentFuture::new(None, || async {
+            plan.apply(options, BTreeMap::new(), self.permit)
+                .await
+                .map_err(Error::from)
+        })?
+        .await?;
         Ok(match initial {
             JoinOutcome::Conflicted {
                 conflicts,
                 truncated,
-            } => match self
-                .exact_base(&plan, source, conflicts.clone(), truncated)
-                .await?
-            {
-                Some(base) => {
-                    let plan = plan.refine_base(&base).await.map_err(Error::from)?;
-                    let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
-                    (plan, initial)
+            } => {
+                let base = BoundedContentFuture::new(None, || {
+                    self.exact_base(&plan, source, conflicts.clone(), truncated)
+                })?
+                .await?;
+                match base {
+                    Some(base) => {
+                        let plan = plan.refine_base(&base).await.map_err(Error::from)?;
+                        let initial = BoundedContentFuture::new(None, || async {
+                            plan.apply(options, BTreeMap::new(), self.permit)
+                                .await
+                                .map_err(Error::from)
+                        })?
+                        .await?;
+                        (plan, initial)
+                    }
+                    None => (
+                        plan,
+                        JoinOutcome::Conflicted {
+                            conflicts,
+                            truncated,
+                        },
+                    ),
                 }
-                None => (
-                    plan,
-                    JoinOutcome::Conflicted {
-                        conflicts,
-                        truncated,
-                    },
-                ),
-            },
+            }
             initial => (plan, initial),
         })
     }

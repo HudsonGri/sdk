@@ -79,6 +79,7 @@ mod wire;
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;
 mod history;
+mod http;
 mod mcp;
 #[cfg(feature = "browser")]
 mod task_runtime;

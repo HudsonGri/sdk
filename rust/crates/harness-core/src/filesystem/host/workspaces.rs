@@ -59,33 +59,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-        acyclic_differential::record(("read", maximum_bytes));
-        let owned;
-        let io = if let Some(io) = io {
-            io
-        } else {
-            owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &owned
-        };
-        let workspace = self.open(reference, Some(io)).await?;
-        let bytes = match generation {
-            Some(reference) => io.sdk(
-                self.generation(&workspace, reference, Some(io))
-                    .await?
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-            None => io.sdk(
-                workspace
-                    .read(path, maximum_bytes, io, io.cancellation())
-                    .await,
-            )?,
-        };
-        if io.original_native_work().is_none() {
-            io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-        }
-        Ok(bytes)
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+            acyclic_differential::record(("read", maximum_bytes));
+            let owned;
+            let io = if let Some(io) = io {
+                io
+            } else {
+                owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &owned
+            };
+            let workspace = self.open(reference, Some(io)).await?;
+            let bytes = match generation {
+                Some(reference) => io.sdk(
+                    self.generation(&workspace, reference, Some(io))
+                        .await?
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .await,
+                )?,
+                None => io.sdk(
+                    workspace
+                        .read(path, maximum_bytes, io, io.cancellation())
+                        .await,
+                )?,
+            };
+            if io.original_native_work().is_none() {
+                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+            }
+            Ok(bytes)
+        })?
+        .await
     }
 
     /// Stats one path at the current head or an exact generation.
@@ -244,107 +247,133 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         invalidate_metadata: bool,
         publication: FilePublication<'_>,
     ) -> Result<Generation<A, O>> {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        let workspace = self.open(workspace, None).await?;
-        let key = filesystem_key(idempotency_key);
-        let mut transaction = match expected_generation {
-            Some(reference) => {
-                let generation = self.generation(&workspace, reference, None).await?;
-                workspace
-                    .begin_transaction_at(&generation, key, budget, &cancellation)
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+            let workspace = self.open(workspace, None).await?;
+            let key = filesystem_key(idempotency_key);
+            let mut transaction = self
+                .begin_unmeasured(&workspace, expected_generation, key, budget, &cancellation)
+                .await?;
+            if let Some(fence) = publication.fence() {
+                transaction
+                    .observe_policy_fence(fence, budget, &cancellation)
+                    .await
+                    .map_err(|failure| map_error(failure.error))?;
+            }
+            crate::conversation::BoundedContentFuture::new(None, || {
+                Self::stage_unmeasured(
+                    &mut transaction,
+                    mutations,
+                    invalidate_metadata,
+                    publication,
+                    budget,
+                    &cancellation,
+                )
+            })?
+            .await?;
+            loop {
+                let committed = crate::conversation::BoundedContentFuture::new(None, || async {
+                    transaction
+                        .commit(
+                            None,
+                            acyclic_fs::PublicationPermit::Unrestricted,
+                            budget,
+                            &cancellation,
+                            |_| async {
+                                require_publication_time(publication, None)
+                                    .map_err(acyclic_fs::OperationFailure::before_work)?;
+                                Ok::<_, acyclic_fs::OperationFailure<Error>>(
+                                    acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: acyclic_fs::WorkCounters::default(),
+                                    },
+                                )
+                            },
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                })?
+                .await?;
+                return match committed {
+                    TransactionCommit::Committed(generation)
+                    | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                    TransactionCommit::Conflict { .. }
+                        if expected_generation.is_none()
+                            && publication
+                                .fence()
+                                .is_none_or(|fence| !fence.generation_sensitive()) =>
+                    {
+                        // Reuse the original candidate only when the SDK proves its
+                        // exact observations and mutation dependencies still hold.
+                        match transaction
+                            .rebase(1, budget, &cancellation)
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| map_error(failure.error))?
+                        {
+                            acyclic_fs::TransactionRebase::Rebased(_) => continue,
+                            acyclic_fs::TransactionRebase::Conflicted { .. } => {
+                                Err(Error::Conflict("workspace generation changed".into()))
+                            }
+                        }
+                    }
+                    TransactionCommit::Conflict { .. } => {
+                        Err(Error::Conflict("workspace generation changed".into()))
+                    }
+                    TransactionCommit::Fenced => {
+                        Err(Error::Conflict("workspace writer was fenced".into()))
+                    }
+                    TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
+                        "filesystem idempotency key belongs to another mutation".into(),
+                    )),
+                };
+            }
+        })?
+        .await
+    }
+
+    async fn begin_unmeasured(
+        &self,
+        workspace: &acyclic_fs::Workspace<A, O>,
+        expected_generation: Option<&GenerationRef>,
+        key: acyclic_fs::IdempotencyKey,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<acyclic_fs::Transaction<A, O>> {
+        crate::conversation::BoundedContentFuture::new(None, || async {
+            Ok(match expected_generation {
+                Some(reference) => {
+                    let generation = self.generation(workspace, reference, None).await?;
+                    workspace
+                        .begin_transaction_at(&generation, key, budget, cancellation)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .map_err(map_error)?
+                }
+                None => workspace
+                    .begin_transaction(key, budget, cancellation)
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(map_error)?
-            }
-            None => workspace
-                .begin_transaction(key, budget, &cancellation)
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-                .map_err(map_error)?,
-        };
-        if let Some(fence) = publication.fence() {
-            transaction
-                .observe_policy_fence(fence, budget, &cancellation)
-                .await
-                .map_err(|failure| map_error(failure.error))?;
-        }
-        Self::stage_unmeasured(
-            &mut transaction,
-            mutations,
-            invalidate_metadata,
-            publication,
-            budget,
-            &cancellation,
-        )
-        .await?;
-        loop {
-            let committed = transaction
-                .commit(
-                    None,
-                    acyclic_fs::PublicationPermit::Unrestricted,
-                    budget,
-                    &cancellation,
-                    |_| async {
-                        require_publication_time(publication, None)
-                            .map_err(acyclic_fs::OperationFailure::before_work)?;
-                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        })
-                    },
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
-            return match committed {
-                TransactionCommit::Committed(generation)
-                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-                TransactionCommit::Conflict { .. }
-                    if expected_generation.is_none()
-                        && publication
-                            .fence()
-                            .is_none_or(|fence| !fence.generation_sensitive()) =>
-                {
-                    // Reuse the original candidate only when the SDK proves its
-                    // exact observations and mutation dependencies still hold.
-                    match transaction
-                        .rebase(1, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| map_error(failure.error))?
-                    {
-                        acyclic_fs::TransactionRebase::Rebased(_) => continue,
-                        acyclic_fs::TransactionRebase::Conflicted { .. } => {
-                            Err(Error::Conflict("workspace generation changed".into()))
-                        }
-                    }
-                }
-                TransactionCommit::Conflict { .. } => {
-                    Err(Error::Conflict("workspace generation changed".into()))
-                }
-                TransactionCommit::Fenced => {
-                    Err(Error::Conflict("workspace writer was fenced".into()))
-                }
-                TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
-                    "filesystem idempotency key belongs to another mutation".into(),
-                )),
-            };
-        }
+                    .map_err(map_error)?,
+            })
+        })?
+        .await
     }
 
-    async fn stage_unmeasured(
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn stage_unmeasured_batch(
         transaction: &mut acyclic_fs::Transaction<A, O>,
         mutations: &[WorkspaceMutation],
         invalidate_metadata: bool,
         publication: FilePublication<'_>,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
-    ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let batched = if !invalidate_metadata
+    ) -> Result<bool> {
+        if !invalidate_metadata
             && !matches!(publication, FilePublication::CreateOnly)
             && mutations
                 .iter()
@@ -366,74 +395,122 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            transaction
-                .write_batch(&directories, &files, budget, cancellation)
-                .await
-                .map_err(|failure| map_error(failure.error))?;
-            true
+            crate::conversation::BoundedContentFuture::new(None, || async {
+                transaction
+                    .write_batch(&directories, &files, budget, cancellation)
+                    .await
+                    .map_err(|failure| map_error(failure.error))
+            })?
+            .await?;
+            Ok(true)
         } else {
-            false
-        };
-        #[cfg(target_arch = "wasm32")]
-        let batched = false;
-        if !batched {
-            for mutation in mutations {
-                match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => {
-                        transaction
-                            .create_dir_all(path, budget, cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                    WorkspaceMutation::PutFile { path, bytes } => {
-                        match publication {
-                            FilePublication::Replace(_) | FilePublication::Authorized(..) => {
+            Ok(false)
+        }
+    }
+
+    async fn stage_unmeasured(
+        transaction: &mut acyclic_fs::Transaction<A, O>,
+        mutations: &[WorkspaceMutation],
+        invalidate_metadata: bool,
+        publication: FilePublication<'_>,
+        budget: acyclic_fs::WorkBudget,
+        cancellation: &acyclic_fs::CancellationToken,
+    ) -> Result<()> {
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            let batched = Self::stage_unmeasured_batch(
+                transaction,
+                mutations,
+                invalidate_metadata,
+                publication,
+                budget,
+                cancellation,
+            )
+            .await?;
+            #[cfg(target_arch = "wasm32")]
+            let batched = false;
+            if !batched {
+                for mutation in mutations {
+                    match mutation {
+                        WorkspaceMutation::CreateDirectory { path } => {
+                            crate::conversation::BoundedContentFuture::new(None, || async {
                                 transaction
-                                    .write(path, bytes.clone(), budget, cancellation)
+                                    .create_dir_all(path, budget, cancellation)
                                     .await
-                                    .map_err(|failure| map_error(failure.error))?
-                            }
-                            FilePublication::CreateOnly => transaction
-                                .create_file(
-                                    path,
-                                    bytes.clone(),
-                                    acyclic_fs::kernel::FileMetadata::default(),
-                                    budget,
-                                    cancellation,
-                                )
-                                .await
-                                .map_err(|failure| creation_error(failure.error, None))?,
-                        };
+                                    .map(|receipt| receipt.value)
+                                    .map_err(|failure| failure.error)
+                                    .map_err(map_error)
+                            })?
+                            .await?;
+                        }
+                        WorkspaceMutation::PutFile { path, bytes } => {
+                            match publication {
+                                FilePublication::Replace(_) | FilePublication::Authorized(..) => {
+                                    crate::conversation::BoundedContentFuture::new(
+                                        None,
+                                        || async {
+                                            transaction
+                                                .write(path, bytes.clone(), budget, cancellation)
+                                                .await
+                                                .map_err(|failure| map_error(failure.error))
+                                        },
+                                    )?
+                                    .await?
+                                }
+                                FilePublication::CreateOnly => {
+                                    crate::conversation::BoundedContentFuture::new(
+                                        None,
+                                        || async {
+                                            transaction
+                                                .create_file(
+                                                    path,
+                                                    bytes.clone(),
+                                                    acyclic_fs::kernel::FileMetadata::default(),
+                                                    budget,
+                                                    cancellation,
+                                                )
+                                                .await
+                                                .map_err(|failure| {
+                                                    creation_error(failure.error, None)
+                                                })
+                                        },
+                                    )?
+                                    .await?
+                                }
+                            };
+                        }
+                        WorkspaceMutation::Remove { path } => {
+                            crate::conversation::BoundedContentFuture::new(None, || async {
+                                transaction
+                                    .remove(path, budget, cancellation)
+                                    .await
+                                    .map(|receipt| receipt.value)
+                                    .map_err(|failure| failure.error)
+                                    .map_err(map_error)
+                            })?
+                            .await?;
+                        }
                     }
-                    WorkspaceMutation::Remove { path } => {
-                        transaction
-                            .remove(path, budget, cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
-                    }
-                }
-                // Raw mutations do not carry a descriptor or write publication.
-                // Invalidate the old index atomically, including same-byte writes.
-                // The content writer supplies its own metadata in this transaction.
-                if invalidate_metadata
-                    && let WorkspaceMutation::PutFile { path, .. }
-                    | WorkspaceMutation::Remove { path } = mutation
-                {
-                    let metadata =
-                        content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
-                    match transaction.remove(&metadata, budget, cancellation).await {
-                        Ok(_) => {}
-                        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
-                        Err(failure) => return Err(map_error(failure.error)),
+                    // Raw mutations do not carry a descriptor or write publication.
+                    // Invalidate the old index atomically, including same-byte writes.
+                    // The content writer supplies its own metadata in this transaction.
+                    if invalidate_metadata
+                        && let WorkspaceMutation::PutFile { path, .. }
+                        | WorkspaceMutation::Remove { path } = mutation
+                    {
+                        let metadata =
+                            content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                        match transaction.remove(&metadata, budget, cancellation).await {
+                            Ok(_) => {}
+                            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                            Err(failure) => return Err(map_error(failure.error)),
+                        }
                     }
                 }
             }
-        }
-        Ok(())
+            Ok(())
+        })?
+        .await
     }
 
     /// Resolves the current immutable head under the caller's work context.
@@ -634,23 +711,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             let workspace = self.open(reference, Some(io)).await?;
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            let mut transaction = if matches!(publication, FilePublication::Replace(_)) {
-                let pinned = match expected {
-                    Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-                    None => io.sdk(workspace.head(io, io.cancellation()).await)?,
-                };
-                io.sdk(
-                    workspace
-                        .begin_transaction_at(&pinned, operation, io, io.cancellation())
-                        .await,
-                )?
-            } else {
-                io.sdk(
-                    workspace
-                        .begin_transaction(operation, io, io.cancellation())
-                        .await,
-                )?
-            };
+            let mut transaction =
+                crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                    Ok(if matches!(publication, FilePublication::Replace(_)) {
+                        let pinned = match expected {
+                            Some(reference) => {
+                                self.generation(&workspace, reference, Some(io)).await?
+                            }
+                            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                        };
+                        io.sdk(
+                            workspace
+                                .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                                .await,
+                        )?
+                    } else {
+                        io.sdk(
+                            workspace
+                                .begin_transaction(operation, io, io.cancellation())
+                                .await,
+                        )?
+                    })
+                })?
+                .await?;
             if let Some(fence) = publication.fence() {
                 io.sdk(
                     transaction
@@ -681,17 +764,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     verify_native_publication(preparation, work).await?;
                 }
                 match mutation {
-                    WorkspaceMutation::CreateDirectory { path } => io.sdk(
-                        transaction
-                            .create_dir_all(path, io, io.cancellation())
-                            .await,
-                    )?,
+                    WorkspaceMutation::CreateDirectory { path } => {
+                        crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                            io.sdk(
+                                transaction
+                                    .create_dir_all(path, io, io.cancellation())
+                                    .await,
+                            )
+                        })?
+                        .await?;
+                    }
                     WorkspaceMutation::PutFile { path, bytes } => match publication {
-                        FilePublication::Replace(_) | FilePublication::Authorized(..) => io.sdk(
-                            transaction
-                                .write(path, bytes.clone(), io, io.cancellation())
-                                .await,
-                        )?,
+                        FilePublication::Replace(_) | FilePublication::Authorized(..) => {
+                            crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                                io.sdk(
+                                    transaction
+                                        .write(path, bytes.clone(), io, io.cancellation())
+                                        .await,
+                                )
+                            })?
+                            .await?;
+                        }
                         FilePublication::CreateOnly => {
                             let (created, recorded) = transaction
                                 .create_file(
@@ -945,4 +1038,19 @@ mod workload_tests {
         );
         Ok(())
     }
+}
+
+#[cfg(test)]
+#[test]
+fn public_read_future_stays_bounded() {
+    let bytes = acyclic_test_support::future_bytes(
+        |(host, reference): (
+            &'static FilesystemHost<
+                acyclic_fs::MemoryAuthorityBackend,
+                acyclic_fs::MemoryObjectBackend,
+            >,
+            &'static WorkspaceRef,
+        )| { host.read(reference, None, "/a", 1024, None) },
+    );
+    assert!(bytes <= 4096, "public file read future is {bytes} bytes");
 }

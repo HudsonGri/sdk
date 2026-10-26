@@ -78,6 +78,11 @@ pub enum RevocationCheck<'a> {
 /// Read-only authenticated trust snapshot. Implementations must fail closed on
 /// missing/stale state; metering and network refresh belong outside these hooks.
 pub trait Trust {
+    /// Optional owner-bounded evidence of strict signature verification.
+    /// This never substitutes for any current trust or authorization check.
+    fn signature_cache(&self) -> Option<&SignatureCache> {
+        None
+    }
     /// Still-trusted environment issuers, including historical Birth signers.
     fn environment_keys(&self, environment: &str) -> Result<&[BlockId], VerifyError>;
     /// Authenticated current account keyring, anchored in environment trust.
@@ -114,6 +119,17 @@ pub fn verify(
     trust: &(impl Trust + ?Sized),
     now_unix_seconds: u64,
 ) -> Result<VerifiedCapability, VerifyError> {
+    let public_key = |bytes: &[u8]| match trust.signature_cache() {
+        Some(cache) => cache.public_key(bytes),
+        None => crate::crypto::public_key(bytes),
+    };
+    let verify_signature =
+        |key: &ed25519_dalek::VerifyingKey, message: &[u8], signature: &[u8]| match trust
+            .signature_cache()
+        {
+            Some(cache) => cache.verify(key, message, signature),
+            None => crate::crypto::verify_signature(key, message, signature),
+        };
     let envelope = wire::decode(bytes)?;
     if envelope.version != VERSION {
         return Err(VerifyError::Version(envelope.version));

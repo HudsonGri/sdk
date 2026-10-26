@@ -30,7 +30,17 @@ pub(super) fn preparation(
     policy: &super::Policy,
     capability: &super::Capability,
     folded: bool,
-) -> Result<(usize, usize), InvalidPolicy> {
+) -> Result<(usize, usize, bool), InvalidPolicy> {
+    let uniform = policy
+        .layers
+        .iter()
+        .flatten()
+        .all(|rule| rule.resource.path == "**")
+        && capability
+            .layers
+            .iter()
+            .flatten()
+            .all(|grant| grant.resource.path == "**");
     let rules = sum(policy.layers.iter().map(Vec::len))?;
     let grants = sum(capability.layers.iter().map(Vec::len))?;
     let layers = sum([policy.layers.len(), capability.layers.len()])?;
@@ -71,12 +81,16 @@ pub(super) fn preparation(
     } else {
         0
     };
-    let nodes = sum([
-        product(patterns, 2)?,
-        product(records, 4)?,
-        product(questions, super::glob::folded_question_states())?,
-    ])?
-    .min(MAXIMUM_NFA_STATES);
+    let nodes = if uniform {
+        0
+    } else {
+        sum([
+            product(patterns, 2)?,
+            product(records, 4)?,
+            product(questions, super::glob::folded_question_states())?,
+        ])?
+        .min(MAXIMUM_NFA_STATES)
+    };
     // Per-byte NFA nodes/edges, folding scratch and component vectors; fixed
     // per-record credit covers B-tree nodes, starts, rule/grant maps and ids.
     let bytes = sum([
@@ -87,12 +101,18 @@ pub(super) fn preparation(
         product(layers, 256)?,
         4096,
     ])?;
-    let work = sum([
-        product(sum([patterns, identifiers])?, 16)?,
-        product(sum([records, layers])?, 128)?,
-        product(nodes, 16)?,
-    ])?;
-    Ok((bytes, work))
+    // Universal paths need only validation and one terminal reducer. They
+    // never build, fold, traverse or close an NFA, so fund that smaller shape.
+    let work = if uniform {
+        sum([patterns, identifiers, product(sum([records, layers])?, 24)?])?
+    } else {
+        sum([
+            product(sum([patterns, identifiers])?, 16)?,
+            product(sum([records, layers])?, 128)?,
+            product(nodes, 16)?,
+        ])?
+    };
+    Ok((bytes, work, uniform))
 }
 
 pub(super) fn determinization(

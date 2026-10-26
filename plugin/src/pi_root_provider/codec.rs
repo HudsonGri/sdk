@@ -107,42 +107,7 @@ pub(crate) fn native_buffer_codec_charge(
     custody: &mut NativeAllocation,
     charge: JsonCodecCharge,
 ) -> Result<()> {
-    if let JsonCodecCharge::Release { bytes } = charge {
-        return custody.release(bytes).map_err(acyclic_harness::Error::from);
-    }
-    use acyclic_harness::store::HistoryIo;
-    let work = custody.work();
-    work.cancellation()
-        .check()
-        .map_err(|_| NativeTreeMaterializationError::Cancelled)?;
-    match charge {
-        JsonCodecCharge::Read { bytes } => work
-            .charge(WorkCounters {
-                source_bytes_read: bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(acyclic_harness::Error::from),
-        JsonCodecCharge::Admission {
-            maximum_owned_bytes,
-            ..
-        } => {
-            custody.resize(maximum_owned_bytes)?;
-            Ok(())
-        }
-        JsonCodecCharge::Retain { bytes } => {
-            let retained = custody
-                .bytes()
-                .checked_add(bytes)
-                .ok_or(NativeTreeMaterializationError::Work(WorkError::Overflow))?;
-            custody.resize(retained)?;
-            Ok(())
-        }
-        JsonCodecCharge::Release { .. } => unreachable!(),
-        charge => acyclic_harness::store::HistoryWork::new(
-            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-        )
-        .codec_charge(charge),
-    }
+    acyclic_harness::filesystem::PreparationIo::native_buffer_codec_charge(custody, charge)
 }
 
 /// Reads only the original immutable upload.

@@ -261,6 +261,38 @@ async fn task_mount_options_require_and_retain_the_authenticated_volume_owner() 
 #[tokio::test]
 async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()> {
     let (directory, harness, publisher) = fixture().await?;
+    // Bound the shared definitions themselves: boxing an already oversized
+    // caller still constructs and moves the nested future on its stack.
+    let pending = publisher.publish(
+        OperationId::new(),
+        b"exact bytes",
+        Publication::Once {
+            path: "published.txt",
+            media: "text/plain",
+            display: "published.txt",
+        },
+        None,
+    );
+    let bytes = std::mem::size_of_val(&pending);
+    eprintln!("checkout publication future bytes={bytes}");
+    assert!(
+        bytes <= 4096,
+        "checkout publication future is {bytes} bytes"
+    );
+    drop(pending);
+    let mut cursor = None;
+    let pending = publisher.tools.capture(
+        (&publisher.tools.workspace, publisher.tools.workspace.view()),
+        &mut cursor,
+        OperationId::new(),
+        0,
+        PublicationPermit::Unrestricted,
+        None,
+    );
+    let bytes = std::mem::size_of_val(&pending);
+    eprintln!("checkout capture future bytes={bytes}");
+    assert!(bytes <= 4096, "checkout capture future is {bytes} bytes");
+    drop(pending);
     let (file, _) = publisher
         .stage_once(
             OperationId::new(),
@@ -1365,3 +1397,6 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
     );
     Ok(())
 }
+
+#[path = "postimage_tests.rs"]
+mod postimages;

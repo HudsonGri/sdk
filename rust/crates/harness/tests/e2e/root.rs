@@ -383,7 +383,7 @@ fn run_scenarios(started: Instant) -> TestResult {
     if let Some(filter) = acyclic_harness::test_support::environment("E2E_FILTER")
         .and_then(|value| value.into_string().ok())
     {
-        paths.retain(|path| path.to_string_lossy().contains(&filter));
+        paths.retain(|path| path.to_string_lossy().replace('\\', "/").contains(&filter));
     }
     if paths.is_empty() {
         return Err("no scenarios discovered".into());

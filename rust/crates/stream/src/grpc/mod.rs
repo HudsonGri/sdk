@@ -16,6 +16,7 @@ use tonic::{
 use tracing::field::Empty;
 
 use crate::obs;
+use crate::runtime::backoff::{Backoff, Policy};
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
     commit_id, commit_outcome_from_wire, commit_outcome_to_wire, commit_to_wire,
@@ -257,6 +258,14 @@ impl Client {
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
         let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
+        let mut retry = Backoff::new(
+            Policy {
+                attempts: u32::MAX,
+                base_delay: RETRY_DELAY,
+                max_delay: RETRY_DELAY,
+            },
+            std::any::type_name::<T>().as_bytes(),
+        );
         let mut attempt = 0_u64;
         loop {
             attempt += 1;
@@ -290,8 +299,11 @@ impl Client {
                 rpc.code = error.code() as u64,
                 "stream rpc retried"
             );
-            tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
-                .await;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Some(wait) = retry.next(None, remaining) else {
+                return Err(status(&error));
+            };
+            tokio::time::sleep(wait).await;
             if tokio::time::Instant::now() >= deadline {
                 return Err(status(&error));
             }

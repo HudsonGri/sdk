@@ -34,30 +34,48 @@ impl<'a> StockExecution<'a> {
         prior: usize,
         request: crate::model::PreparedModelRequest,
     ) -> Result<()> {
-        let Some(identity) = journal.cache_identity() else {
-            return Ok(());
-        };
-        let mut cache = self.request_cache.lock().await;
-        if !cache.enabled {
-            return Ok(());
-        }
-        let prior = self.absolute_prior_count(prior).await?;
-        #[cfg(feature = "filesystem")]
-        let hold = self
-            .io
-            .map(|io| io.guard_owned(request.preparation_owned_bytes(io)?))
-            .transpose()?;
-        #[cfg(not(feature = "filesystem"))]
-        let hold = None;
-        cache.retained = Some(RetainedRequest {
-            operation: input.operation_id,
-            journal: identity,
-            step,
-            prior,
-            request,
-            hold,
-        });
-        Ok(())
+        crate::conversation::BoundedContentFuture::new(self.io, || async move {
+            let Some(identity) = journal.cache_identity() else {
+                return Ok(());
+            };
+            let mut cache = self.request_cache.lock().await;
+            if !cache.enabled {
+                return Ok(());
+            }
+            // Stored previews age on the following projection. Such a request
+            // cannot be the immutable prefix of an append-only continuation.
+            // Rebuild through the single context projection while that mutable
+            // tail is present; ordinary text/tool histories keep their cache.
+            if request.request().messages.iter().any(|message| {
+                message.content.parts().iter().any(|part| {
+                    matches!(part,
+                    crate::model::ModelContentPart::ToolResult {
+                        content: crate::model::ToolResultContent::Stored { preview, .. }, ..
+                    } if !preview.is_empty())
+                })
+            }) {
+                cache.enabled = false;
+                return Ok(());
+            }
+            let prior = self.absolute_prior_count(prior).await?;
+            #[cfg(feature = "filesystem")]
+            let hold = self
+                .io
+                .map(|io| io.guard_owned(request.preparation_owned_bytes(io)?))
+                .transpose()?;
+            #[cfg(not(feature = "filesystem"))]
+            let hold = None;
+            cache.retained = Some(RetainedRequest {
+                operation: input.operation_id,
+                journal: identity,
+                step,
+                prior,
+                request,
+                hold,
+            });
+            Ok(())
+        })?
+        .await
     }
 
     pub(super) async fn continue_response_request(
@@ -91,7 +109,7 @@ impl<'a> StockExecution<'a> {
         let previous = self
             .previous_request_projection(journal, input.operation_id, retained.step)
             .await?;
-        let projection =
+        let mut projection =
             ResponseProjection::continuation_metadata(journal, &previous, self.io).await?;
         self.synchronize_working_cut(
             journal,
@@ -115,7 +133,21 @@ impl<'a> StockExecution<'a> {
         }
         #[cfg(not(feature = "filesystem"))]
         let _ = hold;
+        let selected = self.selected_for_turn(input, step)?;
+        let selected_projection = crate::model::clone_model(selected, self.io)?;
+        #[cfg(feature = "filesystem")]
+        let previous_model = self
+            .io
+            .map(|io| io.guard_owned(projection.model.retained_payload_bytes()?))
+            .transpose()?;
+        drop(std::mem::replace(
+            &mut projection.model,
+            selected_projection,
+        ));
+        #[cfg(feature = "filesystem")]
+        drop(previous_model);
         let mut continued = request.into_continuation();
+        continued.select_model(selected, self.io)?;
         *continued.messages() = crate::model::clone_messages(suffix, self.io)?;
         Ok(Some((
             projection,

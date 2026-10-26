@@ -16,7 +16,22 @@ pub(super) fn observe_exit_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<Option<ExitStatus>> {
-    let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
+    observe_exit_with(id, meter, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
+}
+
+pub(super) fn await_exit_id(
+    id: libc::id_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<ExitStatus> {
+    observe_exit_with(id, meter, libc::WEXITED | libc::WNOWAIT)?
+        .ok_or_else(|| io::ErrorKind::Other.into())
+}
+
+fn observe_exit_with(
+    id: libc::id_t,
+    meter: Option<&dyn crate::NativeReadMeter>,
+    flags: libc::c_int,
+) -> io::Result<Option<ExitStatus>> {
     loop {
         // SAFETY: initialized OS output storage and the exclusively owned
         // child's ID. WNOWAIT retains the leader until group termination,
@@ -630,4 +645,86 @@ fn group_snapshot_has_no_live_members(
         return Ok(observe_exit_id(id, meter)?.is_some());
     }
     Ok(false)
+}
+
+/// A stable descriptor attached while the owner retains the unreaped child.
+pub(super) struct ExitWatch(Option<std::os::fd::OwnedFd>);
+impl ExitWatch {
+    pub(super) fn new(id: u32) -> io::Result<Self> {
+        use std::os::fd::FromRawFd as _;
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: pidfd_open creates one owned, non-reopening process descriptor.
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, id, 0) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let fd = i32::try_from(fd).map_err(|_| io::ErrorKind::InvalidData)?;
+            // SAFETY: successful pidfd_open transferred ownership of this fd.
+            Ok(Self(Some(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })))
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            // SAFETY: kqueue creates one new descriptor.
+            let fd = unsafe { libc::kqueue() };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful kqueue transferred ownership of this fd.
+            let queue = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+            let event = libc::kevent {
+                ident: id as usize,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD | libc::EV_ONESHOT,
+                fflags: libc::NOTE_EXIT,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            };
+            // SAFETY: one initialized change; the owned queue remains live.
+            if unsafe {
+                libc::kevent(
+                    queue.as_raw_fd(),
+                    &raw const event,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            } < 0
+            {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) && observe_exit_id(id, None)?.is_some()
+                {
+                    return Ok(Self(None));
+                }
+                return Err(error);
+            }
+            Ok(Self(Some(queue)))
+        }
+    }
+    pub(super) fn await_exit(&self) -> io::Result<()> {
+        let Some(fd) = &self.0 else {
+            return Ok(());
+        };
+        let mut event = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: one initialized descriptor, retained for the entire blocking wait.
+            let count = unsafe { libc::poll(&raw mut event, 1, -1) };
+            if count < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if event.revents & libc::POLLIN != 0 {
+                return Ok(());
+            }
+            return Err(io::Error::other("invalid process exit notification"));
+        }
+    }
 }

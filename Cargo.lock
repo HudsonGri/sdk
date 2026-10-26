@@ -391,7 +391,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "shuttle",
- "sse-stream",
  "syn 3.0.6",
  "tempfile",
  "thiserror 2.0.21",
@@ -407,6 +406,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
  "wasm-bindgen-test",
  "which",
 ]
@@ -447,6 +447,7 @@ dependencies = [
  "acyclic-stream",
  "acyclic-test-support",
  "arrayvec",
+ "async-stream",
  "async-trait",
  "base64 0.22.1",
  "blake3",
@@ -481,7 +482,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "shuttle",
- "sse-stream",
  "syn 3.0.6",
  "tempfile",
  "thiserror 2.0.21",
@@ -497,6 +497,7 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
  "wasm-bindgen-test",
  "which",
  "zeroize",
@@ -550,11 +551,13 @@ dependencies = [
  "bytes",
  "futures",
  "httpdate",
+ "harness-mock-model",
  "js-sys",
  "keyring",
  "loom",
  "proptest",
  "prost",
+ "rcgen",
  "reqwest 0.12.28",
  "rustls",
  "serde",
@@ -564,6 +567,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
  "tsify",
@@ -791,6 +795,7 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "rustix 1.1.5",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
@@ -955,6 +960,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "h2",
+ "httpdate",
  "hyper",
  "hyper-util",
  "indexed_db_futures",
@@ -3033,6 +3039,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures",
+ "harness-mock-model",
  "libc",
  "proptest",
  "rustix 1.1.5",
@@ -3066,6 +3073,7 @@ dependencies = [
 name = "harness-mock-model"
 version = "0.0.0"
 dependencies = [
+ "acyclic-harness-core",
  "axum",
  "futures",
  "http-body-util",
@@ -5506,6 +5514,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -6463,22 +6472,6 @@ dependencies = [
  "js-sys",
  "rsqlite-vfs",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "sse-stream"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d385160fc0fba84f7b9cc8ef3263e410d0e3ca7ab4927f1356df33145ace69a4"
-dependencies = [
- "bytes",
- "futures-util",
- "http-body",
- "http-body-util",
- "memchr",
- "pin-project-lite",
- "simdutf8",
- "thiserror 2.0.21",
 ]
 
 [[package]]

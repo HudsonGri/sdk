@@ -84,9 +84,10 @@ impl StockExecution<'_> {
             projection.working
         };
         let (compacted, request) = self
-            .prepare_compacted_request(input, step, compacted, pre_stage)
+            .prepare_compacted_request(input, step, compacted, pre_stage, &projection.model)
             .await?;
         let compacted = ResponseProjection {
+            model: projection.model,
             context: compacted,
             canonical: projection.canonical,
             checkpoint,
@@ -140,14 +141,16 @@ impl StockExecution<'_> {
         step: u32,
         compacted: crate::context::Context,
         pre_stage: bool,
+        recorded: &Model,
     ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
+        let selected = self.recorded_model(recorded)?;
         if pre_stage {
             let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
-            self.prepare_transformed_request(&context_input, compacted)
+            self.prepare_transformed_request_for(selected, &context_input, compacted)
                 .await
         } else {
             let request = crate::model::PreparedModelRequest::prepare(
-                self.request_from_context(&compacted)?,
+                self.request_from_context_for(selected, &compacted)?,
                 self.stock.limits,
                 self.io,
             )?;
@@ -164,8 +167,9 @@ impl StockExecution<'_> {
         pre_stage: bool,
         policy: &crate::context::ThresholdCompaction,
     ) -> Result<(usize, usize)> {
+        let selected = self.recorded_model(&projection.model)?;
         let canonical_request = crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(context)?,
+            self.request_from_context_for(selected, context)?,
             self.stock.limits,
             self.io,
         )?;
@@ -193,7 +197,7 @@ impl StockExecution<'_> {
             crate::context::mandatory_messages(context, through, &policy.retention, work)
         })?;
         let mandatory = crate::model::PreparedModelRequest::prepare(
-            self.request_from_messages(mandatory)?,
+            self.request_from_messages_for(selected, mandatory)?,
             self.stock.limits,
             self.io,
         )?;

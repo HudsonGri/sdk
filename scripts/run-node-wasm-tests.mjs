@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,10 @@ export async function runNodeWasmTests(args, runner = process.env.ACYCLIC_WASM_T
   const key = bindingKey(await digest(module), identity, [process.cwd(), ...args.slice(1)], environment, readFileSync(fileURLToPath(import.meta.url), "utf8"));
   const cache = join(dirname(module), ".node-wasm-tests", key);
   mkdirSync(cache, {recursive:true});
+  // The upstream runner emits CommonJS bindings beside ESM inline snippets.
+  // An untyped package boundary lets Node detect each file's own grammar,
+  // regardless of the package type surrounding the admitted WASM artifact.
+  writeFileSync(join(cache, "package.json"), JSON.stringify({private:true}));
   const cached = cachedRunner(cache);
   // The upstream runner owns generation and the test harness. Reuse its exact JS.
   const command = cached ? "node" : identity.executable;

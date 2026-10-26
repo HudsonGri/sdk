@@ -114,7 +114,7 @@ impl CompiledPolicy {
                 layers: vec![],
                 expires_at: None,
             };
-            let (bytes, validation) = super::super::compilation::preparation(
+            let (bytes, validation, uniform) = super::super::compilation::preparation(
                 policy,
                 &empty,
                 super::super::names::folds_unicode(config),
@@ -125,7 +125,7 @@ impl CompiledPolicy {
             config
                 .validate()
                 .map_err(|_| InvalidPolicy("invalid volume configuration"))?;
-            let paths = compile_paths(policy, config, &mut available, &mut reserve)?;
+            let paths = compile_paths(policy, config, uniform, &mut available, &mut reserve)?;
             Self::assemble(policy, config, paths)
         })();
         *remaining -= before - available;
@@ -278,6 +278,7 @@ impl CompiledPolicy {
         self.alphabet
             .symbol(ch)
             .and_then(|symbol| self.states.get(state)?.transitions.get(symbol).copied())
+            .filter(|next| *next < self.states.len())
             .ok_or(InvalidPolicy("invalid shared policy path"))
     }
 
@@ -670,9 +671,32 @@ struct Paths {
 fn compile_paths(
     policy: &Policy,
     config: crate::VolumeConfig,
+    uniform: bool,
     available: &mut usize,
     reserve: &mut impl FnMut(usize) -> Result<(), InvalidPolicy>,
 ) -> Result<Paths, InvalidPolicy> {
+    if uniform {
+        let count = policy.layers.iter().map(Vec::len).sum::<usize>();
+        reserve(super::super::compilation::determinization(
+            0,
+            0,
+            size_of::<State>() + size_of::<Vec<usize>>() + count * size_of::<usize>(),
+            1,
+        )?)?;
+        spend(available, count * 24)?;
+        return Ok(Paths {
+            symbols: vec![],
+            states: vec![terminal(
+                vec![0],
+                [Outcome {
+                    rule: None,
+                    denial: Some(Denial::NoAllow),
+                }; 12],
+            )],
+            matches: vec![(0..count).collect()],
+            rules: count,
+        });
+    }
     let mut nfa = Nfa::default();
     let mut starts = Vec::new();
     let mut ends = Vec::new();
@@ -683,16 +707,11 @@ fn compile_paths(
         ends.push(end);
     }
     let (symbols, other) = alphabet(&nfa)?;
-    let uniform = policy
-        .layers
-        .iter()
-        .flatten()
-        .all(|rule| rule.resource.path == "**");
     reserve(super::super::compilation::determinization(
         nfa.nodes.len(),
         symbols.len(),
         size_of::<State>() + size_of::<Vec<usize>>() + ends.len() * size_of::<usize>(),
-        if uniform { 1 } else { MAXIMUM_STATES },
+        MAXIMUM_STATES,
     )?)?;
     let matches = RefCell::new(Vec::<Vec<usize>>::new());
     let outcomes = |subset: &[usize]| {
@@ -707,23 +726,15 @@ fn compile_paths(
             denial: Some(Denial::NoAllow),
         }; 12]
     };
-    let states = if uniform {
-        spend(available, nfa.nodes.len() + ends.len() * 24)?;
-        vec![terminal(
-            vec![0; symbols.len() + 1],
-            outcomes(&(0..nfa.nodes.len()).collect::<Vec<_>>()),
-        )]
-    } else {
-        determinize(
-            &nfa,
-            starts,
-            &symbols,
-            other,
-            outcomes,
-            ends.len(),
-            available,
-        )?
-    };
+    let states = determinize(
+        &nfa,
+        starts,
+        &symbols,
+        other,
+        outcomes,
+        ends.len(),
+        available,
+    )?;
     Ok(Paths {
         symbols,
         states,

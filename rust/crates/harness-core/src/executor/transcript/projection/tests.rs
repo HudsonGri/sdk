@@ -1,5 +1,7 @@
 use super::*;
 
+mod admission;
+
 #[derive(Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 struct RequestBackedProjectionControl {
@@ -9,7 +11,7 @@ struct RequestBackedProjectionControl {
 impl PreparationRecord for RequestBackedProjectionControl {}
 
 #[tokio::test]
-async fn main_inline_projection_schema_recovers_with_and_without_a_checkpoint() -> Result<()> {
+async fn inline_projection_retains_selected_model_with_and_without_a_checkpoint() -> Result<()> {
     let storage =
         crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
     let journal = storage.journal();
@@ -24,8 +26,9 @@ async fn main_inline_projection_schema_recovers_with_and_without_a_checkpoint() 
     };
     let checkpoint = stage_json(journal, OperationId::new(), "checkpoint", &context, None).await?;
     for compacted in [false, true] {
-        // Exact main envelope: no request link, no working-cut field.
+        // The shared inline codec retains the selected member beside the context.
         let fixture = serde_json::json!({
+            "model": Model::new("test".into(), "selected-member".into(), "1".into(), serde_json::Value::Null)?,
             "context": context, "canonical": null,
             "checkpoint": if compacted { Some(&checkpoint) } else { None },
         });
@@ -61,6 +64,7 @@ async fn main_inline_projection_schema_recovers_with_and_without_a_checkpoint() 
             };
             let (projection, hold) =
                 load_projection(journal, &reference, Limits::default(), Some(&io)).await?;
+            assert_eq!(projection.model.name, "selected-member");
             assert_eq!(projection.context, context);
             assert_eq!(
                 projection.checkpoint.as_ref(),

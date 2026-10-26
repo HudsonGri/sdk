@@ -329,6 +329,16 @@ impl ModelProvider for ScriptedModelProvider {
         })
     }
 
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn context_capacity_with_native_work(
+        &self,
+        model: &Model,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<ModelContextCapacity> {
+        work.remaining()?;
+        self.context_capacity(model)
+    }
+
     fn count_tokens<'a>(
         &'a self,
         request: &'a PreparedModelRequest,

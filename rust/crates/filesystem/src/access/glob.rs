@@ -142,6 +142,8 @@ impl Nfa {
         pattern: &str,
         folded: bool,
     ) -> Result<(usize, usize), InvalidPolicy> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record("glob NFA pattern");
         if pattern.chars().count() > MAXIMUM_NFA_STATES {
             return Err(InvalidPolicy("glob compilation exceeds NFA state limit"));
         }

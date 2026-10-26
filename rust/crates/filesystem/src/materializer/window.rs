@@ -27,12 +27,30 @@ struct WindowState {
 }
 
 /// The only cumulative state a window's budget is derived from.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct WindowLedger {
     /// Work this window charged.
     consumed: WorkCounters,
     /// Reservations this window holds and has not yet started or refunded.
     held: WorkCounters,
+}
+
+#[cfg(test)]
+thread_local! {
+    static WINDOW_LEASES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WINDOW_ADDITIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+// An unbounded allowance is never consumed by a cumulative addition. All
+// finite additions are exact, including a finite stored budget under its limit.
+fn add_bounded(left: u64, right: u64, limit: u64) -> Result<u64, WorkError> {
+    #[cfg(test)]
+    WINDOW_ADDITIONS.with(|count| count.set(count.get() + 1));
+    if limit == u64::MAX {
+        Ok(left)
+    } else {
+        left.checked_add(right).ok_or(WorkError::Overflow)
+    }
 }
 
 impl WindowLedger {
@@ -41,9 +59,24 @@ impl WindowLedger {
     /// An unbounded counter stays unbounded less exactly what this window holds, so a
     /// held reservation always has room to be refunded or completed.
     fn view(&self, limit: &WorkBudget, work: &WorkCounters) -> Result<WorkBudget, WorkError> {
-        limit
-            .checked_add_cumulative(&work.checked_sub_cumulative(&self.consumed)?)?
-            .checked_sub_cumulative(&self.held)
+        #[cfg(test)]
+        crate::performance::CUMULATIVE_PASSES.with(|passes| passes.set(passes.get() + 1));
+        let mut view = *limit;
+        macro_rules! project {
+            ($($field:ident),* $(,)?) => {$({
+                // A counter with no external work and no held reservation
+                // sees its original limit exactly, including the unbounded sentinel.
+                if work.$field != self.consumed.$field || self.held.$field != 0 {
+                    let external = work.$field.checked_sub(self.consumed.$field)
+                        .ok_or(WorkError::Overflow)?;
+                    let available = add_bounded(limit.$field, external, limit.$field)?;
+                    view.$field = available.checked_sub(self.held.$field)
+                        .ok_or(WorkError::Overflow)?;
+                }
+            })*};
+        }
+        crate::performance::additive_counters!(project);
+        Ok(view)
     }
     /// This window after an operation moved the shared work and pending reservations,
     /// with the work it charged.
@@ -51,18 +84,35 @@ impl WindowLedger {
         &self,
         work: (&WorkCounters, &WorkCounters),
         pending: (&WorkCounters, &WorkCounters),
-    ) -> Result<(Self, WorkCounters), WorkError> {
-        let charged = work.1.checked_sub_cumulative(work.0)?;
-        Ok((
-            Self {
-                consumed: self.consumed.checked_add_cumulative(&charged)?,
-                held: self
-                    .held
-                    .checked_add_cumulative(pending.1)?
-                    .checked_sub_cumulative(pending.0)?,
-            },
-            charged,
-        ))
+        stored: &WorkBudget,
+        limit: &WorkBudget,
+    ) -> Result<(Self, WorkBudget), WorkError> {
+        #[cfg(test)]
+        crate::performance::CUMULATIVE_PASSES.with(|passes| passes.set(passes.get() + 1));
+        let mut next = *self;
+        let mut budget = *stored;
+        // Settle each counter once. No intermediate whole-ledger sums or
+        // differences escape this transition; a failure publishes none of it.
+        macro_rules! settle {
+            ($($field:ident),* $(,)?) => {$({
+                // With no work or reservation change, this counter is the
+                // identity transition even at the unbounded sentinel.
+                if work.1.$field != work.0.$field
+                    || pending.0.$field != 0 || pending.1.$field != 0
+                {
+                    let charged = work.1.$field.checked_sub(work.0.$field)
+                        .ok_or(WorkError::Overflow)?;
+                    next.consumed.$field =
+                        add_bounded(self.consumed.$field, charged, self.consumed.$field)?;
+                    let held = add_bounded(self.held.$field, pending.1.$field, self.held.$field)?;
+                    next.held.$field = held.checked_sub(pending.0.$field)
+                        .ok_or(WorkError::Overflow)?;
+                    budget.$field = add_bounded(stored.$field, charged, limit.$field)?;
+                }
+            })*};
+        }
+        crate::performance::additive_counters!(settle);
+        Ok((next, budget))
     }
 }
 
@@ -104,6 +154,8 @@ impl NativeWorkWindow {
         self.base().view_meter().allocation_owner()
     }
     fn state(&self) -> crate::sync::MutexGuard<'_, WindowState> {
+        #[cfg(test)]
+        WINDOW_LEASES.with(|count| count.set(count.get() + 1));
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -172,15 +224,46 @@ impl crate::demand::DemandWork {
         let Some(window) = window else {
             return operation(self);
         };
+        // A window is entered only while the original leaf is held. Keep
+        // its ledger leased through settlement too: there is no second lookup
+        // or copied state that can outlive that one transition.
+        struct Transition<'a, 'w> {
+            state: &'a mut crate::demand::DemandWork,
+            ledger: crate::sync::MutexGuard<'w, WindowState>,
+            outside: Option<crate::DemandError>,
+            stored: WorkBudget,
+            work: WorkCounters,
+            pending: WorkCounters,
+        }
+        impl Drop for Transition<'_, '_> {
+            fn drop(&mut self) {
+                let peak = self.state.budget.peak_allocation_bytes;
+                let settled = self.ledger.ledger.settle(
+                    (&self.work, &self.state.work),
+                    (&self.pending, &self.state.pending_reservations()),
+                    &self.stored,
+                    &self.state.original_budget(),
+                );
+                self.state.budget = match settled {
+                    Ok((settled, budget)) => {
+                        self.ledger.ledger = settled;
+                        budget
+                    }
+                    Err(error) => {
+                        self.state.fail_window_invariant(error);
+                        self.stored
+                    }
+                };
+                self.state.budget.peak_allocation_bytes = peak;
+                self.ledger.failure = self.state.replace_native_io_failure(self.outside.take());
+            }
+        }
         let stored = self.budget;
         let work = self.work;
         let pending = self.pending_reservations();
-        let (ledger, failure) = {
-            let mut state = window.state();
-            (state.ledger, state.failure.take())
-        };
-        let outside = self.replace_native_io_failure(failure);
-        self.budget = match ledger.view(&self.original_budget(), &work) {
+        let mut ledger = window.state();
+        let outside = self.replace_native_io_failure(ledger.failure.take());
+        self.budget = match ledger.ledger.view(&self.original_budget(), &work) {
             Ok(view) => view,
             Err(error) => {
                 self.fail_window_invariant(error);
@@ -188,31 +271,15 @@ impl crate::demand::DemandWork {
             }
         };
         self.budget.peak_allocation_bytes = stored.peak_allocation_bytes;
-        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        let peak = self.budget.peak_allocation_bytes;
-        let settled = ledger
-            .settle(
-                (&work, &self.work),
-                (&pending, &self.pending_reservations()),
-            )
-            .and_then(|(ledger, charged)| {
-                Ok((
-                    ledger,
-                    stored.checked_add_bounded(&charged, &self.original_budget())?,
-                ))
-            });
-        let (settled, budget) = settled.unwrap_or_else(|error| {
-            self.fail_window_invariant(error);
-            (ledger, stored)
-        });
-        self.budget = budget;
-        self.budget.peak_allocation_bytes = peak;
-        let failure = self.replace_native_io_failure(outside);
-        let mut state = window.state();
-        state.ledger = settled;
-        state.failure = failure;
-        drop(state);
-        answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        let transition = Transition {
+            state: self,
+            ledger,
+            stored,
+            work,
+            pending,
+            outside,
+        };
+        operation(transition.state)
     }
     fn fail_window_invariant(&mut self, error: WorkError) {
         self.record_native_io_failure(error.into());

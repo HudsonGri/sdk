@@ -566,24 +566,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         maximum: u64,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
-        self.grant
-            .require(&self.volume, VolumeOperation::Write, None)?;
-        let observed = self
-            .host
-            .content_for_operation_record_io(
-                super::PublicationLookup {
-                    volume: &self.volume,
-                    key: &key,
-                    expected_path: Some(path),
-                    maximum_bytes: maximum.min(self.maximum_bytes),
-                    internal_class: None,
-                    purpose: super::PublicationPurpose::WriteReceipt,
-                    scope: self.grant.policy_scope(),
-                    ceiling,
-                },
-                None,
-            )
-            .await?;
-        Ok(observed.map(|(file, _)| file))
+        BoundedContentFuture::new(None, || async move {
+            self.grant
+                .require(&self.volume, VolumeOperation::Write, None)?;
+            let observed = self
+                .host
+                .content_for_operation_record_io(
+                    super::PublicationLookup {
+                        volume: &self.volume,
+                        key: &key,
+                        expected_path: Some(path),
+                        maximum_bytes: maximum.min(self.maximum_bytes),
+                        internal_class: None,
+                        purpose: super::PublicationPurpose::WriteReceipt,
+                        scope: self.grant.policy_scope(),
+                        ceiling,
+                    },
+                    None,
+                )
+                .await?;
+            Ok(observed.map(|(file, _)| file))
+        })?
+        .await
     }
 }

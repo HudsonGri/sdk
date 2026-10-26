@@ -55,6 +55,8 @@ mod source_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub use accounting::DemandWork;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use accounting::NativeScope;
+#[cfg(not(target_arch = "wasm32"))]
 use admissions::Admissions;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use admissions::NativeProofAccounting;

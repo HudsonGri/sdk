@@ -95,14 +95,14 @@ impl<'a> KernelAccounting<'a> {
         bytes: u64,
         operations: u64,
     ) -> Result<KernelOwnedAllocation, crate::FsError> {
-        self.check()?;
         match self {
             Self::Standalone {
                 allocations,
                 work,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 allocations
                     .claim_bytes(bytes, operations, work, *budget)
                     .map_err(|error| {
@@ -114,8 +114,9 @@ impl<'a> KernelAccounting<'a> {
                 allocations,
                 work,
                 budget,
-                ..
+                cancellation,
             } => {
+                cancellation.check()?;
                 allocations
                     .claim_bytes(bytes, operations, work, *budget)
                     .map_err(|error| {
@@ -124,10 +125,16 @@ impl<'a> KernelAccounting<'a> {
                 Ok(KernelOwnedAllocation::Standalone)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work
-                .claim(bytes, operations, crate::WorkCounters::UNCHARGED)
-                .map(KernelOwnedAllocation::NativeOriginal)
-                .map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => work
+                .claim_after(bytes, operations, crate::WorkCounters::UNCHARGED, |state| {
+                    // Preserve existing native failures before caller cancellation,
+                    // then admit the proposed allocation without unlocking the leaf.
+                    state
+                        .admit(WorkCounters::UNCHARGED)
+                        .map_err(crate::materializer::native_materialization_work_error)?;
+                    cancellation.check().map_err(crate::FsError::from)
+                })
+                .map(KernelOwnedAllocation::NativeOriginal),
         }
     }
 

@@ -97,6 +97,7 @@ async fn fixture(
 fn phase_request() -> Result<crate::model::PreparedModelRequest> {
     crate::model::PreparedModelRequest::prepare(
         crate::model::ModelRequest {
+            conversation_id: None,
             model: crate::model::Model::new(
                 "test".into(),
                 "phase".into(),

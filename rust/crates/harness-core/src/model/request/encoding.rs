@@ -20,6 +20,8 @@ pub(super) struct EncodingPrefix {
 
 #[derive(Serialize)]
 struct Envelope<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conversation_id: Option<crate::ConversationId>,
     max_output_tokens: Option<u32>,
     messages: &'a [ModelMessage],
     model: &'a Model,
@@ -62,6 +64,7 @@ fn envelope(
 ) -> Result<(acyclic_stream::OwnedBytes, usize)> {
     let bytes = encode(
         &Envelope {
+            conversation_id: request.conversation_id,
             max_output_tokens: request.max_output_tokens,
             messages: &[],
             model: &request.model,
@@ -166,6 +169,26 @@ impl Buffer {
 }
 
 impl EncodingPrefix {
+    pub(super) fn admit(
+        bytes: &[u8],
+        state: &mut Vec<Self>,
+        count: usize,
+        request: &ModelRequest,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if state.is_empty() {
+            let (envelope, open) = envelope(request, io)?;
+            #[cfg(feature = "filesystem")]
+            let _hold = io
+                .map(|io| io.guard_bytes(&envelope))
+                .transpose()?
+                .flatten();
+            let prefix = Self::capture(bytes, count, open, &envelope, io)?;
+            crate::executor::stock_vec_push(state, prefix, io)?;
+        }
+        Ok(())
+    }
+
     /// `old_bytes` and `old_count` belong to the immutable admitted prefix.
     /// The caller has validated every message following that prefix.
     pub(super) fn append(
@@ -197,9 +220,16 @@ impl EncodingPrefix {
             .get(old_count..)
             .ok_or_else(|| invalid(io, "canonical request prefix exceeds messages"))?;
         if suffix.is_empty() {
-            let mut complete = prefix.request.clone();
-            hash(&mut complete, trailer, io)?;
-            return Ok((old_bytes, *complete.finalize().as_bytes(), state));
+            if old_bytes.ends_with(trailer) {
+                let mut complete = prefix.request.clone();
+                hash(&mut complete, trailer, io)?;
+                return Ok((old_bytes, *complete.finalize().as_bytes(), state));
+            }
+            let Ok(bytes) = Buffer::new(old_bytes, io) else {
+                return fresh(request, io);
+            };
+            let (bytes, digest) = prefix.extend(bytes, &[], trailer, old_count, io)?;
+            return Ok((bytes, digest, state));
         }
         prefix.previous = Some((old_count, prefix.messages_digest(io)?));
         let encoded = encode(&suffix, io)?;
@@ -268,7 +298,11 @@ impl EncodingPrefix {
         count: usize,
         io: Option<&PreparationIo>,
     ) -> Result<(acyclic_stream::OwnedBytes, [u8; 32])> {
-        let separator: &[u8] = if self.count == 0 { b"" } else { b"," };
+        let separator: &[u8] = if self.count == 0 || appended.is_empty() {
+            b""
+        } else {
+            b","
+        };
         let end = self
             .end
             .checked_add(separator.len())

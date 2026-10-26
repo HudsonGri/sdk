@@ -24,7 +24,6 @@ base64 = "=0.22.1"
 bytes.workspace = true
 blake3.workspace = true
 futures.workspace = true
-httpdate = "1.0.3"
 serde.workspace = true
 serde_json.workspace = true
 url = "2.5.7"
@@ -32,7 +31,7 @@ url = "2.5.7"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0" }
 serde_path_to_error = "0.1.20"
-acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["filesystem"] }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["filesystem", "native-http"] }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 blake3.workspace = true
 reqwest.workspace = true
@@ -43,6 +42,7 @@ time = { workspace = true, features = ["formatting", "parsing"] }
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync", "time"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["wasm"] }
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, optional = true }
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
@@ -51,7 +51,13 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 
+[dev-dependencies]
+httpdate = "1.0.3"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rcgen = "0.14.10"
+harness-mock-model = { path = "../harness-mock-model" }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring"] }
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["test-support", "filesystem-local", "native-execution"] }
 acyclic-test-support = { path = "../test-support" }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false, features = ["local"] }

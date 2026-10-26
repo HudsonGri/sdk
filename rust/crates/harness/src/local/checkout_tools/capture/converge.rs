@@ -39,40 +39,43 @@ impl Cursor {
         cancellation: &CancellationToken,
         optional_before_images: bool,
     ) -> Result<WatchBatch> {
-        self.watcher.begin_rescan().map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        self.inject("begin")?;
-        self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        self.inject("watch-tree")?;
-        let captured = capture_baseline(
-            checkout,
-            options,
-            policy,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await;
-        if let Err(failure) = captured {
-            // This first import exists only to retain display before-images.
-            // Failure leaves capture_baseline's private candidate unpublished.
-            // Loss-of-continuity rescans remain mandatory and fail closed.
-            let unreadable = matches!(&failure.error,
-                CaptureError::Kernel(cause) if matches!(cause.as_ref(),
-                    acyclic_fs::FsError::NativeKernel(acyclic_fs::NativeTreeMaterializationError::Io(error))
-                    if error.kind() == std::io::ErrorKind::PermissionDenied
-                        || cfg!(windows) && error.raw_os_error() == Some(32)));
-            if !optional_before_images || !unreadable {
-                return Err(storage(failure));
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            self.watcher.begin_rescan().map_err(storage)?;
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            self.inject("begin")?;
+            self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            self.inject("watch-tree")?;
+            let captured = capture_baseline(
+                checkout,
+                options,
+                policy,
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            )
+            .await;
+            if let Err(failure) = captured {
+                // This first import exists only to retain display before-images.
+                // Failure leaves capture_baseline's private candidate unpublished.
+                // Loss-of-continuity rescans remain mandatory and fail closed.
+                let unreadable = matches!(&failure.error,
+                    CaptureError::Kernel(cause) if matches!(cause.as_ref(),
+                        acyclic_fs::FsError::NativeKernel(acyclic_fs::NativeTreeMaterializationError::Io(error))
+                        if error.kind() == std::io::ErrorKind::PermissionDenied
+                            || cfg!(windows) && error.raw_os_error() == Some(32)));
+                if !optional_before_images || !unreadable {
+                    return Err(storage(failure));
+                }
+                self.unreadable_diff_source = true;
             }
-            self.unreadable_diff_source = true;
-        }
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        self.inject("baseline")?;
-        let batch = self.watcher.finish_rescan().map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        self.inject("finish")?;
-        Ok(batch)
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            self.inject("baseline")?;
+            let batch = self.watcher.finish_rescan().map_err(storage)?;
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            self.inject("finish")?;
+            Ok(batch)
+        })?
+        .await
     }
 }
 
@@ -84,44 +87,126 @@ pub(super) async fn capture(
     mut baseline: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let mut initial = cursor.initial.take();
-    let optional_before_images =
-        physical.import_source && matches!(initial, Some(WatchBatch::Changes { .. }));
-    if let Some(WatchBatch::RescanRequired { reason, .. }) = initial {
-        require_rescan(reason)?;
-    }
-    baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
-    if !baseline {
-        cursor.watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        cursor.inject("fence")?;
-    }
-    let mut rescans = 0;
-    loop {
-        cancellation.check().map_err(storage)?;
-        if baseline {
-            if rescans == MAXIMUM_RESCANS {
-                return Err(Error::Conflict(
-                    "checkout kept changing during capture; retry the command".into(),
-                ));
-            }
-            rescans += 1;
-            // Discard private mutations while retaining the ORIGINAL expected
-            // publication head. Reopening Exact would silently refresh that
-            // fence and could overwrite a concurrent writer's generation.
-            checkout
-                .discard(WorkBudget::UNBOUNDED, cancellation)
-                .await
-                .map_err(storage)?;
-            initial = None;
-            let batch = cursor
-                .baseline(
+    crate::conversation::BoundedContentFuture::new(None, || async move {
+        let mut initial = cursor.initial.take();
+        let optional_before_images =
+            physical.import_source && matches!(initial, Some(WatchBatch::Changes { .. }));
+        if let Some(WatchBatch::RescanRequired { reason, .. }) = initial {
+            require_rescan(reason)?;
+        }
+        baseline |= matches!(initial, Some(WatchBatch::RescanRequired { .. }));
+        if !baseline {
+            cursor.watcher.fence(WATCH_FENCE_TIMEOUT).map_err(storage)?;
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            cursor.inject("fence")?;
+        }
+        let mut rescans = 0;
+        loop {
+            cancellation.check().map_err(storage)?;
+            if baseline {
+                if rescans == MAXIMUM_RESCANS {
+                    return Err(Error::Conflict(
+                        "checkout kept changing during capture; retry the command".into(),
+                    ));
+                }
+                rescans += 1;
+                // Discard private mutations while retaining the ORIGINAL expected
+                // publication head. Reopening Exact would silently refresh that
+                // fence and could overwrite a concurrent writer's generation.
+                checkout
+                    .discard(WorkBudget::UNBOUNDED, cancellation)
+                    .await
+                    .map_err(storage)?;
+                initial = None;
+                let batch = cursor
+                    .baseline(
+                        checkout,
+                        configuration,
+                        cancellation,
+                        optional_before_images && rescans == 1,
+                    )
+                    .await?;
+                if !replay(
+                    cursor,
                     checkout,
+                    batch,
+                    physical,
                     configuration,
                     cancellation,
-                    optional_before_images && rescans == 1,
                 )
-                .await?;
+                .await?
+                {
+                    continue;
+                }
+            } else if let Some(batch) = initial.take()
+                && !replay(
+                    cursor,
+                    checkout,
+                    batch,
+                    physical,
+                    configuration,
+                    cancellation,
+                )
+                .await?
+            {
+                baseline = true;
+                continue;
+            }
+            if drain(cursor, checkout, physical, configuration, cancellation).await? {
+                // FSEvents ordering cookies fence only events the kernel emits.
+                // An access-only fsetattrlist does not emit one, so inspect recorded
+                // metadata without reading bodies and erasing the access edit.
+                #[cfg(target_os = "macos")]
+                {
+                    acyclic_fs::capture_recorded_metadata(
+                        checkout,
+                        configuration.0,
+                        configuration.1,
+                        WorkBudget::UNBOUNDED,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(storage)?;
+                    if !drain(cursor, checkout, physical, configuration, cancellation).await? {
+                        baseline = true;
+                        continue;
+                    }
+                }
+                return Ok(());
+            }
+            baseline = true;
+        }
+    })?
+    .await
+}
+
+async fn drain(
+    cursor: &mut Cursor,
+    checkout: &mut Candidate,
+    physical: &LocalWorkspace,
+    configuration: (&CaptureOptions, &CapturePolicy),
+    cancellation: &CancellationToken,
+) -> Result<bool> {
+    crate::conversation::BoundedContentFuture::new(None, || async move {
+        let mut remaining = MAXIMUM_PATHS as usize;
+        let mut pending = None;
+        loop {
+            // Keep the producer's vector guard alive until replay has consumed it.
+            let (batch, _owner) = match pending.take() {
+                Some(batch) => batch,
+                None => cursor.poll(cancellation)?,
+            };
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            cursor.inject("poll")?;
+            let empty = match &batch {
+                WatchBatch::Changes { changes, .. } => {
+                    remaining = remaining.checked_sub(changes.len()).ok_or_else(|| {
+                        Error::Conflict("checkout change batch exceeds capture bound".into())
+                    })?;
+                    changes.is_empty()
+                }
+                WatchBatch::RescanRequired { .. } => false,
+            };
             if !replay(
                 cursor,
                 checkout,
@@ -132,77 +217,21 @@ pub(super) async fn capture(
             )
             .await?
             {
-                continue;
+                return Ok(false);
             }
-        } else if let Some(batch) = initial.take()
-            && !replay(
-                cursor,
-                checkout,
-                batch,
-                physical,
-                configuration,
-                cancellation,
-            )
-            .await?
-        {
-            baseline = true;
-            continue;
-        }
-        if drain(cursor, checkout, physical, configuration, cancellation).await? {
-            return Ok(());
-        }
-        baseline = true;
-    }
-}
-
-async fn drain(
-    cursor: &mut Cursor,
-    checkout: &mut Candidate,
-    physical: &LocalWorkspace,
-    configuration: (&CaptureOptions, &CapturePolicy),
-    cancellation: &CancellationToken,
-) -> Result<bool> {
-    let mut remaining = MAXIMUM_PATHS as usize;
-    let mut pending = None;
-    loop {
-        // Keep the producer's vector guard alive until replay has consumed it.
-        let (batch, _owner) = match pending.take() {
-            Some(batch) => batch,
-            None => cursor.poll(cancellation)?,
-        };
-        #[cfg(all(test, not(acyclic_harness_loom)))]
-        cursor.inject("poll")?;
-        let empty = match &batch {
-            WatchBatch::Changes { changes, .. } => {
-                remaining = remaining.checked_sub(changes.len()).ok_or_else(|| {
-                    Error::Conflict("checkout change batch exceeds capture bound".into())
-                })?;
-                changes.is_empty()
+            // Recheck invalidation after replay, including an empty batch. Do not
+            // fence here: FSEvents correctly cannot promise synchronous delivery.
+            if empty {
+                let validated = cursor.poll(cancellation)?;
+                if matches!(&validated.0, WatchBatch::Changes { changes, .. } if changes.is_empty())
+                {
+                    return Ok(true);
+                }
+                pending = Some(validated);
             }
-            WatchBatch::RescanRequired { .. } => false,
-        };
-        if !replay(
-            cursor,
-            checkout,
-            batch,
-            physical,
-            configuration,
-            cancellation,
-        )
-        .await?
-        {
-            return Ok(false);
         }
-        // Recheck invalidation after replay, including an empty batch. Do not
-        // fence here: FSEvents correctly cannot promise synchronous delivery.
-        if empty {
-            let validated = cursor.poll(cancellation)?;
-            if matches!(&validated.0, WatchBatch::Changes { changes, .. } if changes.is_empty()) {
-                return Ok(true);
-            }
-            pending = Some(validated);
-        }
-    }
+    })?
+    .await
 }
 
 pub(super) async fn replay(
@@ -213,34 +242,37 @@ pub(super) async fn replay(
     (options, policy): (&CaptureOptions, &CapturePolicy),
     cancellation: &CancellationToken,
 ) -> Result<bool> {
-    if let WatchBatch::RescanRequired { reason, .. } = batch {
-        require_rescan(reason)?;
-        return Ok(false);
-    }
-    arrivals::register(&mut cursor.watcher, &batch, physical, policy)?;
-    #[cfg(all(test, not(acyclic_harness_loom)))]
-    cursor.inject("register")?;
-    let result = capture_watch_batch(
-        checkout,
-        batch,
-        options,
-        policy,
-        WorkBudget::UNBOUNDED,
-        cancellation,
-    )
-    .await;
-    #[cfg(all(test, not(acyclic_harness_loom)))]
-    cursor.inject("replay")?;
-    match result {
-        Ok(_) => Ok(true),
-        Err(failure) if matches!(failure.error, CaptureError::RescanRequired { .. }) => {
-            if let CaptureError::RescanRequired { reason, .. } = failure.error {
-                require_rescan(reason)?;
-            }
-            Ok(false)
+    crate::conversation::BoundedContentFuture::new(None, || async move {
+        if let WatchBatch::RescanRequired { reason, .. } = batch {
+            require_rescan(reason)?;
+            return Ok(false);
         }
-        Err(failure) => Err(storage(failure)),
-    }
+        arrivals::register(&mut cursor.watcher, &batch, physical, policy)?;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        cursor.inject("register")?;
+        let result = capture_watch_batch(
+            checkout,
+            batch,
+            options,
+            policy,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        cursor.inject("replay")?;
+        match result {
+            Ok(_) => Ok(true),
+            Err(failure) if matches!(failure.error, CaptureError::RescanRequired { .. }) => {
+                if let CaptureError::RescanRequired { reason, .. } = failure.error {
+                    require_rescan(reason)?;
+                }
+                Ok(false)
+            }
+            Err(failure) => Err(storage(failure)),
+        }
+    })?
+    .await
 }
 
 fn require_rescan(reason: acyclic_fs::WatchInvalidationReason) -> Result<()> {

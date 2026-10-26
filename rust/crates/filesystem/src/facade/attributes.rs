@@ -242,77 +242,88 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<Vec<(AttributeName, acyclic_stream::OwnedBytes)>> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-            }
-            let mut attributes =
-                Owned::<Vec<(AttributeName, acyclic_stream::OwnedBytes)>>::allocate(
-                    0,
+        let result =
+            async {
+                let mut frame = crate::heap_future::with_accounting(
                     &mut accounting,
+                    |accounting| async move {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(original) = accounting.native_work() {
+                            self.validate_native_work(original)?;
+                        }
+                        let mut attributes = Owned::<
+                            Vec<(AttributeName, acyclic_stream::OwnedBytes)>,
+                        >::allocate(0, accounting)?;
+                        let mut total = 0_u64;
+                        loop {
+                            let after = attributes.value.last().map(|(name, _)| name);
+                            let (listing, mut allocation) = list_attributes_async_with_accounting(
+                                &self.volume.fs.inner.objects,
+                                root,
+                                after,
+                                256,
+                                DecodeLimits::for_volume(self.volume.config),
+                                accounting,
+                                cancellation,
+                                None,
+                            )
+                            .await?;
+                            let mut listing = listing;
+                            let retired = listing
+                                .entries
+                                .capacity()
+                                .checked_mul(size_of::<AttributeEntry>())
+                                .map(usize_to_u64)
+                                .ok_or(WorkError::Overflow)?;
+                            attributes.allocation.absorb(&mut allocation)?;
+                            for entry in listing.entries.drain(..) {
+                                total = total.saturating_add(entry.value_bytes);
+                                if total > self.volume.config.limits.maximum_read_bytes {
+                                    return Err(FsError::FileRead(
+                                        FileRangeReadError::InvalidRange,
+                                    ));
+                                }
+                                attributes.ensure_for_push(usize::MAX, accounting)?;
+                                let read = read_blob_range_with_accounting(
+                                    &self.volume.fs.inner.objects,
+                                    entry.value,
+                                    ByteRange {
+                                        offset: 0,
+                                        length: entry.value_bytes,
+                                    },
+                                    DecodeLimits::for_volume(self.volume.config),
+                                    accounting,
+                                    cancellation,
+                                    true,
+                                )
+                                .await?;
+                                let copied = WorkCounters {
+                                    items_examined: 1,
+                                    bytes_copied: size_of::<(
+                                        AttributeName,
+                                        acyclic_stream::OwnedBytes,
+                                    )>() as u64,
+                                    ..WorkCounters::UNCHARGED
+                                };
+                                accounting.admit(copied)?;
+                                attributes.value.push((entry.name, read.bytes));
+                                accounting.record_completed(copied)?;
+                            }
+                            let has_more = listing.has_more;
+                            drop(listing);
+                            accounting.release_owned(&mut attributes.allocation, retired)?;
+                            if !has_more {
+                                break;
+                            }
+                        }
+                        Ok((attributes.value, attributes.allocation))
+                    },
                 )?;
-            let mut total = 0_u64;
-            loop {
-                let after = attributes.value.last().map(|(name, _)| name);
-                let (listing, mut allocation) = list_attributes_async_with_accounting(
-                    &self.volume.fs.inner.objects,
-                    root,
-                    after,
-                    256,
-                    DecodeLimits::for_volume(self.volume.config),
-                    &mut accounting,
-                    cancellation,
-                    None,
-                )
-                .await?;
-                let mut listing = listing;
-                let retired = listing
-                    .entries
-                    .capacity()
-                    .checked_mul(size_of::<AttributeEntry>())
-                    .map(usize_to_u64)
-                    .ok_or(WorkError::Overflow)?;
-                attributes.allocation.absorb(&mut allocation)?;
-                for entry in listing.entries.drain(..) {
-                    total = total.saturating_add(entry.value_bytes);
-                    if total > self.volume.config.limits.maximum_read_bytes {
-                        return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-                    }
-                    attributes.ensure_for_push(usize::MAX, &mut accounting)?;
-                    let read = read_blob_range_with_accounting(
-                        &self.volume.fs.inner.objects,
-                        entry.value,
-                        ByteRange {
-                            offset: 0,
-                            length: entry.value_bytes,
-                        },
-                        DecodeLimits::for_volume(self.volume.config),
-                        &mut accounting,
-                        cancellation,
-                        true,
-                    )
-                    .await?;
-                    let copied = WorkCounters {
-                        items_examined: 1,
-                        bytes_copied: size_of::<(AttributeName, acyclic_stream::OwnedBytes)>()
-                            as u64,
-                        ..WorkCounters::UNCHARGED
-                    };
-                    accounting.admit(copied)?;
-                    attributes.value.push((entry.name, read.bytes));
-                    accounting.record_completed(copied)?;
-                }
-                let has_more = listing.has_more;
-                drop(listing);
-                accounting.release_owned(&mut attributes.allocation, retired)?;
-                if !has_more {
-                    break;
-                }
+                let result = frame.value.as_mut().await;
+                drop(frame);
+                result
             }
-            Ok((attributes.value, attributes.allocation))
-        }
-        .await;
+            .await;
         work.finish_owned(result, &accounting)
     }
 }

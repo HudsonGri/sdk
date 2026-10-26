@@ -178,7 +178,7 @@ pub(super) async fn canonical_publication_rejects_fabricated_source_and_summary_
             .await?;
         assert_eq!(output.text, "retained summary");
         let records = storage.journal().replay(operation, 0, 64, None)?.await?;
-        assert_single_summary_checkpoint(&records);
+        assert_single_compaction_and_summary(&records);
         assert_eq!(provider.requests().len(), 3);
         let previous_reference = acyclic_harness::executor::canonical_checkpoint_for_operation(
             storage.journal().as_ref(),

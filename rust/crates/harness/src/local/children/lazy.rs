@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
 use crate::{
     filesystem::{FilesystemForkPreparer, PreparationIo},
     fork::{ForkReport, ForkRequest, ResourceRevision},
@@ -38,30 +39,38 @@ impl LocalWorkspace {
                 "child fork differs from its lazy source cut".into(),
             ));
         }
-        let operation = preparer
-            .project_creation_operation(request, preparation, io)
-            .await?;
+        let operation = BoundedContentFuture::new(Some(io), || {
+            preparer.project_creation_operation(request, preparation, io)
+        })?
+        .await?;
         let destination = request
             .preparation
             .child_project_volume
             .storage_name(&mut Some(&mut io.history_io()))?;
         let mut accounting = io.accounting(io.cancellation());
-        let selected = source
-            .prepare_fork_snapshot(&destination, cut, operation, &mut accounting)
-            .await;
-        let selected = io.sdk(io.finish(selected, &accounting))?;
+        let selected = BoundedContentFuture::new(Some(io), || async {
+            let selected = source
+                .prepare_fork_snapshot(&destination, cut, operation, &mut accounting)
+                .await;
+            io.sdk(io.finish(selected, &accounting))
+        })?
+        .await?;
         drop(accounting);
-        let report = preparer
-            .prepare_for_task(request, preparation, Some(io))
-            .await?;
+        let report = BoundedContentFuture::new(Some(io), || {
+            preparer.prepare_for_task(request, preparation, Some(io))
+        })?
+        .await?;
         preparation.verify(false, Some(io))?.await?;
-        let child = io.sdk(
-            self.filesystem
-                .open_workspace(&destination, io, io.cancellation())
-                .await,
-        )?;
-        let original = io
-            .sdk(
+        let child = BoundedContentFuture::new(Some(io), || async {
+            io.sdk(
+                self.filesystem
+                    .open_workspace(&destination, io, io.cancellation())
+                    .await,
+            )
+        })?
+        .await?;
+        let original = BoundedContentFuture::new(Some(io), || async {
+            io.sdk(
                 self.filesystem
                     .workspace_for_creation_operation(
                         &destination,
@@ -71,30 +80,38 @@ impl LocalWorkspace {
                         io.cancellation(),
                     )
                     .await,
-            )?
-            .ok_or_else(|| Error::Conflict("child fork has no original creation".into()))?;
+            )
+        })?
+        .await?
+        .ok_or_else(|| Error::Conflict("child fork has no original creation".into()))?;
         let original_generation = original.id();
         drop(original);
         let mut accounting = io.accounting(io.cancellation());
-        let bound = source
-            .bind_prepared_fork(
-                selected,
-                child,
-                original_generation,
-                operation,
-                &mut accounting,
-            )
-            .await;
-        let (view, _) = io.sdk(io.finish(bound, &accounting))?;
-        acyclic_fs::WorkspaceGraph::new(self.store.clone())
-            .register_existing_child_at_generation(
-                source.workspace(),
-                view.workspace(),
-                cut.authored_generation,
-                original_generation,
-            )
-            .await
-            .map_err(storage)?;
+        let (view, _) = BoundedContentFuture::new(Some(io), || async {
+            let bound = source
+                .bind_prepared_fork(
+                    selected,
+                    child,
+                    original_generation,
+                    operation,
+                    &mut accounting,
+                )
+                .await;
+            io.sdk(io.finish(bound, &accounting))
+        })?
+        .await?;
+        BoundedContentFuture::new(Some(io), || async {
+            acyclic_fs::WorkspaceGraph::new(self.store.clone())
+                .register_existing_child_at_generation(
+                    source.workspace(),
+                    view.workspace(),
+                    cut.authored_generation,
+                    original_generation,
+                )
+                .await
+                .map_err(storage)
+        })?
+        .await?;
         Ok((report, view))
     }
 }

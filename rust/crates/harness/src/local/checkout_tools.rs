@@ -13,6 +13,8 @@ pub(super) mod access;
 mod capture;
 mod children;
 pub(in crate::local) mod diff;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod frame_tests;
 mod git;
 #[cfg(test)]
 #[cfg(all(unix, not(acyclic_harness_loom)))]
@@ -172,45 +174,53 @@ impl CheckoutTools {
             maximum,
         } = command;
         let result = serialized(&self.state, async |mut state| {
-            let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
-                Error::Unauthorized("checkout command has no execution owner".into())
-            })?;
-            owner.verify_owner(None)?.await?;
-            let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
-            let view = state
-                .active
-                .as_ref()
-                .unwrap_or_else(|| self.workspace.view());
-            self.require_command_access(
-                view.workspace(),
-                context.effective_scope().grants(),
-                invocation.name == "fs",
-            )
-            .await?;
-            if reconciliation::recover(&workspace, view, &|| async {
-                owner.verify_owner(None)?.await
-            })
-            .await?
-            {
-                state.watcher = None;
-            }
-            workspace::volumes::sync(&state.mounts).await?;
-            if let Some(parsed) = fs {
-                self.fs(parsed, context, &mut state, &workspace).await
-            } else {
-                self.shell_checkout(
-                    ShellCommand {
-                        invocation: &invocation,
-                        context,
-                        shell,
-                        request,
-                        maximum,
-                    },
-                    state,
-                    &workspace,
+            crate::conversation::BoundedContentFuture::new(None, || async {
+                let owner = context.task().owned_mailbox.as_ref().ok_or_else(|| {
+                    Error::Unauthorized("checkout command has no execution owner".into())
+                })?;
+                owner.verify_owner(None)?.await?;
+                let workspace = self.selected_workspace(&mut state, owner.as_ref()).await?;
+                let view = state
+                    .active
+                    .as_ref()
+                    .unwrap_or_else(|| self.workspace.view());
+                self.require_command_access(
+                    view.workspace(),
+                    context.effective_scope().grants(),
+                    invocation.name == "fs",
                 )
-                .await
-            }
+                .await?;
+                if reconciliation::recover(&workspace, view, &|| async {
+                    owner.verify_owner(None)?.await
+                })
+                .await?
+                {
+                    state.watcher = None;
+                }
+                workspace::volumes::sync(&state.mounts).await?;
+                if let Some(parsed) = fs {
+                    crate::conversation::BoundedContentFuture::new(None, || {
+                        self.fs(parsed, context, &mut state, &workspace)
+                    })?
+                    .await
+                } else {
+                    crate::conversation::BoundedContentFuture::new(None, || {
+                        self.shell_checkout(
+                            ShellCommand {
+                                invocation: &invocation,
+                                context,
+                                shell,
+                                request,
+                                maximum,
+                            },
+                            state,
+                            &workspace,
+                        )
+                    })?
+                    .await
+                }
+            })?
+            .await
         })
         .await;
         #[cfg(test)]
@@ -354,7 +364,10 @@ impl ToolExecutor for CheckoutTools {
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
             if let Some(project) = self.child_project(original)? {
-                let selected = self.child_checkout(original, project).await?;
+                let selected = crate::conversation::BoundedContentFuture::new(None, || {
+                    self.child_checkout(original, project)
+                })?
+                .await?;
                 return selected.execute(invocation, context).await;
             }
             if !self.selected {
@@ -375,15 +388,13 @@ impl ToolExecutor for CheckoutTools {
                 })
                 .await?;
             }
-            if !self.selected
-                && let Some(selected) = self
-                    .select(
-                        context
-                            .as_ref()
-                            .ok_or_else(|| Error::Invalid("tool context missing".into()))?,
-                    )
+            let selected = if self.selected {
+                None
+            } else {
+                crate::conversation::BoundedContentFuture::new(None, || self.select(original))?
                     .await?
-            {
+            };
+            if let Some(selected) = selected {
                 return selected.execute(invocation, context).await;
             }
             let request = if invocation.name == crate::tools::shell::PLATFORM.name {
@@ -425,16 +436,18 @@ impl ToolExecutor for CheckoutTools {
             };
             let maximum = context.effective_scope().limits().render_bytes;
             let maximum = usize::try_from(maximum).map_err(storage)?;
-            self.run_checkout_command(
-                PreparedCommand {
-                    invocation,
-                    shell,
-                    fs,
-                    request,
-                    maximum,
-                },
-                context,
-            )
+            crate::conversation::BoundedContentFuture::new(None, || {
+                self.run_checkout_command(
+                    PreparedCommand {
+                        invocation,
+                        shell,
+                        fs,
+                        request,
+                        maximum,
+                    },
+                    context,
+                )
+            })?
             .await
         })
     }

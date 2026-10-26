@@ -36,47 +36,56 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        let path = self.mutation_path(path, accounting, cancellation)?;
-        let existing = self
-            .checkout
-            .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
-            .await?
-            .0
-            .record;
-        let mut operations =
-            crate::kernel::Owned::allocate(if existing.is_some() { 2 } else { 1 }, accounting)?;
-        if let Some(record) = existing {
-            if record.kind != FileKind::Regular {
-                return Err(WorkspaceError::NotRegularFile);
-            }
-            Self::reset_file(
-                &path.value,
-                Some(record),
-                &mut operations,
-                accounting,
-                cancellation,
-            )?;
-        }
-        let operation = if existing.is_some() {
-            AuthoredMutation::Write {
-                path: path.value,
-                offset: 0,
-                bytes: bytes.into(),
-            }
-        } else {
-            AuthoredMutation::CreateFile {
-                path: path.value,
-                bytes: bytes.into(),
-                metadata: FileMetadata::default(),
-            }
-        };
-        Self::push_mutation(
-            &mut operations,
-            crate::kernel::Owned::new(operation, path.allocation, path.bytes),
-            accounting,
-        )?;
-        self.apply_authored(operations, accounting, cancellation)
-            .await
+        let bytes = bytes.into();
+        let mut frame =
+            crate::heap_future::with_provider_accounting(accounting, |accounting| async move {
+                let path = self.mutation_path(path, accounting, cancellation)?;
+                let existing = self
+                    .checkout
+                    .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
+                    .await?
+                    .0
+                    .record;
+                let mut operations = crate::kernel::Owned::allocate(
+                    if existing.is_some() { 2 } else { 1 },
+                    accounting,
+                )?;
+                if let Some(record) = existing {
+                    if record.kind != FileKind::Regular {
+                        return Err(WorkspaceError::NotRegularFile);
+                    }
+                    Self::reset_file(
+                        &path.value,
+                        Some(record),
+                        &mut operations,
+                        accounting,
+                        cancellation,
+                    )?;
+                }
+                let operation = if existing.is_some() {
+                    AuthoredMutation::Write {
+                        path: path.value,
+                        offset: 0,
+                        bytes,
+                    }
+                } else {
+                    AuthoredMutation::CreateFile {
+                        path: path.value,
+                        bytes,
+                        metadata: FileMetadata::default(),
+                    }
+                };
+                Self::push_mutation(
+                    &mut operations,
+                    crate::kernel::Owned::new(operation, path.allocation, path.bytes),
+                    accounting,
+                )?;
+                self.apply_authored(operations, accounting, cancellation)
+                    .await
+            })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     /// Stages directory prefixes and ordered file replacements as one transaction batch.
@@ -103,21 +112,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        accounting.check()?;
-        if self.checkout.has_pending_mutations()
-            || self.checkout.volume_config().case_sensitivity
-                != crate::model::CaseSensitivity::Sensitive
-        {
-            return self
-                .write_batch_serial(directories, files, accounting, cancellation)
-                .await;
-        }
-        let (paths, directory_count) =
-            self.batch_paths(directories, files, accounting, cancellation)?;
-        let mut kinds = self
-            .batch_kinds(&paths.value, accounting, cancellation)
-            .await?;
-        classify_batch_paths(&paths.value, directory_count, &mut kinds.value, accounting)?;
+        let mut frame =
+            crate::heap_future::with_provider_accounting(accounting, |accounting| async move {
+                accounting.check()?;
+                if self.checkout.has_pending_mutations()
+                    || self.checkout.volume_config().case_sensitivity
+                        != crate::model::CaseSensitivity::Sensitive
+                {
+                    return self
+                        .write_batch_serial(directories, files, accounting, cancellation)
+                        .await;
+                }
+                let (paths, directory_count) =
+                    self.batch_paths(directories, files, accounting, cancellation)?;
+                let mut kinds = self
+                    .batch_kinds(&paths.value, accounting, cancellation)
+                    .await?;
+                classify_batch_paths(&paths.value, directory_count, &mut kinds.value, accounting)?;
+                let operations = Self::batch_operations::<RESET>(
+                    paths,
+                    directory_count,
+                    &kinds.value,
+                    files,
+                    accounting,
+                    cancellation,
+                )?;
+                kinds.retire(accounting)?;
+                if operations.value.is_empty() {
+                    return operations.retire(accounting).map_err(Into::into);
+                }
+                self.checkout
+                    .apply_authored_bulk_transaction_with_accounting(
+                        operations,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?;
+                Ok(())
+            })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn batch_operations<const RESET: bool>(
+        paths: crate::kernel::Owned<Vec<NamespacePath>>,
+        directory_count: usize,
+        kinds: &[Option<FileKind>],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::kernel::Owned<Vec<AuthoredMutation>>, WorkspaceError> {
         let capacity = directory_count
             .checked_add(
                 files
@@ -136,7 +182,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             let bytes = path.retained_bytes();
             let allocation = crate::kernel::split_allocation(&mut path_allocation, bytes)?;
             let path = crate::kernel::Owned::new(path, allocation, bytes);
-            let existing = kinds.value.get(index).copied().flatten().is_some();
+            let existing = kinds.get(index).copied().flatten().is_some();
             let mutation = if index < directory_count {
                 if existing {
                     path.retire(accounting)?;
@@ -189,14 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
         drop(paths);
         crate::kernel::retire_allocation(path_allocation, backing as u64, accounting)?;
-        kinds.retire(accounting)?;
-        if operations.value.is_empty() {
-            return operations.retire(accounting).map_err(Into::into);
-        }
-        self.checkout
-            .apply_authored_bulk_transaction_with_accounting(operations, accounting, cancellation)
-            .await?;
-        Ok(())
+        Ok(operations)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

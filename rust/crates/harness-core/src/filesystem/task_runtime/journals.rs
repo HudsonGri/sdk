@@ -128,7 +128,10 @@ where
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, &(fence), None).await?,
+            crate::conversation::BoundedContentFuture::new(None, || {
+                self.host.journal_owner(task, &(fence), None)
+            })?
+            .await?,
             execution_operation(task, turn, None)?,
             turn,
             self.filesystem.clone(),

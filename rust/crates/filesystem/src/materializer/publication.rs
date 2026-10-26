@@ -129,7 +129,7 @@ where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
-    let result = async {
+    let result = publication_step(&work, || async {
         let (materializer, journal) =
             prepare_generation(from, to, state, publication, &work, &mut before_effect).await?;
         materializer
@@ -139,7 +139,7 @@ where
                 &mut before_effect,
             )
             .await
-    }
+    })
     .await;
     result
         .map(|value| crate::OperationReceipt {
@@ -169,88 +169,128 @@ where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
-    before_effect().await?;
-    if work.budget() != request.budget || from.id() != request.from || to.id() != request.to {
-        return Err(NativeWorkspacePublicationError::MismatchedJournal);
-    }
-    let mut root = work.path(request.root, None)?;
-    let mut operation = work.path(request.operation_directory, None)?;
-    root.1.absorb(&mut operation.1)?;
-    let allocation = root.1;
-    let root = root.0;
-    let operation = operation.0;
-    let actual = publication_root_identity(&root, &operation, &request, work)?;
-    let store = state.materialization(work.clone());
-    let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
-        validate_generation_journal(&journal, &request)?;
-        check_native_plan(&journal.plan, work)?;
-        work.set_original_work(journal.work);
-        journal
-    } else {
-        let (plan, custody) =
-            publication_step(work, || generation_plan(from, to, &request, work)).await?;
-        let parent = super::directory_preparation::prepare_publication_parent(
-            &operation,
+    publication_step(work, || async move {
+        publication_step(work, &mut *before_effect).await?;
+        if work.budget() != request.budget || from.id() != request.from || to.id() != request.to {
+            return Err(NativeWorkspacePublicationError::MismatchedJournal);
+        }
+        let mut root = work.path(request.root, None)?;
+        let mut operation = work.path(request.operation_directory, None)?;
+        root.1.absorb(&mut operation.1)?;
+        let allocation = root.1;
+        let root = root.0;
+        let operation = operation.0;
+        let actual = publication_root_identity(&root, &operation, &request, work)?;
+        let store = state.materialization(work.clone());
+        let mut journal = if let Some(journal) =
+            publication_step(work, || store.load(request.operation_id)).await?
+        {
+            validate_generation_journal(&journal, &request)?;
+            check_native_plan(&journal.plan, work)?;
+            work.set_original_work(journal.work);
+            journal
+        } else {
+            let (plan, custody) =
+                publication_step(work, || generation_plan(from, to, &request, work)).await?;
+            let parent = publication_step(work, || {
+                super::directory_preparation::prepare_publication_parent(
+                    &operation,
+                    work,
+                    before_effect,
+                )
+            })
+            .await?;
+            let journal = MaterializationJournal {
+                version: JOURNAL_VERSION,
+                revision: 1,
+                plan,
+                root_identity: Some(actual.to_bytes()),
+                preparation_identity: None,
+                preparation_progress: Some(MaterializationPreparationProgress {
+                    parent: parent.identity().to_bytes(),
+                    pending: false,
+                }),
+                preimages: Vec::new(),
+                phase: MaterializationPhase::Preparing,
+                applied: 0,
+                restored: 0,
+                work: work.journal_work()?,
+                custody: Some(custody),
+            };
+            let (stored, journal) = publication_step(work, || {
+                store.compare_and_swap(request.operation_id, 0, journal)
+            })
+            .await?;
+            if !stored {
+                return Err(NativeWorkspacePublicationError::MismatchedJournal);
+            }
+            journal
+        };
+        if journal.preparation_progress.is_some() {
+            journal = publication_step(work, || {
+                NativeTreeMaterializationBackend::prepare_allocations(
+                    &store,
+                    journal,
+                    &root,
+                    &operation,
+                    work,
+                    before_effect,
+                )
+            })
+            .await?;
+        }
+        let backend =
+            NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
+        let materializer = JournaledMaterializer::new(store, backend);
+        publication_step(work, || materializer.verify_allocation(&journal)).await?;
+        journal = stage_preparing_generation(
+            &materializer,
+            to,
+            journal,
+            request.options,
             work,
             before_effect,
         )
         .await?;
-        let journal = MaterializationJournal {
-            version: JOURNAL_VERSION,
-            revision: 1,
-            plan,
-            root_identity: Some(actual.to_bytes()),
-            preparation_identity: None,
-            preparation_progress: Some(MaterializationPreparationProgress {
-                parent: parent.identity().to_bytes(),
-                pending: false,
-            }),
-            preimages: Vec::new(),
-            phase: MaterializationPhase::Preparing,
-            applied: 0,
-            restored: 0,
-            work: work.journal_work()?,
-            custody: Some(custody),
-        };
-        let (stored, journal) = store
-            .compare_and_swap(request.operation_id, 0, journal)
-            .await?;
-        if !stored {
-            return Err(NativeWorkspacePublicationError::MismatchedJournal);
-        }
-        journal
-    };
-    if journal.preparation_progress.is_some() {
-        journal = publication_step(work, || {
-            NativeTreeMaterializationBackend::prepare_allocations(
-                &store,
-                journal,
-                &root,
-                &operation,
-                work,
-                before_effect,
-            )
-        })
-        .await?;
-    }
-    let backend = NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
-    let materializer = JournaledMaterializer::new(store, backend);
-    materializer.verify_allocation(&journal).await?;
+        Ok((materializer, journal))
+    })
+    .await
+}
+
+async fn stage_preparing_generation<A, O, F, Fut>(
+    materializer: &JournaledMaterializer<
+        crate::LocalCoreStateStore,
+        Arc<NativeTreeMaterializationBackend>,
+    >,
+    to: &crate::Generation<A, O>,
+    mut journal: MaterializationJournal,
+    options: &crate::MaterializeOptions,
+    work: &NativeMaterializationWork,
+    before_effect: &mut F,
+) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+    F: FnMut() -> Fut + Send,
+    Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
+{
     if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
-        before_effect().await?;
-        materializer.verify_effect_context(&journal).await?;
-        let completion = materializer.store.prepare_action(journal).await?;
-        let identity = materializer.backend.reset_target_directory("").await?;
-        journal = completion.await?;
+        publication_step(work, &mut *before_effect).await?;
+        publication_step(work, || materializer.verify_effect_context(&journal)).await?;
+        let completion =
+            publication_step(work, || materializer.store.prepare_action(journal)).await?;
+        let identity =
+            publication_step(work, || materializer.backend.reset_target_directory("")).await?;
+        journal = publication_step(work, || completion).await?;
         let (_storage, selections) = install_selections(&journal, work)?;
         if !selections.is_empty() {
             let (destination, _allocation) = materializer.backend.staging_path("")?;
             let options = crate::MaterializeOptions {
                 destination,
                 expected_root_identity: Some(identity),
-                maximum_directory_entries: request.options.maximum_directory_entries,
-                maximum_extent_spans: request.options.maximum_extent_spans,
-                transfer_bytes: request.options.transfer_bytes,
+                maximum_directory_entries: options.maximum_directory_entries,
+                maximum_extent_spans: options.maximum_extent_spans,
+                transfer_bytes: options.transfer_bytes,
             };
             journal = publication_step(work, || {
                 materializer.stage_generation(
@@ -265,7 +305,7 @@ where
             .await?;
         }
     }
-    Ok((materializer, journal))
+    Ok(journal)
 }
 
 fn publication_root_identity(
@@ -347,4 +387,27 @@ pub enum NativeWorkspacePublicationError {
     /// Stage completion was not acknowledged.
     #[error(transparent)]
     NativeStageUncertain(#[from] NativeStageUncertainty<NativeWorkspacePublicationError>),
+}
+
+#[cfg(test)]
+#[test]
+fn generation_publication_keeps_its_original_work_frame_bounded() {
+    type Generation = crate::Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>;
+    let bytes = acyclic_test_support::future_bytes(
+        |(from, to, state, publication, work): (
+            &'static Generation,
+            &'static Generation,
+            &'static crate::LocalCoreStateStore,
+            NativeWorkspacePublication<'static>,
+            NativeMaterializationWork,
+        )| {
+            publish_native_generation_transition(from, to, state, publication, work, || {
+                std::future::ready(Ok(()))
+            })
+        },
+    );
+    assert!(
+        bytes <= 4096,
+        "generation publication future is {bytes} bytes"
+    );
 }

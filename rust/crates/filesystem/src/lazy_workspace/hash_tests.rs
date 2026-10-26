@@ -45,10 +45,10 @@ fn measured<T: MemoryLazyNode>(
     };
     {
         let state = original.state.lock();
-        assert!(state.native_resource.is_none());
-        assert!(state.native_invocation.is_none());
-        assert!(state.capture_custody.is_none());
-        assert!(!state.recheck_items);
+        assert!(state.native_scope.native_resource.is_none());
+        assert!(state.native_scope.native_invocation.is_none());
+        assert!(state.native_scope.capture_custody.is_none());
+        assert!(!state.native_scope.recheck_items);
     }
     (
         result.map_err(|error| format!("{error:?}")),

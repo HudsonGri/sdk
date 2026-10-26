@@ -13,14 +13,62 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::task::{Context, Poll};
+
+/// One construction and polling boundary for all filesystem operation frames.
+pub(crate) struct HeapFuture<F: Future + ?Sized> {
+    future: Pin<Box<F>>,
+}
+
+impl<F: Future + ?Sized> Future for HeapFuture<F> {
+    type Output = F::Output;
+
+    // Construction alone does not isolate a concrete future's poll frame.
+    // Keep the same boundary when the executor enters the owned allocation.
+    #[inline(never)]
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().future.as_mut().poll(context)
+    }
+}
+
+impl<F: Future + ?Sized> HeapFuture<F> {
+    pub(crate) fn as_mut(&mut self) -> Pin<&mut Self> {
+        Pin::new(self)
+    }
+
+    #[cfg(test)]
+    fn as_ref(&self) -> Pin<&F> {
+        self.future.as_ref()
+    }
+}
+
+impl<F: Future> HeapFuture<F> {
+    /// Erases a provider body without moving or reallocating admitted storage.
+    pub(crate) fn erase_provider<'a>(self) -> HeapFuture<ErasedProviderFuture<'a, F::Output>>
+    where
+        F: acyclic_stream::ProviderTask + 'a,
+    {
+        HeapFuture {
+            future: self.future,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type ErasedProviderFuture<'a, T> = dyn Future<Output = T> + Send + 'a;
+#[cfg(target_arch = "wasm32")]
+type ErasedProviderFuture<'a, T> = dyn Future<Output = T> + 'a;
+type ProviderFrame<'a, T> = crate::kernel::ReadOwned<HeapFuture<ErasedProviderFuture<'a, T>>>;
 
 /// Builds `create`'s future directly in a heap allocation.
 ///
 /// The future is built in this function's own frame, which returns before the
 /// future is first polled, so no poll frame ever holds it.
 #[inline(never)]
-pub(crate) fn in_heap<F: Future>(create: impl FnOnce() -> F) -> Pin<Box<F>> {
-    Box::pin(create())
+pub(crate) fn in_heap<F: Future>(create: impl FnOnce() -> F) -> HeapFuture<F> {
+    HeapFuture {
+        future: Box::pin(create()),
+    }
 }
 
 /// Admits a box into an existing ownership ledger before constructing its future.
@@ -30,7 +78,7 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
     mut state: C,
     admit: impl FnOnce(&mut C, u64) -> Result<(), E>,
     create: impl FnOnce(C) -> F,
-) -> Result<(Pin<Box<F>>, u64), E> {
+) -> Result<(HeapFuture<F>, u64), E> {
     let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
     admit(&mut state, bytes)?;
     Ok((in_heap(move || create(state)), bytes))
@@ -157,6 +205,42 @@ where
             })
         }
     }
+}
+
+/// One construction boundary for kernel futures on the original native ledger.
+pub(crate) fn with_accounting<'a, 'accounting, F: Future>(
+    accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
+    create: impl FnOnce(&'a mut crate::kernel::allocation::KernelAccounting<'accounting>) -> F,
+) -> Result<crate::kernel::ReadOwned<crate::heap_future::HeapFuture<F>>, crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let custody = if accounting.native_work().is_some() {
+        let bytes = crate::foundation::usize_to_u64(std::mem::size_of::<F>());
+        accounting.claim_owned(bytes, u64::from(bytes != 0))?
+    } else {
+        crate::kernel::allocation::KernelOwnedAllocation::Standalone
+    };
+    #[cfg(target_arch = "wasm32")]
+    let custody = crate::kernel::allocation::KernelOwnedAllocation::Standalone;
+    Ok(crate::kernel::ReadOwned {
+        value: in_heap(|| create(accounting)),
+        custody,
+    })
+}
+
+/// Erases the admitted frame before it can enter a caller's async state.
+/// Construction, charging and retirement remain owned by `with_accounting`.
+pub(crate) fn with_provider_accounting<'a, 'accounting, F, T>(
+    accounting: &'a mut crate::kernel::allocation::KernelAccounting<'accounting>,
+    create: impl FnOnce(&'a mut crate::kernel::allocation::KernelAccounting<'accounting>) -> F,
+) -> Result<ProviderFrame<'a, T>, crate::FsError>
+where
+    F: Future<Output = T> + acyclic_stream::ProviderTask + 'a,
+{
+    let frame = with_accounting(accounting, create)?;
+    Ok(crate::kernel::ReadOwned {
+        value: frame.value.erase_provider(),
+        custody: frame.custody,
+    })
 }
 
 #[cfg(test)]

@@ -29,16 +29,12 @@ impl StockExecution<'_> {
                 "summary step exceeds parent turn bounds",
             ));
         }
-        crate::context::validate_projected_context(&source, self.stock.limits, self.io)?;
-        crate::executor::with_history_io(self.io, |work| {
-            instruction.validate_limits(self.stock.limits, work)
-        })?;
-        let pinned = self.stock.summary_source.as_deref();
-        if pinned.is_none() {
-            stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
-        }
-        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
-        let summary_output = self.output_budget()?;
+        // Explicit summaries validate their budget against their own selected
+        // member below. The response member may have a different output limit.
+        let summary_output = match self.compaction_policy()? {
+            crate::context::CompactionPolicy::Disabled => self.output_tokens(),
+            crate::context::CompactionPolicy::Threshold(_) => self.output_budget()?,
+        };
         if summary_output.is_none() {
             return Err(stock_boundary(
                 self.io,
@@ -47,23 +43,24 @@ impl StockExecution<'_> {
             ));
         }
         let (source_bytes, source_digest, source_messages) =
-            self.summary_source_identity(&source, pinned)?;
+            self.prepare_summary(&source, &instruction)?;
         let revision = with_history_io(self.io, |work| {
             crate::executor::preparation_format(
                 format_args!("{}", blake3::Hash::from(source_digest).to_hex()),
                 work,
             )
         })?;
+        let pipeline = ContextPipeline::summary_source(source, revision, self.io)?;
         let executor = StockExecution {
             stock: self.stock,
             context: self.context,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             interactions: self.interactions,
             io: self.io,
-            summary: Some((
-                ContextPipeline::summary_source(source, revision, self.io)?,
-                summary_output,
-            )),
+            summary: Some((&pipeline, summary_output)),
+            // A summary has its own durable selection. Reusing the parent's
+            // member bypasses the alloy's summary-role policy.
+            journal_order: JournalOrder::Borrowed(self.journal_order.mutex()),
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
             working_context: tokio::sync::OnceCell::new(),
@@ -91,7 +88,14 @@ impl StockExecution<'_> {
         self.stage_summary_source(journal, operation_id, step, source_bytes.as_deref())
             .await?;
         let events = executor
-            .run_model_step(journal, &input, step, &[], ModelPurpose::Summary, phase)?
+            .run_model_step(
+                journal,
+                &input,
+                step,
+                &[],
+                (ModelPurpose::Summary, false),
+                phase,
+            )?
             .await?;
         let text = self.collect_summary_text(events)?;
         self.publish_summary(
@@ -121,23 +125,41 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    fn summary_source_identity(
+    fn prepare_summary(
         &self,
         source: &crate::context::Context,
-        pinned: Option<&FileRef>,
+        instruction: &ModelContent,
     ) -> Result<(Option<acyclic_stream::OwnedBytes>, [u8; 32], u32)> {
+        crate::context::validate_projected_context(source, self.stock.limits, self.io)?;
+        crate::executor::with_history_io(self.io, |work| {
+            instruction.validate_limits(self.stock.limits, work)
+        })?;
+        let pinned = self.stock.summary_source.as_deref();
+        if pinned.is_none() {
+            stock_json_bound(source, self.stock.limits.file_bytes, self.io)?;
+        }
+        stock_json_bound(instruction, self.stock.limits.file_bytes, self.io)?;
         let source_bytes: Option<acyclic_stream::OwnedBytes> = if pinned.is_some() {
             None
         } else {
             Some(match self.io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-                _ => crate::contract::canonical_json_bytes(&source)?.into(),
+                Some(io) => io.encode(source, self.stock.limits.file_bytes, true)?,
+                _ => crate::contract::canonical_json_bytes(source)?.into(),
             })
         };
         let source_digest = match pinned {
             Some(file) => *file.descriptor().sha256(),
-            None => crate::model::hash_bytes(source_bytes.as_deref().unwrap(), self.io)?,
+            None => crate::model::hash_bytes(
+                source_bytes.as_deref().ok_or_else(|| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "summary source bytes are absent",
+                    )
+                })?,
+                self.io,
+            )?,
         };
         let source_messages = u32::try_from(source.messages.len()).map_err(|_| {
             stock_boundary(

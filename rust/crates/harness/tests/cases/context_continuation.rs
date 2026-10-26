@@ -349,3 +349,20 @@ use publication::*;
 
 #[path = "../context_continuation/working_cut.rs"]
 mod working_cut;
+
+fn assert_single_compaction_and_summary(records: &[acyclic_harness::executor::ExecutionRecord]) {
+    use acyclic_harness::executor::{ExecutionEvent, ModelPurpose};
+    let counts = records
+        .iter()
+        .fold((0, 0), |(compactions, summaries), record| {
+            match record.event {
+                ExecutionEvent::ContextCompacted { .. } => (compactions + 1, summaries),
+                ExecutionEvent::ModelStarted {
+                    purpose: ModelPurpose::Summary,
+                    ..
+                } => (compactions, summaries + 1),
+                _ => (compactions, summaries),
+            }
+        });
+    assert_eq!(counts, (1, 1));
+}

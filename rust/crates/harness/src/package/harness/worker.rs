@@ -30,37 +30,46 @@ where
             available: Default::default(),
             labels: Default::default(),
         };
-        let mut attempt = match Box::pin(
+        let mut attempt = match crate::conversation::BoundedContentFuture::new(None, || async {
             local
                 .task_runtime()
                 .task_host()
-                .recover_work(task, &mut None),
-        )
+                .recover_work(task, &mut None)
+                .await
+        })?
         .await?
         {
             crate::distributed::WorkPull::Claimed(lease) => Some(
-                local
-                    .task_runtime()
-                    .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                    .await,
+                crate::conversation::BoundedContentFuture::new(None, || async {
+                    Ok(local
+                        .task_runtime()
+                        .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                        .await)
+                })?
+                .await?,
             ),
             crate::distributed::WorkPull::Unresolved { error, .. } => {
-                if local
-                    .task_runtime()
-                    .task_host()
-                    .outcome(task)
-                    .await?
-                    .is_none()
+                if crate::conversation::BoundedContentFuture::new(None, || {
+                    local.task_runtime().task_host().outcome(task)
+                })?
+                .await?
+                .is_none()
                 {
                     return Err(error);
                 }
                 None
             }
             crate::distributed::WorkPull::Idle => {
-                local
-                    .task_runtime()
-                    .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                    .await?
+                crate::conversation::BoundedContentFuture::new(None, || {
+                    local.task_runtime().run_operation(
+                        &worker,
+                        task,
+                        commands,
+                        TRANSITIONS_PER_SLICE,
+                        None,
+                    )
+                })?
+                .await?
             }
         };
         loop {
@@ -72,29 +81,41 @@ where
                     crate::filesystem::TaskWorkerOutcome::Yielded { lease },
                 )) => {
                     attempt = Some(
-                        local
-                            .task_runtime()
-                            .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
-                            .await,
+                        crate::conversation::BoundedContentFuture::new(None, || async {
+                            Ok(local
+                                .task_runtime()
+                                .resume_task(lease, commands, TRANSITIONS_PER_SLICE, None)
+                                .await)
+                        })?
+                        .await?,
                     );
                 }
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
-                    if !continue_work().await? {
+                    if !crate::conversation::BoundedContentFuture::new(None, &continue_work)?
+                        .await?
+                    {
                         break;
                     }
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
-                    attempt = local
-                        .task_runtime()
-                        .run_operation(&worker, task, commands, TRANSITIONS_PER_SLICE, None)
-                        .await?;
+                    attempt = crate::conversation::BoundedContentFuture::new(None, || {
+                        local.task_runtime().run_operation(
+                            &worker,
+                            task,
+                            commands,
+                            TRANSITIONS_PER_SLICE,
+                            None,
+                        )
+                    })?
+                    .await?;
                 }
                 _ => break,
             }
         }
-        local.refresh_command_task(task).await?;
+        crate::conversation::BoundedContentFuture::new(None, || local.refresh_command_task(task))?
+            .await?;
         Ok(())
     })
 }

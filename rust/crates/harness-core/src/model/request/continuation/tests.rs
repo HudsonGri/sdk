@@ -10,6 +10,7 @@ fn text(value: &str) -> ModelMessage {
 
 fn request(count: usize) -> Result<ModelRequest> {
     Ok(ModelRequest {
+        conversation_id: None,
         model: Model::new(
             "scripted".into(),
             "continuation".into(),
@@ -279,3 +280,100 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
 ))]
 #[path = "ownership_tests.rs"]
 mod ownership_tests;
+
+#[test]
+fn changed_member_reencodes_header_and_drops_provider_memo_without_copying_history() -> Result<()> {
+    for (changed, append) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut original = request(10)?;
+        original.conversation_id = Some(crate::ConversationId::new());
+        let selected = if changed {
+            Model::new(
+                "scripted".into(),
+                "other-member".into(),
+                "2".into(),
+                json!({"effort":"low"}),
+            )?
+        } else {
+            original.model.clone()
+        };
+        let mut full = original.clone();
+        full.model = selected.clone();
+        if append {
+            full.messages.push(text("next exchange"));
+        }
+        let expected = PreparedModelRequest::prepare(full, Limits::default(), None)?;
+        let prepared = PreparedModelRequest::prepare(original, Limits::default(), None)?;
+        prepared.provider_memo(|| Ok(17_u64))?;
+        let ModelContent::Text(first) = &prepared.request().messages[0].content else {
+            unreachable!()
+        };
+        let original_buffer = first.as_ptr();
+        let mut continued = prepared.into_continuation();
+        continued.select_model(&selected, None)?;
+        if append {
+            continued.messages().push(text("next exchange"));
+        }
+        let continued = continued.finish(Limits::default(), None)?;
+        assert_eq!(continued.request(), expected.request());
+        assert_eq!(continued.bytes(), expected.bytes());
+        assert_eq!(continued.request_digest(), expected.request_digest());
+        assert!(continued.provider_memo.get().is_none());
+        let ModelContent::Text(first) = &continued.request().messages[0].content else {
+            unreachable!()
+        };
+        assert_eq!(first.as_ptr(), original_buffer);
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[test]
+fn member_changes_reuse_admitted_history_encoding_at_every_length() -> Result<()> {
+    for native in [false, true] {
+        let mut expected = None;
+        for count in [1, 10, 100, 1_000] {
+            let measured =
+                crate::test_support::accounted::accounted(native, 16 * 1024 * 1024, false, |io| {
+                    let mut prepared = PreparedModelRequest::prepare(
+                        crate::model::clone_request(&request(count)?, Some(io))?,
+                        Limits::default(),
+                        Some(io),
+                    )?;
+                    let mut selected = prepared.request().model.clone();
+                    selected.name = "member-a".into();
+                    let mut continuation = prepared.into_continuation();
+                    continuation.select_model(&selected, Some(io))?;
+                    prepared = continuation.finish(Limits::default(), Some(io))?;
+                    selected.name = "member-b".into();
+                    let before = io.receipt();
+                    let mut continuation = prepared.into_continuation();
+                    continuation.select_model(&selected, Some(io))?;
+                    let prepared = continuation.finish(Limits::default(), Some(io))?;
+                    let after = io.receipt();
+                    assert_eq!(prepared.request().messages.len(), count);
+                    assert_eq!(
+                        prepared.bytes(),
+                        crate::contract::canonical_json_bytes(prepared.request())?
+                    );
+                    Ok::<_, Error>((
+                        after.bytes_encoded - before.bytes_encoded,
+                        after.bytes_hashed - before.bytes_hashed,
+                        after.items_examined - before.items_examined,
+                    ))
+                })
+                .map_err(|(cause, _)| Error::Storage(cause))?;
+            let work = measured.0?;
+            assert_eq!(
+                *expected.get_or_insert(work),
+                work,
+                "member change revisited {count} messages, native={native}"
+            );
+            eprintln!("member-change history={count} native={native} work={work:?}");
+        }
+    }
+    Ok(())
+}

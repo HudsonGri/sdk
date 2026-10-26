@@ -33,11 +33,13 @@ impl StockExecution<'_> {
         } else {
             None
         };
+        let selected = self.selected_for_turn(input, step)?;
         let (context, prepared) = self
-            .prepare_transformed_request(&context_input, base)
+            .prepare_transformed_request_for(selected, &context_input, base)
             .await?;
         Ok((
             ResponseProjection {
+                model: crate::model::clone_model(&prepared.request().model, self.io)?,
                 context,
                 canonical,
                 checkpoint: None,
@@ -62,13 +64,12 @@ impl StockExecution<'_> {
         let (projection, prepared) = self
             .prepare_response_context(journal, input, step, prior_messages)
             .await?;
-        let accounting = if let Some(capacity) = self.model_capacity()? {
+        let accounting = {
+            let capacity = self.model_capacity()?;
             let count =
                 stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
             with_history_io(self.io, |work| count.validate(&prepared, work))?;
             Some(ContextAccounting { capacity, count })
-        } else {
-            None
         };
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
@@ -154,13 +155,16 @@ impl StockExecution<'_> {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
-                self.capture_response(journal, input, step, prior_messages, tail)
-                    .await?
+                crate::conversation::BoundedContentFuture::new(self.io, || {
+                    self.capture_response(journal, input, step, prior_messages, tail)
+                })?
+                .await?
             }
             Some((reference, accounting)) => {
                 let (projection, prepared) =
                     self.load_response_projection(journal, reference).await?;
-                self.validate_response_request(&prepared)?;
+                let selected = self.recorded_model(&projection.model)?;
+                self.validate_response_request_for(selected, &prepared)?;
                 let accounting = match accounting {
                     Some(reference) => Some(retain_preparation(
                         load_json::<ContextAccounting>(journal, reference, self.io).await?,
@@ -184,14 +188,16 @@ impl StockExecution<'_> {
                 "prepared response projection differs from its request",
             ));
         }
-        self.resolve_response_accounting(
-            journal,
-            (input, step, prior_messages),
-            (projection, accounting),
-            prepared,
-            &records,
-            phase,
-        )
+        crate::conversation::BoundedContentFuture::new(self.io, || {
+            self.resolve_response_accounting(
+                journal,
+                (input, step, prior_messages),
+                (projection, accounting),
+                prepared,
+                &records,
+                phase,
+            )
+        })?
         .await
     }
 
@@ -222,7 +228,8 @@ impl StockExecution<'_> {
         }
         if let Some((retained, proof, final_accounting)) = first {
             let (mut retained, request) = self.load_response_projection(journal, retained).await?;
-            self.validate_response_request(&request)?;
+            let selected = self.recorded_model(&retained.model)?;
+            self.validate_response_request_for(selected, &request)?;
             retained.context.messages =
                 crate::model::clone_messages(&request.request().messages, self.io)?;
             let proof = retain_preparation(
@@ -236,7 +243,7 @@ impl StockExecution<'_> {
                 self.stock.limits,
                 self.io,
             )?;
-            if retained.canonical != projection.canonical {
+            if retained.canonical != projection.canonical || retained.model != projection.model {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Storage,
@@ -259,7 +266,7 @@ impl StockExecution<'_> {
                     "compacted context requires threshold policy",
                 ));
             };
-            if self.model_capacity()? != Some(final_accounting.capacity)
+            if self.model_capacity()? != final_accounting.capacity
                 || proof.retention != policy.retention
                 || proof.summary.as_ref().is_none_or(|summary| {
                     summary.operation_id != input.operation_id || summary.step != step
@@ -288,7 +295,7 @@ impl StockExecution<'_> {
         Ok(None)
     }
 
-    async fn resolve_response_accounting(
+    pub(super) async fn resolve_response_accounting(
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32, &[ModelMessage]),
@@ -300,9 +307,26 @@ impl StockExecution<'_> {
         let (input, step, prior_messages) = turn;
         let (mut projection, accounting) = captured;
         match (self.compaction_policy()?, accounting) {
-            (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
+            (crate::context::CompactionPolicy::Disabled, Some(accounting)) => {
+                let input_tokens = self.accounted_input(&prepared, &accounting)?;
+                let output = prepared.request().max_output_tokens.ok_or_else(|| {
+                    stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Storage,
+                        "prepared response has no output budget",
+                    )
+                })?;
+                if !accounting.capacity.permits_request(input_tokens, output) {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Invalid,
+                        "response input exceeds selected model capacity",
+                    ));
+                }
+                Ok(prepared)
+            }
             (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
-                if self.model_capacity()? != Some(accounting.capacity) {
+                if self.model_capacity()? != accounting.capacity {
                     return Err(stock_boundary(
                         self.io,
                         crate::wire::ErrorCode::Conflict,

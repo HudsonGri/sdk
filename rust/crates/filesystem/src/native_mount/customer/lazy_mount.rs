@@ -158,43 +158,56 @@ where
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let mut acknowledged = None;
-        let result = async {
-            work.admit(crate::WorkCounters::default())
-                .map_err(MountLifecycleError::from)
-                .map_err(|cause| (E::from(cause), None))?;
-            with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
+        let mut accounting =
+            crate::kernel::allocation::KernelAccounting::native(work, work.cancellation());
+        let mut frame = crate::heap_future::with_accounting(&mut accounting, |_| async move {
+            let mut acknowledged = None;
+            let result = async {
+                work.admit(crate::WorkCounters::default())
+                    .map_err(MountLifecycleError::from)
+                    .map_err(|cause| (E::from(cause), None))?;
+                with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
+                    .await
+                    .map_err(|cause| (E::from(cause), None))?;
+                self.source
+                    .sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                        permit,
+                        work,
+                        work.cancellation(),
+                        &mut acknowledged,
+                        before_publication,
+                    )
+                    .await
+            }
+            .await;
+            let publication =
+                result.map_err(
+                    |(cause, accounting_failure)| NativeMountPublicationFailure {
+                        cause,
+                        accounting_failure: accounting_failure.map(Box::new),
+                        source_acknowledged: acknowledged.is_some(),
+                        publication: acknowledged.map(Box::new),
+                    },
+                )?;
+            self.revalidate_async()
                 .await
-                .map_err(|cause| (E::from(cause), None))?;
-            self.source
-                .sync_async_with_permit_qualified_native_work_guarded_with_ack(
-                    permit,
-                    work,
-                    work.cancellation(),
-                    &mut acknowledged,
-                    before_publication,
-                )
-                .await
-        }
-        .await;
-        let publication =
-            result.map_err(
-                |(cause, accounting_failure)| NativeMountPublicationFailure {
-                    cause,
-                    accounting_failure: accounting_failure.map(Box::new),
-                    source_acknowledged: acknowledged.is_some(),
-                    publication: acknowledged.map(Box::new),
-                },
-            )?;
-        self.revalidate_async()
-            .await
-            .map_err(|cause| NativeMountPublicationFailure {
-                cause: E::from(cause),
-                accounting_failure: None,
-                source_acknowledged: true,
-                publication: Some(Box::new(publication)),
-            })?;
-        Ok(publication)
+                .map_err(|cause| NativeMountPublicationFailure {
+                    cause: E::from(cause),
+                    accounting_failure: None,
+                    source_acknowledged: true,
+                    publication: Some(Box::new(publication)),
+                })?;
+            Ok(publication)
+        })
+        .map_err(|cause| NativeMountPublicationFailure {
+            cause: E::from(cause),
+            accounting_failure: None,
+            source_acknowledged: false,
+            publication: None,
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     /// Imports one sealed selection through this mount's actual SDK owner.

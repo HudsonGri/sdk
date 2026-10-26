@@ -659,6 +659,7 @@ impl AuthorityVerifier {
             public: std::sync::Arc::new(runtime_signing::PublicAuthority {
                 trust: std::sync::RwLock::new(trust),
                 metadata_key: checkpoint_key,
+                signatures: acyclic_auth::crypto::SignatureCache::default(),
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })
@@ -779,13 +780,17 @@ impl AuthorityVerifier {
     }
 
     fn verify_metadata(&self, digest: &[u8; 32], proof: &[u8]) -> Result<()> {
-        let key = ed25519_dalek::VerifyingKey::from_bytes(&self.public.metadata_key)
+        let key = self
+            .public
+            .signatures
+            .public_key(&self.public.metadata_key)
             .map_err(|_| Error::Unauthorized("invalid runtime verification key".into()))?;
-        let signature = ed25519_dalek::Signature::from_slice(proof)
-            .map_err(|_| Error::Unauthorized("invalid runtime signature".into()))?;
-        key.verify_strict(digest, &signature).map_err(|_| {
-            Error::Unauthorized("runtime signature does not authenticate this payload".into())
-        })
+        self.public
+            .signatures
+            .verify(&key, digest, proof)
+            .map_err(|_| {
+                Error::Unauthorized("runtime signature does not authenticate this payload".into())
+            })
     }
 
     pub(in crate::core) fn attest_event(

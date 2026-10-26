@@ -196,82 +196,87 @@ pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: Asyn
     ),
     crate::FsError,
 > {
-    accounting.check()?;
-    preflight_generation_mutations(&operations, config)?;
-    let (plan, plan_allocation) =
-        MutationPlan::compile_with_accounting(operations, config.limits, accounting)?;
-    let plan = Owned {
-        value: plan,
-        allocation: plan_allocation,
-    };
-    let created_ids = verify_created_identities(
-        store,
-        generation,
-        &plan.value,
-        config,
-        accounting,
-        cancellation,
-    )
-    .await?;
-    let lookups = load_initial_lookups(
-        store,
-        generation,
-        &plan.value,
-        &created_ids.value,
-        config,
-        accounting,
-        cancellation,
-    )
-    .await?;
-    let created_bytes = logical_vec_bytes(&created_ids.value)?;
-    drop_owned(created_ids, created_bytes, accounting)?;
-    let mut allocation = accounting.claim_owned(0, 0)?;
-    let state = TransactionState::new(
-        &plan.value,
-        &lookups,
-        config,
-        &mut MutationLeaf {
+    let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+        accounting.check()?;
+        preflight_generation_mutations(&operations, config)?;
+        let (plan, plan_allocation) =
+            MutationPlan::compile_with_accounting(operations, config.limits, accounting)?;
+        let plan = Owned {
+            value: plan,
+            allocation: plan_allocation,
+        };
+        let created_ids = verify_created_identities(
+            store,
+            generation,
+            &plan.value,
+            config,
             accounting,
-            allocation: &mut allocation,
-        },
-    )?;
-    let path_bytes = logical_vec_bytes(&lookups.paths.value)?;
-    let identity_bytes = logical_vec_bytes(&lookups.identities.value)?;
-    drop_owned(lookups.paths, path_bytes, accounting)?;
-    drop_owned(lookups.identities, identity_bytes, accounting)?;
-    let mut state = Owned {
-        value: state,
-        allocation,
-    };
-    state
-        .simulate(store, &plan.value, config, accounting, cancellation)
+            cancellation,
+        )
         .await?;
-    let Owned {
-        value: plan,
-        allocation: plan_allocation,
-    } = plan;
-    let plan_bytes = plan.retained_allocation_bytes();
-    let operations = plan.into_operations();
-    release_allocation(plan_allocation, plan_bytes, accounting)?;
-    state
-        .rewrite_directories(store, config, accounting, cancellation)
+        let lookups = load_initial_lookups(
+            store,
+            generation,
+            &plan.value,
+            &created_ids.value,
+            config,
+            accounting,
+            cancellation,
+        )
         .await?;
-    state
-        .verify_removed_directories(store, config, accounting, cancellation)
-        .await?;
-    let (root, allocation) = state
-        .rewrite_file_table(store, generation, config, accounting, cancellation)
-        .await?;
-    let state_bytes = state.value.retained_bytes()?;
-    drop_owned(state, state_bytes, accounting)?;
-    Ok((
-        GenerationMutationReceipt {
-            root,
-            work: accounting.spent(),
-        },
-        operations,
-        allocation,
-    ))
+        let created_bytes = logical_vec_bytes(&created_ids.value)?;
+        drop_owned(created_ids, created_bytes, accounting)?;
+        let mut allocation = accounting.claim_owned(0, 0)?;
+        let state = TransactionState::new(
+            &plan.value,
+            &lookups,
+            config,
+            &mut MutationLeaf {
+                accounting,
+                allocation: &mut allocation,
+            },
+        )?;
+        let path_bytes = logical_vec_bytes(&lookups.paths.value)?;
+        let identity_bytes = logical_vec_bytes(&lookups.identities.value)?;
+        drop_owned(lookups.paths, path_bytes, accounting)?;
+        drop_owned(lookups.identities, identity_bytes, accounting)?;
+        let mut state = Owned {
+            value: state,
+            allocation,
+        };
+        state
+            .simulate(store, &plan.value, config, accounting, cancellation)
+            .await?;
+        let Owned {
+            value: plan,
+            allocation: plan_allocation,
+        } = plan;
+        let plan_bytes = plan.retained_allocation_bytes();
+        let operations = plan.into_operations();
+        release_allocation(plan_allocation, plan_bytes, accounting)?;
+        state
+            .rewrite_directories(store, config, accounting, cancellation)
+            .await?;
+        state
+            .verify_removed_directories(store, config, accounting, cancellation)
+            .await?;
+        let (root, allocation) = state
+            .rewrite_file_table(store, generation, config, accounting, cancellation)
+            .await?;
+        let state_bytes = state.value.retained_bytes()?;
+        drop_owned(state, state_bytes, accounting)?;
+        Ok((
+            GenerationMutationReceipt {
+                root,
+                work: accounting.spent(),
+            },
+            operations,
+            allocation,
+        ))
+    })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 struct Owned<T> {
@@ -402,79 +407,85 @@ impl Owned<TransactionState> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), crate::FsError> {
-        for (ordinal, operation) in plan.operations().iter().enumerate() {
-            let Some(action) = self.leaf(accounting, |state, leaf| {
-                state.prepare(leaf, plan, ordinal, operation)
-            })?
-            else {
-                continue;
-            };
-            let (id, payload) = match action {
-                RegularAction::Mutate {
-                    id,
-                    payload,
-                    mutation,
-                } => {
-                    let receipt = super::regular_mutation::apply_regular_mutation_with_accounting(
-                        store,
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            for (ordinal, operation) in plan.operations().iter().enumerate() {
+                let Some(action) = self.leaf(accounting, |state, leaf| {
+                    state.prepare(leaf, plan, ordinal, operation)
+                })?
+                else {
+                    continue;
+                };
+                let (id, payload) = match action {
+                    RegularAction::Mutate {
+                        id,
                         payload,
                         mutation,
-                        config,
-                        accounting,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|error| {
-                        if is_original(accounting) {
-                            error
-                        } else {
-                            GenerationMutationError::Regular(
-                                super::regular_mutation::project_regular_error(error),
+                    } => {
+                        let receipt =
+                            super::regular_mutation::apply_regular_mutation_with_accounting(
+                                store,
+                                payload,
+                                mutation,
+                                config,
+                                accounting,
+                                cancellation,
                             )
-                            .into()
-                        }
-                    })?;
-                    (id, receipt.payload)
-                }
-                RegularAction::Clone {
-                    destination,
-                    source_payload,
-                    source_offset,
-                    destination_payload,
-                    destination_offset,
-                    length,
-                } => {
-                    let receipt = super::regular_mutation::apply_regular_clone_with_accounting(
-                        store,
+                            .await
+                            .map_err(|error| {
+                                if is_original(accounting) {
+                                    error
+                                } else {
+                                    GenerationMutationError::Regular(
+                                        super::regular_mutation::project_regular_error(error),
+                                    )
+                                    .into()
+                                }
+                            })?;
+                        (id, receipt.payload)
+                    }
+                    RegularAction::Clone {
+                        destination,
                         source_payload,
                         source_offset,
                         destination_payload,
                         destination_offset,
                         length,
-                        config,
-                        accounting,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|error| {
-                        if is_original(accounting) {
-                            error
-                        } else {
-                            GenerationMutationError::Regular(
-                                super::regular_mutation::project_regular_error(error),
-                            )
-                            .into()
-                        }
-                    })?;
-                    (destination, receipt.destination)
-                }
-            };
-            self.leaf(accounting, |state, leaf| {
-                state.record_mut(leaf, id)?.working.payload = payload;
-                Ok(())
-            })?;
-        }
-        Ok(())
+                    } => {
+                        let receipt = super::regular_mutation::apply_regular_clone_with_accounting(
+                            store,
+                            source_payload,
+                            source_offset,
+                            destination_payload,
+                            destination_offset,
+                            length,
+                            config,
+                            accounting,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(|error| {
+                            if is_original(accounting) {
+                                error
+                            } else {
+                                GenerationMutationError::Regular(
+                                    super::regular_mutation::project_regular_error(error),
+                                )
+                                .into()
+                            }
+                        })?;
+                        (destination, receipt.destination)
+                    }
+                };
+                self.leaf(accounting, |state, leaf| {
+                    state.record_mut(leaf, id)?.working.payload = payload;
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     async fn rewrite_directories<S: AsyncObjectStore>(

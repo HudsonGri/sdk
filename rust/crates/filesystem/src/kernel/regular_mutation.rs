@@ -182,37 +182,44 @@ pub(crate) async fn apply_regular_mutation_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<RegularMutationReceipt, FsError> {
-    accounting.check()?;
-    validate_mutation(mutation).map_err(regular_error)?;
-    if !config.sparse_files {
-        let current = regular_logical_bytes(payload).map_err(regular_error)?;
-        let requires_sparse = match mutation {
-            RegularMutation::Write { offset, .. } => offset > current,
-            RegularMutation::Resize { logical_bytes } => logical_bytes > current,
-            RegularMutation::ZeroRange { .. } | RegularMutation::Preallocate { .. } => true,
-        };
-        if requires_sparse {
-            return Err(regular_error(RegularMutationError::SparseSemanticsDisabled));
-        }
-    }
-    let payload = if let FilePayload::InlineRegular(data) = payload {
-        if let Some(payload) =
-            try_inline(store, data, mutation, config, accounting, cancellation).await?
-        {
-            return Ok(RegularMutationReceipt {
-                payload,
-                work: accounting.spent(),
-            });
-        }
-        let promoted = promote_inline(store, data, config, accounting, cancellation).await?;
-        FilePayload::Regular {
-            logical_bytes: promoted.logical_bytes,
-            extents: promoted.extents,
-        }
-    } else {
-        payload
-    };
-    apply_sparse(store, payload, mutation, config, accounting, cancellation).await
+    let mut frame =
+        crate::heap_future::with_provider_accounting(accounting, |accounting| async move {
+            accounting.check()?;
+            validate_mutation(mutation).map_err(regular_error)?;
+            if !config.sparse_files {
+                let current = regular_logical_bytes(payload).map_err(regular_error)?;
+                let requires_sparse = match mutation {
+                    RegularMutation::Write { offset, .. } => offset > current,
+                    RegularMutation::Resize { logical_bytes } => logical_bytes > current,
+                    RegularMutation::ZeroRange { .. } | RegularMutation::Preallocate { .. } => true,
+                };
+                if requires_sparse {
+                    return Err(regular_error(RegularMutationError::SparseSemanticsDisabled));
+                }
+            }
+            let payload = if let FilePayload::InlineRegular(data) = payload {
+                if let Some(payload) =
+                    try_inline(store, data, mutation, config, accounting, cancellation).await?
+                {
+                    return Ok(RegularMutationReceipt {
+                        payload,
+                        work: accounting.spent(),
+                    });
+                }
+                let promoted =
+                    promote_inline(store, data, config, accounting, cancellation).await?;
+                FilePayload::Regular {
+                    logical_bytes: promoted.logical_bytes,
+                    extents: promoted.extents,
+                }
+            } else {
+                payload
+            };
+            apply_sparse(store, payload, mutation, config, accounting, cancellation).await
+        })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 #[allow(
@@ -230,94 +237,99 @@ pub(crate) async fn apply_regular_clone_with_accounting<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<RegularCloneReceipt, FsError> {
-    accounting.check()?;
-    if !config.sparse_files {
-        return Err(regular_error(RegularMutationError::SparseSemanticsDisabled));
-    }
-    let source = RegularStorage::validate(source).map_err(regular_error)?;
-    let destination = RegularStorage::validate(destination).map_err(regular_error)?;
-    let source_end = source_offset
-        .checked_add(length)
-        .ok_or_else(|| regular_error(RegularMutationError::RangeOverflow))?;
-    let destination_end = destination_offset
-        .checked_add(length)
-        .ok_or_else(|| regular_error(RegularMutationError::RangeOverflow))?;
-    if length == 0 || source_end > source.logical_bytes() {
-        return Err(regular_error(RegularMutationError::SourceRangeOutOfBounds));
-    }
-    if let (RegularStorage::Inline(source_data), RegularStorage::Inline(destination_data)) =
-        (source, destination)
-        && destination_offset <= destination.logical_bytes()
-        && destination_end <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
-    {
-        charge_copy(accounting, length)?;
-        let range = usize::try_from(source_offset).map_err(|_| WorkError::Overflow)?
-            ..usize::try_from(source_end).map_err(|_| WorkError::Overflow)?;
-        let bytes = source_data
-            .as_bytes()
-            .get(range)
-            .ok_or(WorkError::Overflow)?;
-        let data = destination_data.replace_range(
-            usize::try_from(destination_offset).map_err(|_| WorkError::Overflow)?,
-            bytes,
-            usize::try_from(destination.logical_bytes().max(destination_end))
-                .map_err(|_| WorkError::Overflow)?,
-        )?;
-        return Ok(RegularCloneReceipt {
-            destination: FilePayload::InlineRegular(data),
-            work: accounting.spent(),
-        });
-    }
-    let equal = source == destination;
-    let (source_logical_bytes, source_root) =
-        sparse_storage(store, source, config, accounting, cancellation).await?;
-    let (destination_logical_bytes, destination_root) = if equal {
-        (source_logical_bytes, source_root)
-    } else {
-        sparse_storage(store, destination, config, accounting, cancellation).await?
-    };
-    let receipt = clone_extent_range_with_accounting(
-        store,
-        ExtentCloneRequest {
-            source_root,
-            source_logical_bytes,
-            source_range: ByteRange {
-                offset: source_offset,
-                length,
-            },
-            destination_root,
-            destination_logical_bytes,
-            destination_offset,
-            maximum_spans: config.limits.maximum_mutations_per_batch,
-            maximum_mutations: config.limits.maximum_mutations_per_batch,
-        },
-        DecodeLimits::for_volume(config),
-        accounting,
-        cancellation,
-    )
-    .await?;
-    let payload = if receipt.logical_bytes <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES) {
-        try_demote_sparse_async(
+    let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+        accounting.check()?;
+        if !config.sparse_files {
+            return Err(regular_error(RegularMutationError::SparseSemanticsDisabled));
+        }
+        let source = RegularStorage::validate(source).map_err(regular_error)?;
+        let destination = RegularStorage::validate(destination).map_err(regular_error)?;
+        let source_end = source_offset
+            .checked_add(length)
+            .ok_or_else(|| regular_error(RegularMutationError::RangeOverflow))?;
+        let destination_end = destination_offset
+            .checked_add(length)
+            .ok_or_else(|| regular_error(RegularMutationError::RangeOverflow))?;
+        if length == 0 || source_end > source.logical_bytes() {
+            return Err(regular_error(RegularMutationError::SourceRangeOutOfBounds));
+        }
+        if let (RegularStorage::Inline(source_data), RegularStorage::Inline(destination_data)) =
+            (source, destination)
+            && destination_offset <= destination.logical_bytes()
+            && destination_end <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
+        {
+            charge_copy(accounting, length)?;
+            let range = usize::try_from(source_offset).map_err(|_| WorkError::Overflow)?
+                ..usize::try_from(source_end).map_err(|_| WorkError::Overflow)?;
+            let bytes = source_data
+                .as_bytes()
+                .get(range)
+                .ok_or(WorkError::Overflow)?;
+            let data = destination_data.replace_range(
+                usize::try_from(destination_offset).map_err(|_| WorkError::Overflow)?,
+                bytes,
+                usize::try_from(destination.logical_bytes().max(destination_end))
+                    .map_err(|_| WorkError::Overflow)?,
+            )?;
+            return Ok(RegularCloneReceipt {
+                destination: FilePayload::InlineRegular(data),
+                work: accounting.spent(),
+            });
+        }
+        let equal = source == destination;
+        let (source_logical_bytes, source_root) =
+            sparse_storage(store, source, config, accounting, cancellation).await?;
+        let (destination_logical_bytes, destination_root) = if equal {
+            (source_logical_bytes, source_root)
+        } else {
+            sparse_storage(store, destination, config, accounting, cancellation).await?
+        };
+        let receipt = clone_extent_range_with_accounting(
             store,
-            receipt.root,
-            receipt.logical_bytes,
-            receipt.logical_bytes,
-            config,
+            ExtentCloneRequest {
+                source_root,
+                source_logical_bytes,
+                source_range: ByteRange {
+                    offset: source_offset,
+                    length,
+                },
+                destination_root,
+                destination_logical_bytes,
+                destination_offset,
+                maximum_spans: config.limits.maximum_mutations_per_batch,
+                maximum_mutations: config.limits.maximum_mutations_per_batch,
+            },
+            DecodeLimits::for_volume(config),
             accounting,
             cancellation,
         )
-        .await?
-        .map(FilePayload::InlineRegular)
-    } else {
-        None
-    };
-    Ok(RegularCloneReceipt {
-        destination: payload.unwrap_or(FilePayload::Regular {
-            logical_bytes: receipt.logical_bytes,
-            extents: receipt.root,
-        }),
-        work: accounting.spent(),
-    })
+        .await?;
+        let payload = if receipt.logical_bytes <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES) {
+            try_demote_sparse_async(
+                store,
+                receipt.root,
+                receipt.logical_bytes,
+                receipt.logical_bytes,
+                config,
+                accounting,
+                cancellation,
+            )
+            .await?
+            .map(FilePayload::InlineRegular)
+        } else {
+            None
+        };
+        Ok(RegularCloneReceipt {
+            destination: payload.unwrap_or(FilePayload::Regular {
+                logical_bytes: receipt.logical_bytes,
+                extents: receipt.root,
+            }),
+            work: accounting.spent(),
+        })
+    })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 pub(crate) async fn clone_extent_range_with_accounting<S: AsyncObjectStore>(
@@ -699,139 +711,144 @@ async fn apply_sparse<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<RegularMutationReceipt, FsError> {
-    let FilePayload::Regular {
-        logical_bytes,
-        extents,
-    } = payload
-    else {
-        return Err(regular_error(RegularMutationError::NotRegular));
-    };
-    if let RegularMutation::ZeroRange {
-        offset,
-        extend: false,
-        ..
-    } = mutation
-        && offset >= logical_bytes
-    {
-        return Ok(RegularMutationReceipt {
-            payload,
-            work: accounting.spent(),
-        });
-    }
-    let mut demotion_known_impossible = false;
-    if let RegularMutation::Resize {
-        logical_bytes: target,
-    } = mutation
-        && target <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
-        && target <= logical_bytes
-    {
-        if let Some(data) = try_demote_sparse_async(
-            store,
-            extents,
+    let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+        let FilePayload::Regular {
             logical_bytes,
-            target,
-            config,
+            extents,
+        } = payload
+        else {
+            return Err(regular_error(RegularMutationError::NotRegular));
+        };
+        if let RegularMutation::ZeroRange {
+            offset,
+            extend: false,
+            ..
+        } = mutation
+            && offset >= logical_bytes
+        {
+            return Ok(RegularMutationReceipt {
+                payload,
+                work: accounting.spent(),
+            });
+        }
+        let mut demotion_known_impossible = false;
+        if let RegularMutation::Resize {
+            logical_bytes: target,
+        } = mutation
+            && target <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
+            && target <= logical_bytes
+        {
+            if let Some(data) = try_demote_sparse_async(
+                store,
+                extents,
+                logical_bytes,
+                target,
+                config,
+                accounting,
+                cancellation,
+            )
+            .await?
+            {
+                return Ok(RegularMutationReceipt {
+                    payload: FilePayload::InlineRegular(data),
+                    work: accounting.spent(),
+                });
+            }
+            demotion_known_impossible = true;
+        }
+        let extent_mutation = match mutation {
+            RegularMutation::Write {
+                offset,
+                length,
+                content,
+                content_offset,
+            } => ExtentMutation::Replace {
+                offset,
+                length,
+                kind: ExtentKind::Content {
+                    object: content,
+                    object_offset: content_offset,
+                },
+                extend: true,
+            },
+            RegularMutation::Resize { logical_bytes } => ExtentMutation::Resize { logical_bytes },
+            RegularMutation::ZeroRange {
+                offset,
+                length,
+                allocated,
+                extend,
+            } => ExtentMutation::Replace {
+                offset,
+                length: if extend {
+                    length
+                } else {
+                    length.min(logical_bytes - offset)
+                },
+                kind: if allocated {
+                    ExtentKind::AllocatedZero
+                } else {
+                    ExtentKind::Hole
+                },
+                extend,
+            },
+            RegularMutation::Preallocate {
+                offset,
+                length,
+                keep_size,
+            } => {
+                return apply_sparse_preallocation(
+                    store,
+                    logical_bytes,
+                    extents,
+                    offset,
+                    length,
+                    keep_size,
+                    config,
+                    accounting,
+                    cancellation,
+                )
+                .await;
+            }
+        };
+        let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
+            store,
+            (extents, logical_bytes),
+            &[extent_mutation],
+            1,
+            DecodeLimits::for_volume(config),
             accounting,
             cancellation,
         )
-        .await?
+        .await?;
+        if !demotion_known_impossible
+            && receipt.logical_bytes <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
+            && let Some(data) = try_demote_sparse_async(
+                store,
+                receipt.root,
+                receipt.logical_bytes,
+                receipt.logical_bytes,
+                config,
+                accounting,
+                cancellation,
+            )
+            .await?
         {
             return Ok(RegularMutationReceipt {
                 payload: FilePayload::InlineRegular(data),
                 work: accounting.spent(),
             });
         }
-        demotion_known_impossible = true;
-    }
-    let extent_mutation = match mutation {
-        RegularMutation::Write {
-            offset,
-            length,
-            content,
-            content_offset,
-        } => ExtentMutation::Replace {
-            offset,
-            length,
-            kind: ExtentKind::Content {
-                object: content,
-                object_offset: content_offset,
+        Ok(RegularMutationReceipt {
+            payload: FilePayload::Regular {
+                logical_bytes: receipt.logical_bytes,
+                extents: receipt.root,
             },
-            extend: true,
-        },
-        RegularMutation::Resize { logical_bytes } => ExtentMutation::Resize { logical_bytes },
-        RegularMutation::ZeroRange {
-            offset,
-            length,
-            allocated,
-            extend,
-        } => ExtentMutation::Replace {
-            offset,
-            length: if extend {
-                length
-            } else {
-                length.min(logical_bytes - offset)
-            },
-            kind: if allocated {
-                ExtentKind::AllocatedZero
-            } else {
-                ExtentKind::Hole
-            },
-            extend,
-        },
-        RegularMutation::Preallocate {
-            offset,
-            length,
-            keep_size,
-        } => {
-            return apply_sparse_preallocation(
-                store,
-                logical_bytes,
-                extents,
-                offset,
-                length,
-                keep_size,
-                config,
-                accounting,
-                cancellation,
-            )
-            .await;
-        }
-    };
-    let receipt = super::extent_mutation::apply_extent_mutations_with_accounting(
-        store,
-        (extents, logical_bytes),
-        &[extent_mutation],
-        1,
-        DecodeLimits::for_volume(config),
-        accounting,
-        cancellation,
-    )
-    .await?;
-    if !demotion_known_impossible
-        && receipt.logical_bytes <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
-        && let Some(data) = try_demote_sparse_async(
-            store,
-            receipt.root,
-            receipt.logical_bytes,
-            receipt.logical_bytes,
-            config,
-            accounting,
-            cancellation,
-        )
-        .await?
-    {
-        return Ok(RegularMutationReceipt {
-            payload: FilePayload::InlineRegular(data),
             work: accounting.spent(),
-        });
-    }
-    Ok(RegularMutationReceipt {
-        payload: FilePayload::Regular {
-            logical_bytes: receipt.logical_bytes,
-            extents: receipt.root,
-        },
-        work: accounting.spent(),
-    })
+        })
+    })?;
+    let result = frame.value.as_mut().await;
+    drop(frame);
+    result
 }
 
 #[allow(

@@ -41,7 +41,7 @@ impl CaptureWorkScope {
         self.native
             .with_original_leaf(|work| {
                 work.scope(
-                    |work| &mut work.capture_custody,
+                    |work| &mut work.native_scope.capture_custody,
                     None,
                     |work| work.release(bytes),
                 )

@@ -114,16 +114,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     ) -> W::Output<FileMetadata, FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
-            let record = self
-                .resolve_file(path, &mut accounting, cancellation)
-                .await?;
-            read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                record,
-                &mut accounting,
-                cancellation,
-            )
-            .await
+            let mut frame =
+                crate::heap_future::with_accounting(&mut accounting, |accounting| async move {
+                    let record = self.resolve_file(path, accounting, cancellation).await?;
+                    read_record_metadata_to_file_root_with_accounting(
+                        &self.volume,
+                        record,
+                        accounting,
+                        cancellation,
+                    )
+                    .await
+                })?;
+            let result = frame.value.as_mut().await;
+            drop(frame);
+            result
         }
         .await;
         budget.finish(result, &accounting)
@@ -195,15 +199,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        accounting.check()?;
-        if let Some(value) = staged.get(metadata, accounting)? {
-            return Ok(value);
-        }
-        let value = self
-            .stage_metadata_with_accounting(metadata, accounting, cancellation)
-            .await?;
-        staged.remember(metadata, value);
-        Ok(value)
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            accounting.check()?;
+            if let Some(value) = staged.get(metadata, accounting)? {
+                return Ok(value);
+            }
+            let value = self
+                .stage_metadata_with_accounting(metadata, accounting, cancellation)
+                .await?;
+            staged.remember(metadata, value);
+            Ok(value)
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     pub(super) async fn set_attributes_with_accounting<F: ContentFile>(

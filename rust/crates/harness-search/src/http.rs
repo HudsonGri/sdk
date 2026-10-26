@@ -7,12 +7,12 @@ use std::time::Duration;
 mod codec;
 pub(crate) mod transport;
 
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
+use transport::MAXIMUM_RESPONSE_BYTES;
 
-/// Exa's typed POST /search adapter.
+/// Exa's typed POST `/search` adapter.
 pub struct Exa(HttpSearch);
 
-/// TinyFish's typed GET / adapter.
+/// `TinyFish`'s typed GET `/` adapter.
 pub struct TinyFish(HttpSearch);
 
 struct HttpSearch {
@@ -65,7 +65,7 @@ impl HttpSearch {
             })?;
         }
         let mut failure = None;
-        let exchange = transport::send(
+        let exchange = transport::search(
             method,
             endpoint,
             &self.key,
@@ -205,34 +205,7 @@ fn request_body(
         .map_err(|_| super::error(work, "cannot encode search request"))
 }
 
-async fn await_io<F: std::future::Future>(
-    future: F,
-    work: crate::NativeWork<'_>,
-) -> Result<F::Output> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work {
-        work.remaining()?;
-        return tokio::select! {
-            biased;
-            _ = work.cancellation().cancelled() => Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into()),
-            result = future => Ok(result),
-        };
-    }
-    let _ = work;
-    Ok(future.await)
-}
-
-fn transport_error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() {
-        return Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            reason,
-        };
-    }
-    let _ = work;
-    Error::Storage(reason.into())
-}
+use transport::{await_io, transport_error};
 
 #[derive(Deserialize, crate::HeapLayout)]
 struct ExaResponse {

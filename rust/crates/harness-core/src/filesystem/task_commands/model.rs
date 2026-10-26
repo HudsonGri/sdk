@@ -19,6 +19,8 @@ struct ModelExecution<P, A, O> {
 }
 
 struct ModelExecutionInput {
+    conversation_id: crate::ConversationId,
+    role: Option<String>,
     input: ModelContent,
     selected_context: Option<SelectedModelContext>,
     max_steps: u32,
@@ -26,6 +28,24 @@ struct ModelExecutionInput {
     selected_output_volume: Option<crate::conversation::VolumeRef>,
     max_output_tokens: Option<u32>,
 }
+impl ModelExecutionInput {
+    fn split_manifest(command: ModelTaskCommand, task: TaskId) -> (Self, FileRef) {
+        let input = Self {
+            conversation_id: command
+                .conversation_id
+                .unwrap_or_else(|| crate::ConversationId::from_bytes(task.into_bytes())),
+            role: command.role,
+            input: command.input,
+            selected_context: command.selected_context,
+            max_steps: command.max_steps,
+            summary_source: command.summary_source,
+            selected_output_volume: command.selected_output_volume,
+            max_output_tokens: command.max_output_tokens,
+        };
+        (input, command.context_manifest)
+    }
+}
+
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
     P: StreamProvider + 'static,
@@ -87,110 +107,126 @@ where
         &self,
         invocation @ CommandInvocation {
             admission,
-            fence,
             command: _,
-            reconciliation_only,
             io,
             ..
         }: CommandInvocation<'_>,
         payload: Value,
         phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
-        let context = self.model_task_context(invocation).await?;
-        let stock = admission.task.name == "acyclic.stock_turn"
-            || super::super::child_agent::is_child(admission);
-        let mut command = self.decoded_model_command(payload, io)?;
-        let steering = self
-            .model_steering(invocation, &context, stock, &command)
+        BoundedContentFuture::new(io, || async move {
+            let context = crate::conversation::BoundedContentFuture::new(io, || {
+                self.model_task_context(invocation)
+            })?
             .await?;
-        let (journal, operation) = self.prepared_model_journal(invocation, &context).await?;
-        if self
-            .reconcile_undispatched_model(
-                invocation,
-                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-                &context,
-                journal.as_deref(),
-                operation,
-            )
-            .await?
-        {
-            return mail::reconciled(io);
-        }
-        if let Some(steering) = steering {
-            BoundedContentFuture::new(io, || {
-                self.steer(
+            let stock = admission.task.name == "acyclic.stock_turn"
+                || super::super::child_agent::is_child(admission);
+            let mut command = self.decoded_model_command(payload, io)?;
+            let steering = self
+                .model_steering(invocation, &context, stock, &command)
+                .await?;
+            let (journal, operation) = crate::conversation::BoundedContentFuture::new(io, || {
+                self.prepared_model_journal(invocation, &context)
+            })?
+            .await?;
+            if self
+                .reconcile_undispatched_model(
+                    invocation,
+                    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
                     &context,
-                    fence,
-                    &mut command,
-                    steering,
-                    reconciliation_only,
+                    journal.as_deref(),
+                    operation,
+                )
+                .await?
+            {
+                return mail::reconciled(io);
+            }
+            self.apply_model_steering(invocation, &context, &mut command, steering)
+                .await?;
+            reserve_model_input(io)?;
+            let (command, manifest) =
+                ModelExecutionInput::split_manifest(command, admission.task_id());
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            let manifest_digest = *manifest.descriptor().sha256();
+            let (pipeline, tools) = BoundedContentFuture::new(io, || {
+                self.prepared_model_context(
+                    &context,
+                    manifest,
+                    command.summary_source.is_some(),
                     io,
                 )
             })?
             .await?;
-        }
-        reserve_model_input(io)?;
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        let manifest_digest = *command.context_manifest.descriptor().sha256();
-        let (pipeline, tools) = BoundedContentFuture::new(io, || {
-            self.prepared_model_context(
-                &context,
-                command.context_manifest,
-                command.summary_source.is_some(),
-                io,
-            )
-        })?
-        .await?;
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        let (pipeline, hooks) = if command.summary_source.is_none() {
-            match BoundedContentFuture::new(io, || {
-                self.prompt_hooks(
-                    pipeline,
-                    &tools,
-                    Arc::clone(&context),
-                    (
-                        fence,
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            let (pipeline, hooks) = if command.summary_source.is_none() {
+                match BoundedContentFuture::new(io, || {
+                    self.prompt_hooks(
+                        pipeline,
+                        &tools,
+                        Arc::clone(&context),
+                        (
+                            invocation.fence,
+                            operation,
+                            invocation.reconciliation_only,
+                            manifest_digest,
+                            phase,
+                        ),
+                        &command.input,
+                        io,
+                    )
+                })?
+                .await?
+                {
+                    super::hooks::PromptHooks::Ready(pipeline, hooks) => (pipeline, hooks),
+                    super::hooks::PromptHooks::Blocked(message) => {
+                        return ready(Outcome::<Value>::Failed { message }, io);
+                    }
+                }
+            } else {
+                (pipeline, None)
+            };
+            crate::conversation::BoundedContentFuture::new(io, || {
+                self.execute_model_command(
+                    invocation,
+                    ModelExecution {
+                        context,
+                        command,
+                        pipeline,
+                        tools,
+                        journal,
                         operation,
-                        reconciliation_only,
-                        manifest_digest,
-                        phase,
-                    ),
-                    &command.input,
-                    io,
+                        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                        hooks,
+                    },
+                    phase,
                 )
             })?
-            .await?
-            {
-                super::hooks::PromptHooks::Ready(pipeline, hooks) => (pipeline, hooks),
-                super::hooks::PromptHooks::Blocked(message) => {
-                    return ready(Outcome::<Value>::Failed { message }, io);
-                }
-            }
-        } else {
-            (pipeline, None)
-        };
-        self.execute_model_command(
-            invocation,
-            ModelExecution {
-                context,
-                command: ModelExecutionInput {
-                    input: command.input,
-                    selected_context: command.selected_context,
-                    max_steps: command.max_steps,
-                    summary_source: command.summary_source,
-                    selected_output_volume: command.selected_output_volume,
-                    max_output_tokens: command.max_output_tokens,
-                },
-                pipeline,
-                tools,
-                journal,
-                operation,
-                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-                hooks,
-            },
-            phase,
-        )
+            .await
+        })?
         .await
+    }
+
+    async fn apply_model_steering(
+        &self,
+        invocation: CommandInvocation<'_>,
+        context: &Arc<TaskContext>,
+        command: &mut ModelTaskCommand,
+        steering: Option<(crate::workflow::WorkflowRecord, OperationId)>,
+    ) -> Result<()> {
+        if let Some(steering) = steering {
+            BoundedContentFuture::new(invocation.io, || {
+                self.steer(
+                    context,
+                    invocation.fence,
+                    command,
+                    steering,
+                    invocation.reconciliation_only,
+                    invocation.io,
+                )
+            })?
+            .await?;
+        }
+        Ok(())
     }
 
     async fn model_task_context(
@@ -214,6 +250,13 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<ModelTaskCommand> {
         let command: ModelTaskCommand = mail::decode_command(payload, io)?;
+        if command
+            .role
+            .as_deref()
+            .is_some_and(|role| role.trim().is_empty())
+        {
+            return Err(boundary(io, ErrorCode::Invalid, "agent role is empty"));
+        }
         self.model.as_ref().ok_or_else(|| {
             boundary(
                 io,
@@ -276,90 +319,95 @@ where
         prepared: ModelExecution<P, A, O>,
         phase: &mut crate::executor::DispatchPhase,
     ) -> Result<TaskCommandProgress> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if invocation.io.is_some() {
-            return BoundedContentFuture::new(invocation.io, || {
-                self.execute_native_model(invocation, prepared, phase)
-            })?
-            .await;
-        }
-        let CommandInvocation {
-            fence,
-            command: workflow,
-            reconciliation_only,
-            io,
-            ..
-        } = invocation;
-        let turn = workflow.operation_id;
-        let ModelExecution {
-            context,
-            command,
-            pipeline,
-            tools,
-            journal,
-            operation,
-            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-            hooks,
-        } = prepared;
-        let binding = self.model.as_ref().ok_or_else(|| {
-            boundary(
-                io,
-                ErrorCode::Unsupported,
-                "model command provider is not bound",
-            )
-        })?;
-        let compaction = if command.summary_source.is_some() {
-            &crate::context::CompactionPolicy::Disabled
-        } else {
-            &binding.compaction
-        };
-        let require_journal = || {
-            journal
-                .as_ref()
-                .ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))
-        };
-        let input = TurnInput {
-            operation_id: operation,
-            input: command.input,
-            selected_context: command.selected_context,
-            max_steps: command.max_steps,
-        };
-        BoundedContentFuture::new(io, || async {
-            let execution = BoundedContentFuture::new(io, || {
-                self.runtime.stock_execution_with_context(
-                    Arc::clone(&context),
-                    fence.clone(),
-                    turn,
-                    binding.model.clone(),
-                    binding.provider_for(&context),
-                    pipeline,
-                    tools,
-                    command.selected_output_volume.as_ref(),
-                )
-            })?
-            .await?
-            .with_compaction_policy(compaction.clone())
-            .with_summary_source(command.summary_source);
-            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-            let execution = execution.with_hooks(hooks);
-            let execution = match command.max_output_tokens {
-                Some(maximum) => execution.with_max_output_tokens(maximum)?,
-                None => execution,
-            };
-            if reconciliation_only {
-                let result =
-                    BoundedContentFuture::new(io, || execution.reconcile_progress(input))?.await;
-                let journal = require_journal()?;
-                return BoundedContentFuture::new(io, || {
-                    Self::reconcile_model(result.map(drop), journal, operation, io)
+        BoundedContentFuture::new(invocation.io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if invocation.io.is_some() {
+                return BoundedContentFuture::new(invocation.io, || {
+                    self.execute_native_model(invocation, prepared, phase)
                 })?
                 .await;
             }
-            phase.delegate();
-            Self::model_progress(
-                BoundedContentFuture::new(io, || execution.execute_progress(input))?.await?,
+            let CommandInvocation {
+                fence,
+                command: workflow,
+                reconciliation_only,
                 io,
-            )
+                ..
+            } = invocation;
+            let turn = workflow.operation_id;
+            let ModelExecution {
+                context,
+                command,
+                pipeline,
+                tools,
+                journal,
+                operation,
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                hooks,
+            } = prepared;
+            let binding = self.model.as_ref().ok_or_else(|| {
+                boundary(
+                    io,
+                    ErrorCode::Unsupported,
+                    "model command provider is not bound",
+                )
+            })?;
+            let compaction = if command.summary_source.is_some() {
+                &crate::context::CompactionPolicy::Disabled
+            } else {
+                &binding.compaction
+            };
+            let require_journal = || {
+                journal
+                    .as_ref()
+                    .ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))
+            };
+            let input = TurnInput {
+                operation_id: operation,
+                input: command.input,
+                selected_context: command.selected_context,
+                max_steps: command.max_steps,
+            };
+            BoundedContentFuture::new(io, || async {
+                let mut execution = BoundedContentFuture::new(io, || {
+                    self.runtime.stock_execution_with_context(
+                        Arc::clone(&context),
+                        fence.clone(),
+                        turn,
+                        binding.model.clone(),
+                        binding.provider_for(&context),
+                        pipeline,
+                        tools,
+                        command.selected_output_volume.as_ref(),
+                    )
+                })?
+                .await?;
+                execution.set_compaction_policy(compaction.clone());
+                execution.set_summary_source(command.summary_source);
+                execution.set_conversation_id(command.conversation_id);
+                execution.set_role(command.role);
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                execution.set_hooks(hooks);
+                if let Some(maximum) = command.max_output_tokens {
+                    execution.set_max_output_tokens(maximum)?;
+                }
+                if reconciliation_only {
+                    let result =
+                        BoundedContentFuture::new(io, || execution.reconcile_progress(input))?
+                            .await;
+                    let journal = require_journal()?;
+                    return BoundedContentFuture::new(io, || {
+                        Self::reconcile_model(result.map(drop), journal, operation, io)
+                    })?
+                    .await;
+                }
+                phase.delegate();
+                Self::model_progress(
+                    BoundedContentFuture::new(io, || execution.execute_progress(input))?.await?,
+                    io,
+                )
+            })?
+            .await
         })?
         .await
     }
@@ -442,7 +490,9 @@ where
                 compaction,
                 command.max_output_tokens,
             )?
-            .with_summary_source(command.summary_source);
+            .with_summary_source(command.summary_source)
+            .with_conversation_id(command.conversation_id)
+            .with_role(command.role);
         let executor = if reconciliation_only {
             executor.into_reconciliation()
         } else {
@@ -469,48 +519,51 @@ where
         journal: Option<&FilesystemExecutionJournal<P, A, O>>,
         operation: OperationId,
     ) -> Result<bool> {
-        let CommandInvocation {
-            reconciliation_only,
-            io,
-            ..
-        } = invocation;
-        if !reconciliation_only {
-            return Ok(false);
-        }
-        let journal =
-            journal.ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))?;
-        if was_dispatched(journal, operation, MODEL_TASK_COMMAND_KIND, io).await? {
-            return Ok(false);
-        }
-        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
-        if io.is_none()
-            && let Some(executor) = &context.harness.workspace_tools
-        {
-            let task = invocation.admission.task_id();
-            let fence = invocation.fence;
-            // Hook dispatch precedes provider dispatch. Cancellation must
-            // retain a claimed hook even when no model request was sent.
-            let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
-            for event in crate::hooks::HookEvent::at(crate::hooks::HookSite::Prompt) {
-                let issued = ToolContext::new(
-                    Arc::clone(&owned),
-                    operation,
-                    super::hooks::prompt_hook_call(event),
-                    None,
-                )?;
-                executor
-                    .run_hooks(
-                        (&crate::hooks::Hooks::default(), [0; 32]),
-                        event,
-                        (&Value::Null).into(),
-                        &crate::tool::ToolRegistry::default(),
-                        issued,
-                        true,
-                    )
-                    .await?;
+        BoundedContentFuture::new(invocation.io, || async move {
+            let CommandInvocation {
+                reconciliation_only,
+                io,
+                ..
+            } = invocation;
+            if !reconciliation_only {
+                return Ok(false);
             }
-        }
-        Ok(true)
+            let journal = journal
+                .ok_or_else(|| boundary(io, ErrorCode::Storage, "model journal is absent"))?;
+            if was_dispatched(journal, operation, MODEL_TASK_COMMAND_KIND, io).await? {
+                return Ok(false);
+            }
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            if io.is_none()
+                && let Some(executor) = &context.harness.workspace_tools
+            {
+                let task = invocation.admission.task_id();
+                let fence = invocation.fence;
+                // Hook dispatch precedes provider dispatch. Cancellation must
+                // retain a claimed hook even when no model request was sent.
+                let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
+                for event in crate::hooks::HookEvent::at(crate::hooks::HookSite::Prompt) {
+                    let issued = ToolContext::new(
+                        Arc::clone(&owned),
+                        operation,
+                        super::hooks::prompt_hook_call(event),
+                        None,
+                    )?;
+                    executor
+                        .run_hooks(
+                            (&crate::hooks::Hooks::default(), [0; 32]),
+                            event,
+                            (&Value::Null).into(),
+                            &crate::tool::ToolRegistry::default(),
+                            issued,
+                            true,
+                        )
+                        .await?;
+                }
+            }
+            Ok(true)
+        })?
+        .await
     }
 
     async fn model_steering(
@@ -520,62 +573,65 @@ where
         stock: bool,
         command: &ModelTaskCommand,
     ) -> Result<Option<(crate::workflow::WorkflowRecord, OperationId)>> {
-        let CommandInvocation {
-            admission,
-            fence,
-            command: workflow,
-            io,
-            ..
-        } = invocation;
-        let task = admission.task_id();
-        let turn = workflow.operation_id;
-        Ok(if stock || command.mailbox_operation.is_some() {
-            BoundedContentFuture::new(io, || async {
-                let journal = self
-                    .command_workflow_journal(context, task, fence, io)
-                    .await?;
-                let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
-                    boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
-                })?;
-                if !latest.transition.commands.iter().any(|command| {
-                    command.operation_id == turn && command.kind == MODEL_TASK_COMMAND_KIND
-                }) {
-                    return Err(boundary(
-                        io,
-                        ErrorCode::Unauthorized,
-                        "model is outside the committed outbox",
-                    ));
-                }
-                let recorded = if stock
-                    && latest
-                        .transition
-                        .state
-                        .get("mail")
-                        .is_some_and(|mail| !mail.is_null())
-                {
-                    Some(
-                        OperationId::deserialize(
-                            latest
-                                .transition
-                                .state
-                                .get("receive")
-                                .and_then(|receive| receive.get("operation_id"))
-                                .unwrap_or(&Value::Null),
+        BoundedContentFuture::new(invocation.io, || async move {
+            let CommandInvocation {
+                admission,
+                fence,
+                command: workflow,
+                io,
+                ..
+            } = invocation;
+            let task = admission.task_id();
+            let turn = workflow.operation_id;
+            Ok(if stock || command.mailbox_operation.is_some() {
+                BoundedContentFuture::new(io, || async {
+                    let journal = self
+                        .command_workflow_journal(context, task, fence, io)
+                        .await?;
+                    let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
+                        boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
+                    })?;
+                    if !latest.transition.commands.iter().any(|command| {
+                        command.operation_id == turn && command.kind == MODEL_TASK_COMMAND_KIND
+                    }) {
+                        return Err(boundary(
+                            io,
+                            ErrorCode::Unauthorized,
+                            "model is outside the committed outbox",
+                        ));
+                    }
+                    let recorded = if stock
+                        && latest
+                            .transition
+                            .state
+                            .get("mail")
+                            .is_some_and(|mail| !mail.is_null())
+                    {
+                        Some(
+                            OperationId::deserialize(
+                                latest
+                                    .transition
+                                    .state
+                                    .get("receive")
+                                    .and_then(|receive| receive.get("operation_id"))
+                                    .unwrap_or(&Value::Null),
+                            )
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
                         )
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                    )
-                } else {
-                    None
-                };
-                Ok(command
-                    .mailbox_operation
-                    .or(recorded)
-                    .map(|receive| (latest, receive)))
-            })?
-            .await?
-        } else {
-            None
-        })
+                    } else {
+                        None
+                    };
+                    Ok(command
+                        .mailbox_operation
+                        .or(recorded)
+                        .map(|receive| (latest, receive)))
+                })?
+                .await?
+            } else {
+                None
+            })
+        })?
+        .await
     }
 
     fn model_progress(
@@ -750,4 +806,80 @@ fn reserve_model_input(io: Option<&PreparationIo>) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn model_execution_frames_stay_bounded() {
+    eprintln!(
+        "model payload sizes executor={} command={} prepared={}",
+        std::mem::size_of::<crate::executor::StockExecutor>(),
+        std::mem::size_of::<ModelTaskCommand>(),
+        std::mem::size_of::<
+            ModelExecution<
+                acyclic_stream::MemoryStream,
+                acyclic_fs::MemoryAuthorityBackend,
+                acyclic_fs::MemoryObjectBackend,
+            >,
+        >()
+    );
+    type Commands<'a> = FilesystemTaskCommands<
+        'a,
+        acyclic_stream::MemoryStream,
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >;
+    type Prepared = ModelExecution<
+        acyclic_stream::MemoryStream,
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >;
+    let bytes = acyclic_test_support::future_bytes(
+        |(commands, invocation, prepared, phase): (
+            &'static Commands<'static>,
+            CommandInvocation<'static>,
+            Prepared,
+            &'static mut crate::executor::DispatchPhase,
+        )| { commands.execute_model_command(invocation, prepared, phase) },
+    );
+    assert!(bytes <= 4096, "model execution future is {bytes} bytes");
+}
+
+#[cfg(test)]
+#[test]
+fn model_preparation_frames_stay_bounded() {
+    type Commands<'a> = FilesystemTaskCommands<
+        'a,
+        acyclic_stream::MemoryStream,
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >;
+    let bytes = acyclic_test_support::future_bytes(
+        |(commands, invocation, context, command): (
+            &'static Commands<'static>,
+            CommandInvocation<'static>,
+            &'static Arc<TaskContext>,
+            &'static ModelTaskCommand,
+        )| { commands.model_steering(invocation, context, false, command) },
+    );
+    assert!(bytes <= 4096, "model steering future is {bytes} bytes");
+    let bytes = acyclic_test_support::future_bytes(
+        |(commands, invocation, _context): (
+            &'static Commands<'static>,
+            CommandInvocation<'static>,
+            &'static Arc<TaskContext>,
+        )| {
+            commands.reconcile_undispatched_model(
+                invocation,
+                #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+                _context,
+                None,
+                OperationId::from_bytes([1; 16]),
+            )
+        },
+    );
+    assert!(
+        bytes <= 4096,
+        "model reconciliation future is {bytes} bytes"
+    );
 }

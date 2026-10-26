@@ -1,5 +1,6 @@
 //! The Git filesystem actions the workspace executor performs.
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 /// Largest committed file `git show REV:PATH` returns, matching blame and grep.
 const SHOWN_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -128,18 +129,23 @@ where
             .map_err(|failure| failure.error)
             .map_err(Error::from)?
             .id();
-        let workspace = self
-            .lazy_current
-            .fork(&destination, operation_id, self.permit)
-            .await?;
-        WorkspaceGraph::new(self.store.clone())
-            .register_existing_child(
-                self.lazy_current.workspace(),
-                workspace.workspace(),
-                fork_generation,
-            )
-            .await
-            .map_err(Error::from)?;
+        let workspace = BoundedContentFuture::new(None, || {
+            self.lazy_current
+                .fork(&destination, operation_id, self.permit)
+        })?
+        .await?;
+        let graph = WorkspaceGraph::new(self.store.clone());
+        BoundedContentFuture::new(None, || async {
+            graph
+                .register_existing_child(
+                    self.lazy_current.workspace(),
+                    workspace.workspace(),
+                    fork_generation,
+                )
+                .await
+                .map_err(Error::from)
+        })?
+        .await?;
         let workspace_id = workspace.workspace().id();
         if switch {
             *self

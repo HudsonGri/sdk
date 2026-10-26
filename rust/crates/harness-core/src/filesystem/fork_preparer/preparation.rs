@@ -4,6 +4,10 @@ use crate::executor::{stock_boundary, stock_string_copy, with_history_io};
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PreparationAttempt<'_, A, O> {
     pub(super) async fn prepare(&self, request: ForkRequest) -> Result<ForkReport> {
+        // Fork preparation owns large storage and recovery futures. The shared
+        // content-frame boundary admits their exact storage before construction
+        // and keeps it out of every host adapter's task poll frame.
+        crate::conversation::BoundedContentFuture::new(self.io, || async {
         let preparer = self.preparer;
         let host = &preparer.host;
         let io = self.io;
@@ -17,7 +21,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             ));
         }
         self.verify_task_lease(false).await?;
-        if let Some(report) = self.reconcile(&request).await? {
+        if let Some(report) = crate::conversation::BoundedContentFuture::new(io, || self.reconcile(&request))?.await? {
             return Ok(report);
         }
         let policy = &request.preparation;
@@ -77,7 +81,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             std::borrow::Cow::Owned(self.read_grant(source_project)?)
         };
         self.verify_task_lease(false).await?;
-        let private_observation = (host)
+        let private_observation = crate::conversation::BoundedContentFuture::new(io, || async { (host)
             .fork_volume_pinned(
                 source_private,
                 &private_grant,
@@ -87,14 +91,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 &private_key,
                 io,
                 task,
-            )
-            .await?;
+            ).await })?.await?;
         let controller = (request.parent.kind == crate::core::AggregateKind::Conversation)
             .then(|| preparer.controller(io))
             .transpose()?;
         let project_key = key("project")?;
         self.verify_task_lease(false).await?;
-        let child_project = (host)
+        let child_project = crate::conversation::BoundedContentFuture::new(io, || async { (host)
             .fork_volume_pinned(
                 source_project,
                 &project_grant,
@@ -104,12 +107,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 &project_key,
                 io,
                 task,
-            )
-            .await?;
+            ).await })?.await?;
         let (child_result_volume, child_result_generation) =
             if let Some(volume) = &policy.child_result_volume {
                 self.verify_task_lease(false).await?;
-                let result = (host)
+                let result = crate::conversation::BoundedContentFuture::new(io, || async { (host)
                     .fork_volume_pinned(
                         source_private,
                         &private_grant,
@@ -119,8 +121,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         &key("result")?,
                         io,
                         task,
-                    )
-                    .await?;
+                    ).await })?.await?;
                 (Some(volume.copy(&mut work)?), Some(result.generation))
             } else {
                 (None, None)
@@ -149,7 +150,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 PreparationIo::reserve(&mut continuation_keys, keys.len(), io)?;
                 continuation_keys.extend(keys);
             }
-            let inherited = controller
+            let inherited = crate::conversation::BoundedContentFuture::new(io, || async { controller
                 .materialize_inherited_conversation(
                     &preparer.parent,
                     &private,
@@ -170,8 +171,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .map(PreparedForkHistory::conversation),
                     io,
                     task,
-                )
-                .await?;
+                ).await })?.await?;
             let mut files = crate::model::vec_with_capacity(1, io)?;
             files.push(inherited.file);
             (
@@ -202,7 +202,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let (_, references) =
                 crate::filesystem::summary_fork::split_references(&bound.prepared, io)?;
             add_summary_readers(&request, &mut reference_grants, &references, io)?;
-            let (capture, generation) = controller
+            let (capture, generation) = crate::conversation::BoundedContentFuture::new(io, || async { controller
                 .materialize_summary_context(
                     &preparer.parent,
                     &bound.prepared,
@@ -219,7 +219,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     io,
                     task,
                 )
-                .await?;
+                .await })?.await?;
             let capacity = inherited_context
                 .len()
                 .checked_add(capture.inherited_files().count())
@@ -278,15 +278,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .find(|provider| provider.provider() == selection.revision.provider())
                     {
                         Some(provider) => {
-                            self.capture(
-                                &journal,
-                                &request,
-                                &digest,
-                                index,
-                                selection,
-                                provider.as_ref(),
-                            )
-                            .await?
+                            crate::conversation::BoundedContentFuture::new(io, || self.capture(&journal, &request, &digest, index, selection, provider.as_ref()))?.await?
                         }
                         None => Capture::Unsupported(stock_string_copy(
                             "resource capture provider is not installed",
@@ -366,6 +358,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             )?);
         }
         self.verify_task_lease(false).await?;
-        self.commit_report(&journal, &report, binding).await
+        crate::conversation::BoundedContentFuture::new(io, || self.commit_report(&journal, &report, binding))?.await
+        })?
+        .await
     }
 }

@@ -165,5 +165,11 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
 }
 #[cfg(test)]
 counting_allocator!();
+/// Size of a concrete future without constructing its arguments or polling it.
+/// The function or typed closure is only a type witness and is never invoked.
+pub fn future_bytes<A, F: std::future::Future>(_: impl FnOnce(A) -> F) -> usize {
+    std::mem::size_of::<F>()
+}
+
 #[cfg(test)]
 mod tests;

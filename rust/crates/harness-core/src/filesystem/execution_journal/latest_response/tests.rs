@@ -52,6 +52,7 @@ async fn latest_response_cursor_has_flat_reads_and_cold_recovery_through_one_tho
     assert_eq!(journal.latest_response_step(operation, None).await?, None);
     let request = crate::model::PreparedModelRequest::prepare(
         crate::model::ModelRequest {
+            conversation_id: None,
             model: crate::model::Model::new(
                 "fixture".into(),
                 "cursor".into(),

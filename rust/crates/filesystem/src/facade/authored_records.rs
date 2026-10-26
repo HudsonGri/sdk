@@ -26,32 +26,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {
-        let metadata = self
-            .stage_authored_metadata_with_accounting(
-                metadata,
-                staged_metadata,
-                accounting,
-                cancellation,
-            )
-            .await?;
-        let file_id = self.authored_file_id(kind, &path, accounting)?;
-        push_authored_operation(
-            operations,
-            allocation,
-            bytes,
-            accounting,
-            Mutation::Create {
-                path,
-                record: FileRecord {
-                    file_id,
-                    kind,
-                    link_count: 1,
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            let metadata = self
+                .stage_authored_metadata_with_accounting(
                     metadata,
-                    payload,
+                    staged_metadata,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+            let file_id = self.authored_file_id(kind, &path, accounting)?;
+            push_authored_operation(
+                operations,
+                allocation,
+                bytes,
+                accounting,
+                Mutation::Create {
+                    path,
+                    record: FileRecord {
+                        file_id,
+                        kind,
+                        link_count: 1,
+                        metadata,
+                        payload,
+                    },
                 },
-            },
-        )?;
-        Ok(file_id)
+            )?;
+            Ok(file_id)
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -129,49 +134,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {
-        if content.len() as u64 > self.volume.config.limits.maximum_read_bytes {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
-        let metadata = self
-            .stage_authored_metadata_with_accounting(
-                metadata,
-                staged_metadata,
-                accounting,
-                cancellation,
-            )
-            .await?;
-        if content.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
-            accounting.charge(WorkCounters {
-                bytes_copied: content.len() as u64,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let payload = FilePayload::InlineRegular(InlineFileData::new(&content)?);
-            drop(content);
-            push_authored_operation(
-                operations,
-                allocation,
-                bytes,
-                accounting,
-                Mutation::Create {
-                    path,
-                    record: FileRecord {
-                        file_id,
-                        kind: FileKind::Regular,
-                        link_count: 1,
-                        metadata,
-                        payload,
-                    },
-                },
-            )?;
-        } else {
-            let content = self
-                .stage_authored_blob_with_accounting(content, accounting, cancellation)
+        let mut frame = crate::heap_future::with_accounting(accounting, |accounting| async move {
+            if content.len() as u64 > self.volume.config.limits.maximum_read_bytes {
+                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
+            }
+            let metadata = self
+                .stage_authored_metadata_with_accounting(
+                    metadata,
+                    staged_metadata,
+                    accounting,
+                    cancellation,
+                )
                 .await?;
-            self.compile_regular_content_with_accounting(
-                path, content, metadata, file_id, operations, allocation, bytes, accounting,
-            )?;
-        }
-        Ok(file_id)
+            if content.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
+                accounting.charge(WorkCounters {
+                    bytes_copied: content.len() as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                let payload = FilePayload::InlineRegular(InlineFileData::new(&content)?);
+                drop(content);
+                push_authored_operation(
+                    operations,
+                    allocation,
+                    bytes,
+                    accounting,
+                    Mutation::Create {
+                        path,
+                        record: FileRecord {
+                            file_id,
+                            kind: FileKind::Regular,
+                            link_count: 1,
+                            metadata,
+                            payload,
+                        },
+                    },
+                )?;
+            } else {
+                let content = self
+                    .stage_authored_blob_with_accounting(content, accounting, cancellation)
+                    .await?;
+                self.compile_regular_content_with_accounting(
+                    path, content, metadata, file_id, operations, allocation, bytes, accounting,
+                )?;
+            }
+            Ok(file_id)
+        })?;
+        let result = frame.value.as_mut().await;
+        drop(frame);
+        result
     }
 
     pub(super) fn compile_regular_content_with_accounting(

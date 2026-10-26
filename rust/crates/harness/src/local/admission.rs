@@ -189,8 +189,11 @@ impl LocalHarness {
         turn: Turn,
         previous: Option<OperationId>,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        self.publish_turn_with(turn, previous, async |turn| self.admit_retained(turn).await)
-            .await
+        self.publish_turn_with(turn, previous, async |turn| {
+            crate::conversation::BoundedContentFuture::new(None, || self.admit_retained(turn))?
+                .await
+        })
+        .await
     }
 
     async fn publish_turn_with(
@@ -280,7 +283,10 @@ impl LocalHarness {
             let turn = current
                 .filter(|turn| crate::runtime::task_id_for_admission(turn.operation) == task)
                 .ok_or_else(|| Error::NotFound("current local request".into()))?;
-            let admission = self.admit_retained(&turn).await?;
+            let admission = crate::conversation::BoundedContentFuture::new(None, || {
+                self.admit_retained(&turn)
+            })?
+            .await?;
             match admission {
                 Admission::Accepted(handle @ RuntimeTask::Durable { task_id, .. })
                     if task_id == task =>
@@ -323,46 +329,60 @@ impl LocalHarness {
         operation: OperationId,
         prompt: &str,
     ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
-        if let Some((task, _)) = self
-            .runtime
-            .harness()
-            .reconcile_admission(operation)
-            .await?
-        {
-            // Ordinary retries retain the same immutable request bytes too.
-            self.stage_turn(operation, prompt).await?;
-            let definition = self
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            if let Some((task, _)) = self
                 .runtime
                 .harness()
-                .task::<serde_json::Value, crate::executor::TurnOutput>("acyclic.stock_turn@1")?;
-            return Ok(Admission::Accepted(
-                self.runtime.harness().attach(task, &definition).await?,
-            ));
-        }
-        let (current, _) = self.current_turn().await?;
-        if let Some(turn) = &current
-            && turn.operation == operation
-        {
-            return self.admit_retained(turn).await;
-        }
-        let terminal = self.head_ready(current.as_ref(), true).await?;
-        if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
-            return Ok(Admission::Rejected {
-                reason: "local agent already has an admitted turn".into(),
-            });
-        }
-        let (receive, model) = self.stage_turn(operation, prompt).await?;
-        self.publish_turn(
-            Turn {
-                operation,
-                root: operation,
-                automatic_turns: 0,
-                goal_revision: None,
-                receive,
-                model,
-            },
-            current.as_ref().map(|turn| turn.operation),
-        )
+                .reconcile_admission(operation)
+                .await?
+            {
+                // Ordinary retries retain the same immutable request bytes too.
+                crate::conversation::BoundedContentFuture::new(None, || {
+                    self.stage_turn(operation, prompt)
+                })?
+                .await?;
+                let definition = self
+                    .runtime
+                    .harness()
+                    .task::<serde_json::Value, crate::executor::TurnOutput>(
+                        "acyclic.stock_turn@1",
+                    )?;
+                return Ok(Admission::Accepted(
+                    self.runtime.harness().attach(task, &definition).await?,
+                ));
+            }
+            let (current, _) = self.current_turn().await?;
+            if let Some(turn) = &current
+                && turn.operation == operation
+            {
+                return crate::conversation::BoundedContentFuture::new(None, || {
+                    self.admit_retained(turn)
+                })?
+                .await;
+            }
+            let terminal = self.head_ready(current.as_ref(), true).await?;
+            if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
+                return Ok(Admission::Rejected {
+                    reason: "local agent already has an admitted turn".into(),
+                });
+            }
+            let (receive, model) = crate::conversation::BoundedContentFuture::new(None, || {
+                self.stage_turn(operation, prompt)
+            })?
+            .await?;
+            self.publish_turn(
+                Turn {
+                    operation,
+                    root: operation,
+                    automatic_turns: 0,
+                    goal_revision: None,
+                    receive,
+                    model,
+                },
+                current.as_ref().map(|turn| turn.operation),
+            )
+            .await
+        })?
         .await
     }
 
@@ -397,7 +417,13 @@ impl LocalHarness {
             // Replaying an older settle follows its already-published ordinary
             // request instead of consuming another continuation allowance.
             if current.root == root {
-                return admitted_task(self.admit_retained(&current).await?).map(Some);
+                return admitted_task(
+                    crate::conversation::BoundedContentFuture::new(None, || {
+                        self.admit_retained(&current)
+                    })?
+                    .await?,
+                )
+                .map(Some);
             }
             return Ok(None);
         }
@@ -415,25 +441,10 @@ impl LocalHarness {
         // A staged model input is already an immutable choice. Recover it
         // before reading a possibly edited, completed or removed GOAL.md.
         if let Some(inputs) = self.recover_turn_inputs(operation).await? {
-            let count = current
-                .automatic_turns
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
-            return admitted_task(
-                self.publish_turn(
-                    Turn {
-                        operation,
-                        root: current.root,
-                        automatic_turns: count,
-                        goal_revision: None,
-                        receive: inputs.0,
-                        model: inputs.1,
-                    },
-                    Some(current.operation),
-                )
-                .await?,
-            )
-            .map(Some);
+            return self
+                .publish_goal_continuation(&current, operation, inputs, None)
+                .await
+                .map(Some);
         }
         let Some((goal, publication)) = self.read_continuation_goal().await? else {
             return Ok(None);
@@ -464,21 +475,14 @@ impl LocalHarness {
                     return Err(Error::GoalBlocked(unreachable));
                 };
                 let prompt = format!("Continue the active goal in {path}.\n\n{}", goal.markdown);
-                let (receive, model) = self.stage_turn(operation, &prompt).await?;
-                let admission = self
-                    .publish_turn(
-                        Turn {
-                            operation,
-                            root: current.root,
-                            automatic_turns: current.automatic_turns + 1,
-                            goal_revision: publication,
-                            receive,
-                            model,
-                        },
-                        Some(current.operation),
-                    )
+                let (receive, model) =
+                    crate::conversation::BoundedContentFuture::new(None, || {
+                        self.stage_turn(operation, &prompt)
+                    })?
                     .await?;
-                admitted_task(admission).map(Some)
+                self.publish_goal_continuation(&current, operation, (receive, model), publication)
+                    .await
+                    .map(Some)
             }
             Some(GoalContinuation::Block(contents)) => {
                 let blocked = self.block_goal(&goal, settled, &contents).await?;
@@ -487,6 +491,36 @@ impl LocalHarness {
                 Err(Error::GoalBlocked(GoalBlockedReason::Declared))
             }
         }
+    }
+
+    async fn publish_goal_continuation(
+        &self,
+        current: &Turn,
+        operation: OperationId,
+        inputs: (
+            crate::workflow::WorkflowCommand,
+            crate::workflow::WorkflowCommand,
+        ),
+        goal_revision: Option<OperationId>,
+    ) -> Result<TaskId> {
+        let automatic_turns = current
+            .automatic_turns
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("goal continuation counter overflow".into()))?;
+        let admission = self
+            .publish_turn(
+                Turn {
+                    operation,
+                    root: current.root,
+                    automatic_turns,
+                    goal_revision,
+                    receive: inputs.0,
+                    model: inputs.1,
+                },
+                Some(current.operation),
+            )
+            .await?;
+        admitted_task(admission)
     }
 
     async fn read_continuation_goal(&self) -> Result<Option<(GoalView, Option<OperationId>)>> {
@@ -602,14 +636,16 @@ fn admitted_task(admission: Admission<RuntimeTask<crate::executor::TurnOutput>>)
 impl LocalHarness {
     /// Closes quiescent native mounts before releasing their provider handles.
     /// An admitted unfinished turn must first settle or be recovered by its owner.
-    pub async fn close(self) -> Result<()> {
-        let (head, _) = self.current_turn().await?;
-        if !self.head_is_terminal(head.as_ref()).await? {
-            return Err(Error::Conflict(
-                "cannot close an unfinished local turn".into(),
-            ));
-        }
-        self.disconnect().await
+    pub fn close(self) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+        Box::pin(async move {
+            let (head, _) = self.current_turn().await?;
+            if !self.head_is_terminal(head.as_ref()).await? {
+                return Err(Error::Conflict(
+                    "cannot close an unfinished local turn".into(),
+                ));
+            }
+            self.disconnect().await
+        })
     }
 
     /// Test teardown for a host that deliberately leaves its HEAD turn
@@ -630,12 +666,14 @@ impl LocalHarness {
     /// Releases this host's native mounts while preserving every durable task,
     /// including unfinished admission. Consuming the host excludes live borrows;
     /// callers must first join active execution and drop client observations.
-    pub async fn disconnect(self) -> Result<()> {
-        #[cfg(any(test, feature = "native-execution"))]
-        if let Some(workspace) = &self.workspace {
-            crate::local::workspace::volumes::retire(&workspace.mounts).await?;
-        }
-        Ok(())
+    pub fn disconnect(self) -> acyclic_stream::BoxProviderFuture<'static, Result<()>> {
+        Box::pin(async move {
+            #[cfg(any(test, feature = "native-execution"))]
+            if let Some(workspace) = &self.workspace {
+                crate::local::workspace::volumes::retire(&workspace.mounts).await?;
+            }
+            Ok(())
+        })
     }
 }
 

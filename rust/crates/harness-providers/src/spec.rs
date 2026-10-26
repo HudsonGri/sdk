@@ -20,6 +20,11 @@ pub enum Authentication {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ProviderSpec {
+    /// Nonsecret account or organization owning the API credential. Unknown
+    /// ownership cannot authorize native reasoning replay. Codex login supplies
+    /// its authenticated account instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     /// Protocol dialect.
     pub adapter: Adapter,
     /// Credential policy supplied by the catalog, independent of its provider ID.
@@ -97,7 +102,7 @@ impl Default for TimeoutSpec {
 
 /// Redelivery of a model request refused with HTTP 408, 429 or 5xx, or never connected, before
 /// any output. Waits use the provider's `Retry-After` when present, otherwise exponential
-/// backoff with deterministic per-dispatch jitter.
+/// backoff with fresh jitter per exchange from the shared runtime scheduler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]

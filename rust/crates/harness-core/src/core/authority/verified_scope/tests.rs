@@ -314,3 +314,51 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
     }
     Ok(())
 }
+
+#[test]
+fn verifier_clones_share_only_signature_evidence_and_recheck_live_trust() -> Result<()> {
+    let (_issuer, verifier, scope, _volume) = fixture()?;
+    let cloned = verifier.clone();
+    workload::verify(
+        &verifier,
+        &verifier.audience,
+        &scope,
+        workload::now(),
+        &mut None,
+    )?;
+    let (result, signatures): (_, Vec<acyclic_auth::crypto::SignatureVerification>) =
+        acyclic_test_support::differential::observe(
+            || (),
+            |()| {
+                workload::verify(
+                    &cloned,
+                    &cloned.audience,
+                    &scope,
+                    workload::now(),
+                    &mut None,
+                )
+            },
+        );
+    result?;
+    assert!(
+        signatures.is_empty(),
+        "a verifier clone repeated immutable cryptography"
+    );
+    verifier
+        .public
+        .trust
+        .write()
+        .map_err(workload::unauthorized)?
+        .minimum_key_epoch = u64::MAX;
+    assert!(
+        workload::verify(
+            &cloned,
+            &cloned.audience,
+            &scope,
+            workload::now(),
+            &mut None
+        )
+        .is_err()
+    );
+    Ok(())
+}

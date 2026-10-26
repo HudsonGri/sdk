@@ -45,6 +45,12 @@ impl ToolResultContent {
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod moved_tests;
 
+impl Model {
+    pub(crate) fn retained_payload_bytes(&self) -> Result<u64> {
+        add(self.payload_bytes()?, map_slack(&self.options)?)
+    }
+}
+
 impl ModelRequest {
     pub(super) fn retained_payload_bytes(&self) -> Result<u64> {
         let mut bytes = add(self.payload_bytes()?, map_slack(&self.model.options)?)?;
@@ -86,6 +92,7 @@ mod tests {
     fn sparse_request() -> Result<ModelRequest> {
         let sparse = serde_json::json!({"outer": [{"inner": "value"}]});
         Ok(ModelRequest {
+            conversation_id: None,
             model: Model::new(
                 "test".into(),
                 "inventory".into(),

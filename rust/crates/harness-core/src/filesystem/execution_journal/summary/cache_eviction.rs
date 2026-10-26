@@ -64,6 +64,7 @@ async fn evicted_dispatches_keep_admission_and_old_retries_keep_identity() -> Re
             .await?;
         let prepared = crate::model::PreparedModelRequest::prepare(
             crate::model::ModelRequest {
+                conversation_id: None,
                 model: crate::model::Model::new(
                     "fixture".into(),
                     "fixture".into(),

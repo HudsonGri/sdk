@@ -37,7 +37,7 @@ impl StockExecution<'_> {
             input,
             step,
             prior_messages,
-            ModelPurpose::Response,
+            (ModelPurpose::Response, false),
             phase,
         )?
         .await
@@ -49,7 +49,7 @@ impl StockExecution<'_> {
         input: &'a TurnInput,
         step: u32,
         prior_messages: &'a [ModelMessage],
-        purpose: ModelPurpose,
+        mode: (ModelPurpose, bool),
         phase: &'a mut DispatchPhase,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelEvent>>> {
         crate::conversation::BoundedContentFuture::new(self.io, || {
@@ -65,14 +65,7 @@ impl StockExecution<'_> {
                 let operation = span.clone();
                 span.scope(async move {
                     let result = self
-                        .cancellable_model_step(
-                            journal,
-                            input,
-                            step,
-                            prior_messages,
-                            purpose,
-                            phase,
-                        )
+                        .cancellable_model_step(journal, input, step, prior_messages, mode, phase)
                         .await
                         .and_then(|events| completed_model_events(events, input.operation_id));
                     operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
@@ -87,14 +80,7 @@ impl StockExecution<'_> {
                 let _ = span;
                 async move {
                     let events = self
-                        .cancellable_model_step(
-                            journal,
-                            input,
-                            step,
-                            prior_messages,
-                            purpose,
-                            phase,
-                        )
+                        .cancellable_model_step(journal, input, step, prior_messages, mode, phase)
                         .await?;
                     completed_model_events(events, input.operation_id)
                 }
@@ -102,15 +88,16 @@ impl StockExecution<'_> {
         })
     }
 
-    pub(super) async fn prepare_request(
+    pub(super) async fn prepare_request_for(
         &self,
+        model: &Model,
         input: &TurnInput,
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
         let base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
-        self.prepare_transformed_request(&context_input, base)
+        self.prepare_transformed_request_for(model, &context_input, base)
             .await
             .map(|(_, prepared)| prepared)
     }
@@ -180,8 +167,19 @@ impl StockExecution<'_> {
         Ok(context)
     }
 
+    #[cfg(test)]
     pub(super) async fn prepare_transformed_request(
         &self,
+        input: &ContextInput,
+        base: crate::context::Context,
+    ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
+        self.prepare_transformed_request_for(&self.stock.model, input, base)
+            .await
+    }
+
+    pub(super) async fn prepare_transformed_request_for(
+        &self,
+        model: &Model,
         input: &ContextInput,
         base: crate::context::Context,
     ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
@@ -190,7 +188,8 @@ impl StockExecution<'_> {
             .transform_required(input, base, self.stock.limits, self.io)
             .await?;
         let message_count = context.messages.len();
-        let request = self.request_from_messages(std::mem::take(&mut context.messages))?;
+        let request =
+            self.request_from_messages_for(model, std::mem::take(&mut context.messages))?;
         let mut request = if let Some((prefix, verifier)) = self.inherited_prefix() {
             crate::model::PreparedModelRequest::inherit_request(
                 request,
@@ -228,6 +227,7 @@ impl StockExecution<'_> {
             0
         };
         context.messages = std::mem::take(&mut request.messages);
+        self.demote_stored_tool_outputs(&mut context)?;
         self.context_pipeline().project_optional(
             &mut context,
             prefix_count,
@@ -244,11 +244,23 @@ impl StockExecution<'_> {
         Ok((context, prepared))
     }
 
+    #[cfg(test)]
     pub(super) fn request_from_context(
         &self,
         context: &crate::context::Context,
     ) -> Result<ModelRequest> {
-        self.request_from_messages(crate::model::clone_messages(&context.messages, self.io)?)
+        self.request_from_context_for(&self.stock.model, context)
+    }
+
+    pub(super) fn request_from_context_for(
+        &self,
+        model: &Model,
+        context: &crate::context::Context,
+    ) -> Result<ModelRequest> {
+        self.request_from_messages_for(
+            model,
+            crate::model::clone_messages(&context.messages, self.io)?,
+        )
     }
 
     #[cfg(test)]
@@ -262,13 +274,23 @@ impl StockExecution<'_> {
         self.request_from_messages(std::mem::take(&mut context.messages))
     }
 
+    #[cfg(test)]
     pub(super) fn request_from_messages(
         &self,
         messages: Vec<ModelMessage>,
     ) -> Result<ModelRequest> {
+        self.request_from_messages_for(&self.stock.model, messages)
+    }
+
+    pub(super) fn request_from_messages_for(
+        &self,
+        model: &Model,
+        messages: Vec<ModelMessage>,
+    ) -> Result<ModelRequest> {
         let tools_required = self.request_tools_required(&messages)?;
         Ok(ModelRequest {
-            model: crate::model::clone_model(&self.stock.model, self.io)?,
+            conversation_id: self.conversation_id(),
+            model: crate::model::clone_model(model, self.io)?,
             messages,
             tools: if tools_required {
                 stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io)?
@@ -299,8 +321,17 @@ impl StockExecution<'_> {
         Ok(tools_required)
     }
 
+    #[cfg(test)]
     pub(super) fn validate_response_request(
         &self,
+        prepared: &crate::model::PreparedModelRequest,
+    ) -> Result<()> {
+        self.validate_response_request_for(&self.stock.model, prepared)
+    }
+
+    pub(super) fn validate_response_request_for(
+        &self,
+        model: &Model,
         prepared: &crate::model::PreparedModelRequest,
     ) -> Result<()> {
         let request = prepared.request();
@@ -315,7 +346,8 @@ impl StockExecution<'_> {
         } else {
             Vec::new()
         };
-        if request.model != self.stock.model
+        if request.conversation_id != self.conversation_id()
+            || request.model != *model
             || request.tools != tools
             || request.max_output_tokens != self.output_budget()?
         {
@@ -326,6 +358,15 @@ impl StockExecution<'_> {
             ));
         }
         Ok(())
+    }
+
+    pub(super) fn conversation_id(&self) -> Option<crate::ConversationId> {
+        self.stock.conversation_id.or_else(|| {
+            self.stock
+                .task
+                .as_ref()
+                .map(|(_, task, _)| crate::ConversationId::from_bytes(task.into_bytes()))
+        })
     }
 }
 

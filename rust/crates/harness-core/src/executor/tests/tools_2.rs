@@ -38,6 +38,36 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     let journal = Journal::default();
     let mut messages = vec![call_message(&invocation)];
     let before = messages.clone();
+    let execution = StockExecution::ordinary(&executor);
+    let mut hook_context = Vec::new();
+    // The actual admission entry points must not embed the complete native
+    // journal/publication chain in each caller's future or poll frame.
+    let settlement = execution.settle_tool_call(
+        &journal,
+        invocation.operation_id,
+        0,
+        invocation.clone(),
+        0,
+        &mut messages,
+        &mut hook_context,
+    );
+    let bytes = std::mem::size_of_val(&settlement);
+    eprintln!("tool settlement future: {bytes} bytes");
+    assert!(bytes <= 4096, "tool settlement future is {bytes} bytes");
+    drop(settlement);
+    let resolution = execution.resolve_tool_call(
+        &journal,
+        invocation.operation_id,
+        0,
+        invocation.clone(),
+        0,
+        &mut messages,
+        &mut hook_context,
+    );
+    let bytes = std::mem::size_of_val(&resolution);
+    eprintln!("tool resolution future: {bytes} bytes");
+    assert!(bytes <= 4096, "tool resolution future is {bytes} bytes");
+    drop(resolution);
     assert!(matches!(
         StockExecution::ordinary(&executor)
             .settle_tool_call(

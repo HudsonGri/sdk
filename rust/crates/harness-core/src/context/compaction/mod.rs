@@ -118,6 +118,7 @@ impl ThresholdCompaction {
 )]
 pub enum CompactionPolicy {
     /// Preserve the installed context pipeline without automatic summarization.
+    /// Catalog capacity, token accounting and output admission still apply.
     Disabled,
     /// Perform admitted threshold compaction under the selected model's capacities.
     Threshold(ThresholdCompaction),

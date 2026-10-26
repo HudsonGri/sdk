@@ -442,26 +442,29 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    let unmeasured;
-    let io = if let Some(io) = io {
-        io
-    } else {
-        unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        &unmeasured
-    };
-    io.remaining()?;
-    let bytes = io.sdk(generation.read(path, maximum, io, io.cancellation()).await)?;
-    if io.original_native_work().is_none() {
-        let capacity = bytes.retained_capacity().ok_or_else(|| {
-            stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Unsupported,
-                "content producer does not expose its owned capacity",
-            )
-        })?;
-        io.retain_owned(capacity as u64)?;
-    }
-    Ok(bytes)
+    crate::conversation::BoundedContentFuture::new(io, || async move {
+        let unmeasured;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        };
+        io.remaining()?;
+        let bytes = io.sdk(generation.read(path, maximum, io, io.cancellation()).await)?;
+        if io.original_native_work().is_none() {
+            let capacity = bytes.retained_capacity().ok_or_else(|| {
+                stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unsupported,
+                    "content producer does not expose its owned capacity",
+                )
+            })?;
+            io.retain_owned(capacity as u64)?;
+        }
+        Ok(bytes)
+    })?
+    .await
 }
 
 use crate::executor::stock_boundary;

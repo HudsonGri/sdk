@@ -20,7 +20,6 @@ use crate::{
     tool::{ToolInvocation, ToolRegistry, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -67,11 +66,14 @@ pub(crate) mod transcript;
 mod working_context;
 mod working_tail;
 pub(crate) use transcript::load_projection as load_response_projection;
+mod stream_tools;
 mod summary;
 mod summary_file;
 #[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
+mod tool_output;
+pub(crate) use tool_output::TOOL_OUTPUT_PREVIEW_BYTES;
 mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;
 pub(crate) use tool_failure::{CauseText, ToolFailureText};
@@ -535,7 +537,9 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
 pub struct StockExecutor {
+    conversation_id: Option<crate::ConversationId>,
     model: Model,
+    role: Option<String>,
     summary_source: Option<Box<FileRef>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
@@ -568,6 +572,7 @@ pub struct StockExecutor {
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResponseProjection {
+    pub(crate) model: Model,
     pub(crate) context: crate::context::Context,
     pub(crate) canonical: Option<FileRef>,
     pub(crate) checkpoint: Option<FileRef>,

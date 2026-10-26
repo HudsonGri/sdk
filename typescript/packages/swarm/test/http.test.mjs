@@ -159,6 +159,27 @@ test("ending SSE consumption cancels the subscription without reconnecting", asy
   assert.equal(calls, 1);
 });
 
+test("trailing SSE comments preserve completed events and never publish unfinished data", async () => {
+  for (const suffix of [": heartbeat", ": heartbeat\n", ": first\r\n: second"]) {
+    for (const complete of [false, true]) {
+      const client = new SwarmClient({
+        endpoint: "https://fixture", token: "fixture",
+        fetch: async () => new Response(`data: {}\n${complete ? "\n" : ""}${suffix}`,
+          { headers: { "content-type": "text/event-stream" } }),
+      });
+      const frames = [];
+      const consume = async () => { for await (const frame of client.watch("swarm")) frames.push(frame); };
+      if (complete) {
+        await consume();
+        assert.deepEqual(frames, [{ id: "", event: "message", data: {} }]);
+      } else {
+        await assert.rejects(consume());
+        assert.deepEqual(frames, []);
+      }
+    }
+  }
+});
+
 test("aborting between buffered SSE events prevents later delivery", async () => {
   const controller = new AbortController();
   const events = [1, 2].map(seq => ({ seq, type: "log", agent_id: "agent", line: "buffered" }));
@@ -177,8 +198,8 @@ test("aborting between buffered SSE events prevents later delivery", async () =>
   assert.deepEqual(delivered, [events[0]]);
 });
 
-for (const ending of ["\n", "\r\n"]) {
-  test(`SSE wire limit counts ${ending === "\n" ? "LF" : "CRLF"} at exact boundaries`, async t => {
+for (const ending of ["\n", "\r", "\r\n"]) {
+  test(`SSE wire limit counts ${JSON.stringify(ending)} at exact boundaries`, async t => {
     const frame = `data: {}${ending}${ending}`;
     const size = Buffer.byteLength(frame);
     const { client, endpoint } = await fixture(t, (request, response) => {
@@ -243,7 +264,7 @@ test("bounded JSON and SSE reject oversize responses and incomplete events never
   await assert.rejects(async () => { for await (const frame of client.watch("large")) assert.fail(frame); }, RangeError);
   for (const id of ["partial", "partial-utf8"]) {
     const frames = [];
-    for await (const frame of client.watch(id)) frames.push(frame);
+    await assert.rejects(async () => { for await (const frame of client.watch(id)) frames.push(frame); });
     assert.deepEqual(frames, []);
   }
 });

@@ -5,6 +5,7 @@ use crate::model::{Model, ModelMessage, ModelRequest, ModelRole, PreparedModelRe
 fn prepare(messages: &[ModelMessage]) -> Result<PreparedModelRequest> {
     PreparedModelRequest::prepare(
         ModelRequest {
+            conversation_id: None,
             model: Model::new(
                 "test".into(),
                 "segmented".into(),

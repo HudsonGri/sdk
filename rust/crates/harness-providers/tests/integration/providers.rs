@@ -62,6 +62,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
     for (step, expected) in case.expect.events.iter().enumerate() {
         let request = PreparedModelRequest::prepare(
             ModelRequest {
+                conversation_id: None,
                 model: provider.model().clone(),
                 messages: vec![ModelMessage {
                     role: ModelRole::User,
@@ -114,7 +115,10 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
                     let mut broken = events.clone();
                     if let Some(ModelEvent::ReasoningBlock { block }) = broken.get_mut(index) {
                         if scope {
-                            block.origin.credential_scope = None;
+                            block.origin.credential_scope = match block.origin.credential_scope {
+                                Some(_) => None,
+                                None => Some([73; 32]),
+                            };
                         } else {
                             block.continuity.push(255);
                         }
@@ -194,117 +198,140 @@ fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
     }
 }
 
-pub(super) async fn run(case: ProviderCase) -> TestResult {
-    case.validate()?;
-    let transport = Recorded::new(&case);
-    // The parse oracle replays completed exchanges one per step; refusals and stalls are
-    // task-level.
-    let parse =
-        case.unreachable == 0 && (0..case.responses.len()).all(|index| case.completes(index));
-    if parse {
-        parsed(&case, transport.clone()).await?;
-    }
-    // A case with registered tools runs again with a default tool added ahead
-    // of them: every request expectation, including wire tool names, holds.
-    let added = [None, Some(ADDED_DEFAULT_TOOL)];
-    for (run, added) in added
-        .iter()
-        .take(if case.tools.is_empty() { 1 } else { 2 })
-        .enumerate()
-    {
-        if parse || run > 0 {
-            transport.restart()?;
+#[inline(never)]
+pub(super) fn run(
+    case: ProviderCase,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult>>> {
+    Box::pin(async move {
+        case.validate()?;
+        let transport = Recorded::new(&case);
+        // The parse oracle replays completed exchanges one per step; refusals and stalls are
+        // task-level.
+        let parse =
+            case.unreachable == 0 && (0..case.responses.len()).all(|index| case.completes(index));
+        if parse {
+            parsed(&case, transport.clone()).await?;
         }
-        task(&case, &transport, *added).await?;
-    }
-    Ok(())
+        // A case with registered tools runs again with a default tool added ahead
+        // of them: every request expectation, including wire tool names, holds.
+        let added = [None, Some(ADDED_DEFAULT_TOOL)];
+        for (run, added) in added
+            .iter()
+            .take(if case.tools.is_empty() { 1 } else { 2 })
+            .enumerate()
+        {
+            if parse || run > 0 {
+                transport.restart()?;
+            }
+            task(&case, &transport, *added).await?;
+        }
+        Ok(())
+    })
 }
 
-async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str>) -> TestResult {
-    let temporary = local_workspace::temporary()?;
-    let directory = temporary.path().join("filesystem");
-    std::fs::create_dir(&directory)?;
-    let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
-    let provider = Arc::new(resolve(case, transport.clone())?);
-    let config = local_harness_config(&directory, (provider.model().clone(), provider))?
-        .state_directory(temporary.path().join("state"))
-        .volume(volume.clone())
-        .compaction(CompactionPolicy::Disabled)
-        .goal_continuations(None)
-        .tools(
-            case.tools
-                .iter()
-                .map(String::as_str)
-                .chain(added)
-                .map(echo_tool),
-        );
-    let harness = LocalHarness::open(config).await?;
-    let (operation, task_id, status) =
-        super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
-    let stream = local_task_stream(&harness);
-    let path = StreamPath::new("harness/v3/coordinator/events")?;
-    let mut frames = stream
-        .follow(path.clone(), 0, acyclic_stream::FollowFilter::default())
-        .await?;
-    let output = harness.resume(task_id).await;
-    super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
-    match (case.expect.outcome, output) {
-        (super::expected_outcome::ExpectedOutcome::Succeeded, Ok(output))
-            if output.text == case.expect.text
-                && output.steps as usize == completed_steps(case) => {}
-        (
-            super::expected_outcome::ExpectedOutcome::Failed,
-            Err(acyclic_harness::Error::TaskFailed { task, .. }),
-        ) if task == task_id => {}
-        (_, output) => return Err(format!("provider task output differs: {output:?}").into()),
-    }
-    let cut = stream.tail(path).await?;
-    let mut wire = Vec::new();
-    for sequence in 0..cut {
-        let record = super::stall::waiting("provider task wire replay", frames.next())
-            .await
-            .ok_or("provider task wire ended")??;
-        if record.sequence != sequence {
-            return Err("provider task wire has a gap".into());
+fn task<'a>(
+    case: &'a ProviderCase,
+    transport: &'a Arc<Recorded>,
+    added: Option<&'a str>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TestResult> + 'a>> {
+    Box::pin(async move {
+        let temporary = local_workspace::temporary()?;
+        let directory = temporary.path().join("filesystem");
+        std::fs::create_dir(&directory)?;
+        let (host, volume, workspace, reader) =
+            local_workspace::seed(&directory, &case.seed).await?;
+        let provider = Arc::new(resolve(case, transport.clone())?);
+        let config = local_harness_config(&directory, (provider.model().clone(), provider))?
+            .state_directory(temporary.path().join("state"))
+            .volume(volume.clone())
+            .compaction(CompactionPolicy::Disabled)
+            .goal_continuations(None)
+            .tools(
+                case.tools
+                    .iter()
+                    .map(String::as_str)
+                    .chain(added)
+                    .map(echo_tool),
+            );
+        let harness = LocalHarness::open(config).await?;
+        let (operation, task_id, status) =
+            super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
+        let stream = local_task_stream(&harness);
+        let path = StreamPath::new("harness/v3/coordinator/events")?;
+        let mut frames = stream
+            .follow(path.clone(), 0, acyclic_stream::FollowFilter::default())
+            .await?;
+        let output = harness.resume(task_id).await;
+        super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
+        match (case.expect.outcome, output) {
+            (super::expected_outcome::ExpectedOutcome::Succeeded, Ok(output))
+                if output.text == case.expect.text
+                    && output.steps as usize == completed_steps(case) => {}
+            (
+                super::expected_outcome::ExpectedOutcome::Failed,
+                Err(acyclic_harness::Error::TaskFailed { task, .. }),
+            ) if task == task_id => {}
+            (_, output) => return Err(format!("provider task output differs: {output:?}").into()),
         }
-        let envelope =
-            acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
-        wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
-    }
-    super::frame_oracle::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)?;
-    // Keep other child completions: only the root publication is dropped.
-    let root = serde_json::to_value(operation)?;
-    let terminal = wire
-        .iter()
-        .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
-        .ok_or("missing terminal")?;
-    wire.remove(terminal);
-    if super::frame_oracle::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)
+        let cut = stream.tail(path).await?;
+        let mut wire = Vec::new();
+        for sequence in 0..cut {
+            let record = super::stall::waiting("provider task wire replay", frames.next())
+                .await
+                .ok_or("provider task wire ended")??;
+            if record.sequence != sequence {
+                return Err("provider task wire has a gap".into());
+            }
+            let envelope =
+                acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
+            wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
+        }
+        super::frame_oracle::check_frames(
+            &case.expect.frames,
+            &wire,
+            operation,
+            case.expect.outcome,
+        )?;
+        // Keep other child completions: only the root publication is dropped.
+        let root = serde_json::to_value(operation)?;
+        let terminal = wire
+            .iter()
+            .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
+            .ok_or("missing terminal")?;
+        wire.remove(terminal);
+        if super::frame_oracle::check_frames(
+            &case.expect.frames,
+            &wire,
+            operation,
+            case.expect.outcome,
+        )
         .is_ok()
-    {
-        return Err("wire oracle accepted a dropped root completion".into());
-    }
-    check_requests(case, transport)?;
-    drop(frames);
-    drop(stream);
-    drop(harness);
-    drop(reader);
-    drop(host);
-    let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
-    let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
-    for (path, expected) in &case.expect.files {
-        let actual = cold
-            .read(&workspace, None, &format!("/{path}"), 65_536, None)
-            .await;
-        match (expected, actual) {
-            (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
-            (_, actual) => {
-                return Err(format!("provider persisted file differs: {path}: {actual:?}").into());
+        {
+            return Err("wire oracle accepted a dropped root completion".into());
+        }
+        check_requests(case, transport)?;
+        drop(frames);
+        drop(stream);
+        drop(harness);
+        drop(reader);
+        drop(host);
+        let cold = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&directory)).await?;
+        let cold = acyclic_harness::filesystem::FilesystemHost::new(cold, volume.provider(), None)?;
+        for (path, expected) in &case.expect.files {
+            let absolute = format!("/{path}");
+            let actual = cold.read(&workspace, None, &absolute, 65_536, None).await;
+            match (expected, actual) {
+                (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
+                (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+                (_, actual) => {
+                    return Err(
+                        format!("provider persisted file differs: {path}: {actual:?}").into(),
+                    );
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// The recorded HTTP script against the case, faulting each asserted request field.

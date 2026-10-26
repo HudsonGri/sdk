@@ -10,8 +10,12 @@ use acyclic_stream::BoxProviderStream;
 use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
+#[derive(Clone)]
 pub struct ResolvedModel {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) recording: Option<Arc<acyclic_harness_core::http::recording::Identity>>,
     pub(crate) files: crate::files::Files,
+    pub(crate) prefix_cache: Arc<crate::encoded_prefix::PrefixCache>,
     /// Calibration shared by every reader-bound copy of this selection.
     pub(crate) estimator: Arc<crate::accounting::TokenEstimator>,
     /// Immutable harness model identity.
@@ -28,30 +32,57 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn recording_identity(
+        &self,
+    ) -> Option<Arc<acyclic_harness_core::http::recording::Identity>> {
+        self.recording.clone()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn recording_identity_for(
+        transport: &dyn HttpTransport,
+        model: &Model,
+        adapter: crate::Adapter,
+    ) -> Option<Arc<acyclic_harness_core::http::recording::Identity>> {
+        transport.recording_enabled().then(|| {
+            Arc::new(acyclic_harness_core::http::recording::Identity {
+                adapter: match adapter {
+                    crate::Adapter::Anthropic => "anthropic",
+                    crate::Adapter::Responses => "responses",
+                    crate::Adapter::Chat => "chat",
+                    crate::Adapter::Gemini => "gemini",
+                }
+                .into(),
+                provider: model.provider.clone(),
+                model: model.name.clone(),
+            })
+        })
+    }
     /// Borrows the immutable identity used to bind this provider into the harness.
     pub fn model(&self) -> &Model {
         &self.model
     }
     pub(crate) fn reasoning_origin(
         &self,
-        key: Option<&str>,
+        _key: Option<&str>,
         account: Option<&str>,
     ) -> acyclic_harness_core::model::ReasoningOrigin {
         let family = crate::stream::family(self.config.adapter);
-        let mut scope = blake3::Hasher::new();
-        scope.update(b"harness-reasoning-scope-v1\0");
-        for value in [
-            family,
-            self.config.base_url.as_str(),
-            account.or(key).unwrap_or(""),
-        ] {
-            scope.update(&(value.len() as u64).to_be_bytes());
-            scope.update(value.as_bytes());
-        }
+        let credential_scope = account
+            .or(self.config.account_id.as_deref())
+            .map(|account| {
+                let mut scope = blake3::Hasher::new();
+                scope.update(b"harness-reasoning-account-v1\0");
+                for value in [family, self.config.base_url.as_str(), account] {
+                    scope.update(&(value.len() as u64).to_be_bytes());
+                    scope.update(value.as_bytes());
+                }
+                *scope.finalize().as_bytes()
+            });
         acyclic_harness_core::model::ReasoningOrigin {
             provider: family.into(),
             model: self.model.name.clone(),
-            credential_scope: Some(*scope.finalize().as_bytes()),
+            credential_scope,
         }
     }
 
@@ -88,22 +119,12 @@ impl ModelProvider for ResolvedModel {
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
         maximum_bytes: u64,
     ) -> Option<Arc<dyn ModelProvider>> {
-        Some(Arc::new(Self {
-            files: crate::files::Files {
-                reader: Some(reader),
-                maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
-            },
-            estimator: Arc::clone(&self.estimator),
-            model: self.model.clone(),
-            config: self.config.clone(),
-            capacity: self.capacity,
-            key: self.key.clone(),
-            transport: self.transport.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
-            codex_count: Arc::clone(&self.codex_count),
-            #[cfg(not(target_arch = "wasm32"))]
-            codex_login: self.codex_login.clone(),
-        }))
+        let mut bound = self.clone();
+        bound.files = crate::files::Files {
+            reader: Some(reader),
+            maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
+        };
+        Some(Arc::new(bound))
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {

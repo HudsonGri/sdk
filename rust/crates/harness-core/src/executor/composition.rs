@@ -1,9 +1,14 @@
 use super::*;
 
 impl StockExecutor {
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        test,
+        feature = "hooks",
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
-        self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
+        self.set_hooks(hooks);
         self
     }
 
@@ -16,7 +21,9 @@ impl StockExecutor {
         tools: ToolRegistry,
     ) -> Self {
         Self {
+            conversation_id: None,
             model,
+            role: None,
             summary_source: None,
             max_output_tokens: None,
             provider,
@@ -36,28 +43,36 @@ impl StockExecutor {
         }
     }
 
+    /// Binds the admitted agent role to deterministic model selection.
+    #[must_use]
+    pub fn with_role(mut self, role: Option<String>) -> Self {
+        self.set_role(role);
+        self
+    }
+
+    /// Binds model steps and their summaries to one retained conversation.
+    #[must_use]
+    pub fn with_conversation_id(mut self, conversation: crate::ConversationId) -> Self {
+        self.set_conversation_id(conversation);
+        self
+    }
+
     /// Sets the caller's output token budget for each model request.
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
-        if maximum == 0 {
-            return Err(Error::Invalid("model output token budget is zero".into()));
-        }
-        self.max_output_tokens = Some(maximum);
+        self.set_max_output_tokens(maximum)?;
         Ok(self)
     }
 
-    #[cfg(any(test, feature = "filesystem"))]
+    #[cfg(test)]
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
-        if source.is_some() {
-            self.compaction = Some(crate::context::CompactionPolicy::Disabled);
-        }
-        self.summary_source = source;
+        self.set_summary_source(source);
         self
     }
 
     /// Replaces or disables the ordinary threshold policy without starting effects.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
-        self.compaction = Some(policy);
+        self.set_compaction_policy(policy);
         self
     }
     /// Appends one validated context stage to the existing ordered pipeline.
@@ -256,7 +271,7 @@ impl Executor for StockExecutor {
             };
             native_result(
                 &io,
-                async {
+                || async {
                     session
                         .execute_progress(input, journal)
                         .await?
@@ -271,6 +286,51 @@ impl Executor for StockExecutor {
             )
             .await
         })
+    }
+}
+
+impl StockExecutor {
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn set_hooks(&mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) {
+        self.hooks = hooks.filter(|hooks| hooks.rules.has_execution_hooks());
+    }
+}
+
+impl StockExecutor {
+    pub(crate) fn set_role(&mut self, role: Option<String>) {
+        self.role = role;
+    }
+}
+
+impl StockExecutor {
+    pub(crate) fn set_conversation_id(&mut self, conversation: crate::ConversationId) {
+        self.conversation_id = Some(conversation);
+    }
+}
+
+impl StockExecutor {
+    #[cfg(any(test, feature = "filesystem"))]
+    pub(crate) fn set_summary_source(&mut self, source: Option<Box<FileRef>>) {
+        if source.is_some() {
+            self.compaction = Some(crate::context::CompactionPolicy::Disabled);
+        }
+        self.summary_source = source;
+    }
+}
+
+impl StockExecutor {
+    pub(crate) fn set_compaction_policy(&mut self, policy: crate::context::CompactionPolicy) {
+        self.compaction = Some(policy);
+    }
+}
+
+impl StockExecutor {
+    pub(crate) fn set_max_output_tokens(&mut self, maximum: u32) -> Result<()> {
+        if maximum == 0 {
+            return Err(Error::Invalid("model output token budget is zero".into()));
+        }
+        self.max_output_tokens = Some(maximum);
+        Ok(())
     }
 }
 

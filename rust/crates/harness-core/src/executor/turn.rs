@@ -8,11 +8,25 @@ impl StockExecution<'_> {
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
     ) -> Result<ExecutionProgress<TurnOutput>> {
+        crate::conversation::BoundedContentFuture::new(self.io, || async {
+            self.execute_streaming_turn(input, journal).await
+        })?
+        .await
+    }
+
+    async fn execute_streaming_turn(
+        &self,
+        input: &TurnInput,
+        journal: &dyn ExecutionJournal,
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;
         let mut phase = DispatchPhase::new();
-        let result = self.execute_turn(input, journal, &mut phase).await;
+        let result = crate::conversation::BoundedContentFuture::new(self.io, || async {
+            self.execute_turn(input, journal, &mut phase).await
+        })?
+        .await;
         phase
             .finish(result, journal, input.operation_id, self.io)
             .await
@@ -36,6 +50,7 @@ impl StockExecution<'_> {
         self.begin_request_continuation().await;
         let mut prior_messages = Vec::new();
         let mut hook_context = Vec::new();
+        let mut completed = Value::Null;
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let mut stop_active = false;
         for step in 0..input.max_steps {
@@ -45,13 +60,15 @@ impl StockExecution<'_> {
                     input,
                     step,
                     &prior_messages,
-                    ModelPurpose::Response,
+                    (ModelPurpose::Response, true),
                     phase,
                 )?
                 .await?;
             self.retire_working_history(&mut prior_messages).await?;
-            let (calls, text, metadata) =
+            let (calls, text, mut metadata) =
                 self.collect_step_events(input, step, model_events, &mut prior_messages)?;
+            crate::model::usage::accumulate_members(&mut completed, &mut metadata, self.io)?;
+            completed = metadata;
             if calls.is_empty() {
                 // A Stop block prevents settlement and consumes the step budget.
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -70,14 +87,14 @@ impl StockExecution<'_> {
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
-                    metadata,
+                    metadata: completed,
                     steps: step + 1,
                 }));
             }
             self.retire_step_text(text)?;
             for (invocation, invocation_index) in stock_into_iter(calls, self.io)? {
-                match self
-                    .resolve_tool_call(
+                match crate::conversation::BoundedContentFuture::new(self.io, || async {
+                    self.resolve_tool_call(
                         journal,
                         input.operation_id,
                         step,
@@ -86,7 +103,9 @@ impl StockExecution<'_> {
                         &mut prior_messages,
                         &mut hook_context,
                     )
-                    .await?
+                    .await
+                })?
+                .await?
                 {
                     ExecutionProgress::Ready(()) => {}
                     ExecutionProgress::Pending(wait) => {

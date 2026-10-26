@@ -5,6 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+acyclic-harness-core = { path = "../harness-core", default-features = false }
 axum.workspace = true
 futures.workspace = true
 http-body-util = "0.1.5"

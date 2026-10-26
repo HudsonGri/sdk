@@ -266,10 +266,15 @@ where
         if let ExecutionEvent::ModelInline { event, .. } = event {
             self.authorize_inline_event(event, VolumeOperation::Write, io)?;
         }
-        let model = self.verify_event_refs_with_io(event, io).await?;
+        let model = crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_event_refs_with_io(event, io)
+        })?
+        .await?;
         let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
-        self.verify_canonical_publication_with_io(operation_id, event, limits, io)
-            .await?;
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_canonical_publication_with_io(operation_id, event, limits, io)
+        })?
+        .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
         let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
         if let Some(io) = io {
