@@ -23,7 +23,8 @@ pub enum AgentClientError {
 }
 
 /// One observed transition, already applied to the shared bounded Rust fold.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// A settled turn and its immutable output reference.
     Conversation {
@@ -33,7 +34,10 @@ pub enum AgentEvent {
         entry: ConversationEntry,
     },
     /// A lifecycle transition from the selected agent's actual status path.
-    Status(StatusRecord),
+    Status {
+        /// Exact status published by the agent host.
+        status: StatusRecord,
+    },
     /// Admission or watermark progress, without a fabricated record.
     Progress,
 }
@@ -89,6 +93,16 @@ impl AgentClient {
         self.session.view(&self.conversation).expect("selected conversation owns a view")
     }
 
+    /// Decode only the displayed turn requested by the renderer. Reading a
+    /// visible row never clones or joins the remainder of the live window.
+    pub fn conversation_entry(&self, index: usize) -> Result<Option<AgentEvent>, AgentClientError> {
+        self.conversation().record(index).map(|record| {
+            ConversationEntry::decode(&record.value)
+                .map(|entry| AgentEvent::Conversation { sequence: record.sequence, entry })
+                .map_err(AgentClientError::Record)
+        }).transpose()
+    }
+
     /// Borrow the same core for counters and rendering; no second ClientViews.
     pub const fn session(&self) -> &WireSession {
         &self.session
@@ -113,7 +127,7 @@ impl AgentClient {
                         return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
                     };
                     if status {
-                        StatusRecord::decode(&record.value).map(AgentEvent::Status)
+                        StatusRecord::decode(&record.value).map(|status| AgentEvent::Status { status })
                     } else {
                         ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
                             sequence: record.sequence,
