@@ -1,0 +1,355 @@
+{
+  "kind": "canonical_generated_occurrence_observations_only",
+  "revision": "eb54c87d3ba7138a36ce5e99768a7b04e2ad1834",
+  "required_profiles": [
+    "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+    "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+    "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+    "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+    "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365"
+  ],
+  "occurrences": [
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+      "path": "demo",
+      "kind": "module",
+      "signature": "pub mod demo",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 10,
+        "endColumn": 24
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+      "path": "demo::Always",
+      "kind": "struct",
+      "signature": "pub struct demo::Always",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 1,
+        "endColumn": 19
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+      "path": "demo::overloaded",
+      "kind": "function",
+      "signature": "pub fn demo::overloaded(value: u64) -> u64",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 4,
+        "beginColumn": 1,
+        "endLine": 4,
+        "endColumn": 47
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365",
+      "path": "demo",
+      "kind": "module",
+      "signature": "pub mod demo",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 10,
+        "endColumn": 24
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365",
+      "path": "demo::Always",
+      "kind": "struct",
+      "signature": "pub struct demo::Always",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 1,
+        "endColumn": 19
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365",
+      "path": "demo::overloaded",
+      "kind": "function",
+      "signature": "pub fn demo::overloaded(value: u64) -> u64",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 4,
+        "beginColumn": 1,
+        "endLine": 4,
+        "endColumn": 47
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+      "path": "demo",
+      "kind": "module",
+      "signature": "pub mod demo",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 10,
+        "endColumn": 24
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+      "path": "demo::Always",
+      "kind": "struct",
+      "signature": "pub struct demo::Always",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 1,
+        "endColumn": 19
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+      "path": "demo::FeatureOnly",
+      "kind": "struct",
+      "signature": "pub struct demo::FeatureOnly",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 10,
+        "beginColumn": 1,
+        "endLine": 10,
+        "endColumn": 24
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+      "path": "demo::overloaded",
+      "kind": "function",
+      "signature": "pub fn demo::overloaded(value: &str) -> usize",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 7,
+        "beginColumn": 1,
+        "endLine": 7,
+        "endColumn": 56
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+      "path": "demo",
+      "kind": "module",
+      "signature": "pub mod demo",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 10,
+        "endColumn": 24
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+      "path": "demo::Always",
+      "kind": "struct",
+      "signature": "pub struct demo::Always",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 1,
+        "endColumn": 19
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+      "path": "demo::overloaded",
+      "kind": "function",
+      "signature": "pub fn demo::overloaded(value: u64) -> u64",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 4,
+        "beginColumn": 1,
+        "endLine": 4,
+        "endColumn": 47
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+      "path": "demo",
+      "kind": "module",
+      "signature": "pub mod demo",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 10,
+        "endColumn": 24
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+      "path": "demo::Always",
+      "kind": "struct",
+      "signature": "pub struct demo::Always",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 1,
+        "beginColumn": 1,
+        "endLine": 1,
+        "endColumn": 19
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+      "path": "demo::FeatureOnly",
+      "kind": "struct",
+      "signature": "pub struct demo::FeatureOnly",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 10,
+        "beginColumn": 1,
+        "endLine": 10,
+        "endColumn": 24
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    },
+    {
+      "package": "demo",
+      "published_owner": "demo",
+      "target": "x86_64-pc-windows-msvc",
+      "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+      "path": "demo::overloaded",
+      "kind": "function",
+      "signature": "pub fn demo::overloaded(value: &str) -> usize",
+      "source": {
+        "path": "rust/crates/demo/src/lib.rs",
+        "beginLine": 7,
+        "beginColumn": 1,
+        "endLine": 7,
+        "endColumn": 56
+      },
+      "docs_present": false,
+      "reexport": null,
+      "reexport_target": null,
+      "qualification": "unqualified"
+    }
+  ],
+  "qualified_modes": [],
+  "positive_proofs": 0
+}

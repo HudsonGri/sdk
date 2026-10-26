@@ -42,6 +42,10 @@ jobs:
             printf '%s\n' 'VERIFY_STATIC_FAILURE step=source_registration_policy; recovery: python scripts/test-proof-coverage.py' >&2
             exit 1
           }
+          python scripts/test-proof-exports.py || {
+            printf '%s\n' 'VERIFY_STATIC_FAILURE step=canonical_export_policy; recovery: python scripts/test-proof-exports.py' >&2
+            exit 1
+          }
       - name: Verify lane artifact gate and its negative control
         run: node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs
       - name: Verify the local cloud fixture's guards and verdict

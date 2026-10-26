@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VersionIndex",
+  "type": "object",
+  "properties": {
+    "historicalPrereleases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/VersionEntry"
+      }
+    },
+    "latest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VersionEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "preview": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VersionEntry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "releaseCandidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/VersionEntry"
+      }
+    },
+    "releases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/VersionEntry"
+      }
+    },
+    "schema": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "releases"
+  ],
+  "$defs": {
+    "ArchiveSource": {
+      "description": "An immutable registry input and the lock actually used for its Cargo run.",
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string"
+        },
+        "publisherVcs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PublisherVcs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registryChecksum": {
+          "type": "string"
+        },
+        "resolutionLock": {
+          "$ref": "#/$defs/ResolutionLock"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "package",
+        "version",
+        "registryChecksum",
+        "resolutionLock"
+      ]
+    },
+    "CapturedSource": {
+      "description": "Authority of the captured source; archive identities never impersonate Git.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "git"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "revision"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "archives": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ArchiveSource"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "registryArchives"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "archives"
+          ]
+        }
+      ]
+    },
+    "Channel": {
+      "type": "string",
+      "enum": [
+        "preview",
+        "release"
+      ]
+    },
+    "OriginalLock": {
+      "description": "Facts about the original archive, never the lock selected by a later producer.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "published"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sha256"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "absent"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "ProducerDependencyArchive": {
+      "description": "Exact released dependency source selected by an explicit docs producer patch.",
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string"
+        },
+        "publisherVcs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PublisherVcs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registryChecksum": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "package",
+        "version",
+        "registryChecksum",
+        "yanked"
+      ]
+    },
+    "ProducerResolution": {
+      "description": "An external maintained-Cargo resolution. Paths are relative to the captured\naggregate; config selects the lock and verified archived dependency sources.",
+      "type": "object",
+      "properties": {
+        "configPath": {
+          "type": "string"
+        },
+        "configSha256": {
+          "type": "string"
+        },
+        "dependencyArchives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProducerDependencyArchive"
+          }
+        },
+        "lockPath": {
+          "type": "string"
+        },
+        "lockSha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "lockPath",
+        "lockSha256",
+        "configPath",
+        "configSha256",
+        "dependencyArchives"
+      ]
+    },
+    "PublicationStatus": {
+      "description": "Whether a qualified bundle is a candidate or an actual registry release.",
+      "type": "string",
+      "enum": [
+        "candidate",
+        "registryReleased"
+      ]
+    },
+    "PublisherVcs": {
+      "description": "Publisher VCS facts embedded in the exact released archive, independent of\nthe imported source actually compiled by the documentation producer.",
+      "type": "object",
+      "properties": {
+        "dirty": {
+          "type": "boolean"
+        },
+        "pathInVcs": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "dirty",
+        "pathInVcs"
+      ]
+    },
+    "ReleasedPackage": {
+      "description": "Registry facts verified against an actual released source archive.",
+      "type": "object",
+      "properties": {
+        "package": {
+          "type": "string"
+        },
+        "pathInVcs": {
+          "type": "string"
+        },
+        "registryChecksum": {
+          "type": "string"
+        },
+        "sourceRevision": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "package",
+        "version",
+        "yanked",
+        "registryChecksum",
+        "sourceRevision",
+        "pathInVcs"
+      ]
+    },
+    "ResolutionLock": {
+      "description": "Published locks and newly generated documentation resolutions remain distinct.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "published"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sha256"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "docsProducer"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sha256"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "separateDocsProducer"
+            },
+            "original_lock": {
+              "$ref": "#/$defs/OriginalLock"
+            },
+            "producer": {
+              "$ref": "#/$defs/ProducerResolution"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "original_lock",
+            "producer"
+          ]
+        }
+      ]
+    },
+    "VersionEntry": {
+      "type": "object",
+      "properties": {
+        "capturedSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapturedSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channel": {
+          "$ref": "#/$defs/Channel"
+        },
+        "dataFile": {
+          "type": "string"
+        },
+        "dataSha256": {
+          "type": "string"
+        },
+        "publicationStatus": {
+          "$ref": "#/$defs/PublicationStatus",
+          "default": "candidate"
+        },
+        "releasedPackages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReleasedPackage"
+          }
+        },
+        "revision": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "channel",
+        "revision",
+        "dataFile",
+        "dataSha256"
+      ]
+    }
+  }
+}

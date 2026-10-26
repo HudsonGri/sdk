@@ -1,0 +1,17 @@
+{
+  "kind": "canonical_export_consumer_control_admission",
+  "receipt_sha256": "fa4587a10580323901607603dc43af4c7b4434dc77ad10e9d4788afe1e3e874c",
+  "semantic_negative_controls": [
+    "omit-source-bytes",
+    "omit-availability-closure",
+    "omit-profile-export-closure",
+    "drop-feature-signature"
+  ],
+  "typed_refusal_order_only": [
+    "omit-revision",
+    "omit-required-profile-set"
+  ],
+  "reason": "The last two controls still refuse at independent later guards; their tests detect changed refusal reasons, not acceptance of an invalid bundle. They do not count as invariant-acceptance controls.",
+  "qualified_modes": [],
+  "runtime_positive_proofs": 0
+}

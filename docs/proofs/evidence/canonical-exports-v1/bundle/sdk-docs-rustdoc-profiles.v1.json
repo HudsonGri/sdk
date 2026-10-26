@@ -1,0 +1,79 @@
+[
+  {
+    "package": "demo",
+    "publishedOwner": "demo",
+    "ownerKind": "PublishedRoot",
+    "target": "x86_64-pc-windows-msvc",
+    "defaultFeatures": true,
+    "features": [],
+    "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f",
+    "rustdocFile": "rustdoc/demo.json",
+    "rustdocSha256": "sha256:aa74835c20ae2a0048eff7c878b7f074536d3ce5a38b9723e79edf7bd0edb7c1",
+    "rustdocVersion": "1.0.0",
+    "rustdocProfilesCovered": true,
+    "installedRuntimeQualified": false
+  },
+  {
+    "package": "demo",
+    "publishedOwner": "demo",
+    "ownerKind": "PublishedRoot",
+    "target": "x86_64-pc-windows-msvc",
+    "defaultFeatures": false,
+    "features": [],
+    "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f",
+    "rustdocFile": "rustdoc/profiles/profile-1003d772898959a081259696ca59636cf0fca2c91ce60b3a5c5edafb4d7b2358.json",
+    "rustdocSha256": "sha256:aa74835c20ae2a0048eff7c878b7f074536d3ce5a38b9723e79edf7bd0edb7c1",
+    "rustdocVersion": "1.0.0",
+    "rustdocProfilesCovered": true,
+    "installedRuntimeQualified": false
+  },
+  {
+    "package": "demo",
+    "publishedOwner": "demo",
+    "ownerKind": "PublishedRoot",
+    "target": "x86_64-pc-windows-msvc",
+    "defaultFeatures": false,
+    "features": [
+      "extra"
+    ],
+    "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f6578747261",
+    "rustdocFile": "rustdoc/profiles/profile-2ba5e95ef475fcebbafe091df92b9e747a89b320065a0f877e5ee5d498462547.json",
+    "rustdocSha256": "sha256:6a390266b5be952e5e0fa85e742e77a3a3ed0de95153266d480d2cfb757f783e",
+    "rustdocVersion": "1.0.0",
+    "rustdocProfilesCovered": true,
+    "installedRuntimeQualified": false
+  },
+  {
+    "package": "demo",
+    "publishedOwner": "demo",
+    "ownerKind": "PublishedRoot",
+    "target": "x86_64-pc-windows-msvc",
+    "defaultFeatures": true,
+    "features": [
+      "base",
+      "extra"
+    ],
+    "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d1;f62617365,6578747261",
+    "rustdocFile": "rustdoc/profiles/profile-a69993d7c3fbaf47a07fd22c3baa1e0432122933455393ed2d1ee89166775174.json",
+    "rustdocSha256": "sha256:6a390266b5be952e5e0fa85e742e77a3a3ed0de95153266d480d2cfb757f783e",
+    "rustdocVersion": "1.0.0",
+    "rustdocProfilesCovered": true,
+    "installedRuntimeQualified": false
+  },
+  {
+    "package": "demo",
+    "publishedOwner": "demo",
+    "ownerKind": "PublishedRoot",
+    "target": "x86_64-pc-windows-msvc",
+    "defaultFeatures": false,
+    "features": [
+      "base"
+    ],
+    "profile": "p64656d6f;t7838365f36342d70632d77696e646f77732d6d737663;d0;f62617365",
+    "rustdocFile": "rustdoc/profiles/profile-db6869f1c474266f278c3061937108511b40d966546fa9b09ed30c2f3e767c9a.json",
+    "rustdocSha256": "sha256:aa74835c20ae2a0048eff7c878b7f074536d3ce5a38b9723e79edf7bd0edb7c1",
+    "rustdocVersion": "1.0.0",
+    "rustdocProfilesCovered": true,
+    "installedRuntimeQualified": false
+  }
+]
