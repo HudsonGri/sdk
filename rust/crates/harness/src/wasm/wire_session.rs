@@ -212,6 +212,38 @@ impl WasmWireSession {
     pub fn followed_agents(&self) -> usize {
         self.session.borrow().followed_agents()
     }
+
+    /// Revision of the shared Rust fold. An unchanged view needs no JS rebuild.
+    #[wasm_bindgen(js_name = viewRevision)]
+    pub fn view_revision(&self, resource: JsString) -> Result<u64, JsValue> {
+        let path = path(resource)?;
+        self.session.borrow().view(&path).map(|view| view.revision())
+            .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
+    }
+
+    /// Earliest displayed sequence; moves when the bounded live tail evicts.
+    #[wasm_bindgen(js_name = firstSequence)]
+    pub fn first_sequence(&self, resource: JsString) -> Result<u64, JsValue> {
+        let path = path(resource)?;
+        self.session.borrow().view(&path).map(|view| view.first_sequence())
+            .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
+    }
+
+    /// Number of records in the current bounded display tail.
+    #[wasm_bindgen(js_name = recordCount)]
+    pub fn record_count(&self, resource: JsString) -> Result<usize, JsValue> {
+        let path = path(resource)?;
+        self.session.borrow().view(&path).map(|view| view.records().len())
+            .ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))
+    }
+
+    /// Copy one canonical record across the host boundary, never the whole view.
+    pub fn record(&self, resource: JsString, index: usize) -> Result<Option<Uint8Array>, JsValue> {
+        let path = path(resource)?;
+        let session = self.session.borrow();
+        let view = session.view(&path).ok_or_else(|| error("CLIENT_VIEW_NOT_OPEN"))?;
+        Ok(view.record(index).map(|record| Uint8Array::from(record.encode_to_vec().as_slice())))
+    }
 }
 
 impl WasmWireSession {
