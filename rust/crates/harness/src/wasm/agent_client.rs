@@ -65,31 +65,20 @@ fn error(code: &str, message: impl std::fmt::Display) -> JsValue {
 }
 
 fn client_error(cause: AgentClientError) -> JsValue {
-    let code = match &cause {
-        AgentClientError::Session(cause) => cause.code(),
-        AgentClientError::Record(_) => "invalid_agent_record",
-        AgentClientError::Closed(_) => "agent_stream_closed",
-    };
-    error(code, cause)
+    match cause {
+        AgentClientError::Record(cause) => actor_error(cause),
+        cause => error(cause.code(), cause),
+    }
 }
 
 /// One boundary adapter for the browser host's create/send/approval controls.
 /// An uncertain commit is never flattened into a string or an acknowledgement.
 pub(crate) fn actor_error(cause: crate::agent::Error) -> JsValue {
-    use crate::agent::Error;
-    let code = match &cause {
-        Error::Unknown(request) => {
-            let bytes = acyclic_stream::wire_codec::commit_to_wire(request).encode_to_vec();
-            return unknown_agent_error(&cause.to_string(), &bytes);
-        }
-        Error::Path(_) => "invalid_agent_path",
-        Error::Record(_) => "invalid_agent_record",
-        Error::NoSuchAgent => "no_such_agent",
-        Error::Stream(cause) => cause.code(),
-        Error::Actor(_) => "agent_runtime_error",
-        Error::Turn(_) => "agent_turn_error",
-    };
-    error(code, cause)
+    if let Some(request) = cause.unknown_request() {
+        let bytes = acyclic_stream::wire_codec::commit_to_wire(request).encode_to_vec();
+        return unknown_agent_error(&cause.to_string(), &bytes);
+    }
+    error(cause.code(), cause)
 }
 
 fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
