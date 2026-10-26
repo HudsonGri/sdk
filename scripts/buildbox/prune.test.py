@@ -19,6 +19,28 @@ class RetirementTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_concurrent_maintenance_never_scans_before_owning_the_global_lease(self):
+        root=self.d/'root';root.mkdir();locks=self.d/'locks';locks.mkdir()
+        with (locks/'prune.lock').open('a') as owner:
+            fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with patch.object(pruner,'active_sources',side_effect=AssertionError('unowned host traversal')), \
+                 patch.object(pruner.subprocess,'run',side_effect=AssertionError('unowned Git retirement')):
+                result=pruner.prune(root,self.d/'mirror',locks,prune_git=True)
+            self.assertEqual(result['maintenance'],'owned-by-peer')
+            self.assertIsNone(result['remaining'])
+            self.assertIsNone(result['over_cap'],'a non-owner cannot certify capacity')
+            # This exact deployed implementation was captured for prep-file
+            # retirement. It scans before its lock, even with a live owner.
+            old={'__name__':'captured_deployed_pruner'}
+            exec(compile((HERE/'fixtures/prep-retirement/deployed-pruner.py.txt').read_text(),
+                         'actual-deployed-pruner','exec'),old)
+            with patch.dict(old,active_sources=lambda:(_ for _ in ()).throw(AssertionError('unowned host traversal'))):
+                with self.assertRaisesRegex(AssertionError,'unowned host traversal'):
+                    old['prune'](root,self.d/'mirror',locks)
+        with patch.object(pruner,'active_sources',return_value=set()) as scan:
+            self.assertEqual(pruner.prune(root,self.d/'mirror',locks)['remaining'],0)
+            scan.assert_called_once()
+
     def test_prep_files_share_age_count_and_source_lease_with_directories(self):
         root=self.d/'preparations';root.mkdir();locks=self.d/'locks';locks.mkdir()
         mirror=self.d/'mirror';now=100000

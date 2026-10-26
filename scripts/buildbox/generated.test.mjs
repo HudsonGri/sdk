@@ -5,6 +5,44 @@ import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('new admission never traverses unrelated receipt records',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'receipt-admission-'));
+ try{
+  const directory=path.join(here,'fixtures/startup-readiness');
+  const former=fs.readFileSync(path.join(directory,'former-begin-receipt.mjs.txt'),'utf8');
+  const origin=JSON.parse(fs.readFileSync(path.join(directory,'former-begin-receipt.origin.json')));
+  assert.equal(spawnSync('sha256sum',[path.join(directory,'former-begin-receipt.mjs.txt')],{encoding:'utf8'}).stdout.split(' ')[0],origin.fixture_sha256);
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  for(const negative of [false,true]){
+   const root=path.join(cwd,negative?'former':'current');fs.mkdirSync(root);
+   const file=path.join(root,'buildbox.mjs');
+   let selected=source.replace("const LOGDIR = '/home/var/log/buildbox';",'const LOGDIR = '+JSON.stringify(root)+';');
+   if(negative){
+    const first=selected.indexOf('export function beginReceipt(argv) {');
+    const last=selected.indexOf('export function endReceipt(',first);
+    selected=selected.slice(0,first)+former+selected.slice(last);
+    selected=selected.replace('import { arm, atomic, finish }','import { arm, atomic, finish, recover }');
+   }
+   fs.writeFileSync(file,selected);
+   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(root,'buildbox-receipt.mjs'));
+   const result=spawnSync(process.execPath,['--input-type=module','-e',`
+    import fs from 'node:fs';
+    const original=fs.readdirSync;
+    fs.readdirSync=function(dir,...args){
+      if(dir===${JSON.stringify(root)}) throw new Error('unrelated receipt storage unavailable');
+      return original.call(this,dir,...args);
+    };
+    const m=await import(${JSON.stringify(file)});
+    const ctx=m.beginReceipt(['true']);
+    m.endReceipt(ctx,0);
+    console.log('OWN_RECEIPT_COMPLETED');
+   `],{cwd:root,encoding:'utf8'});
+   if(negative){assert.notEqual(result.status,0);assert.match(result.stderr,/unrelated receipt storage unavailable/);}
+   else {assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/OWN_RECEIPT_COMPLETED/);}
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
 test('launch acknowledgement follows observable wrapper readiness, including slow recovery and early death',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'wrapper-readiness-'));
  try{
@@ -15,6 +53,7 @@ test('launch acknowledgement follows observable wrapper readiness, including slo
   const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{});
   const encoded=script.match(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.wrap\b/);
   const wrapper=Buffer.from(encoded[1],'base64').toString();
+  assert.doesNotMatch(wrapper,/receipt-tool\.mjs recover /u,'remote admission only arms its own receipt');
   const start=wrapper.indexOf('echo $$ > $J.wpid');
   const close=wrapper.indexOf('exec 3>&-',start);
   assert.ok(start>=0&&close>start);

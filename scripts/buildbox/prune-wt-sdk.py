@@ -39,13 +39,20 @@ def active_sources(proc=Path('/proc')):
         except OSError:pass
     return active
 
-def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
+def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None,prune_git=False):
     root=root.resolve();mirror=mirror.resolve();locks.mkdir(parents=True,exist_ok=True)
     if not root.is_dir():return {'removed':[],'remaining':0,'held':[],'errors':[],'over_cap':False}
-    active=active_sources() if active is None else active;now=time.time() if now is None else now
+    now=time.time() if now is None else now
     removed=[];held=[];errors=[]
     with (locks/'prune.lock').open('a') as global_lock:
-        fcntl.flock(global_lock,fcntl.LOCK_EX)
+        # Admission callers share one maintenance owner. In particular, do not
+        # enumerate /proc before acquiring this lock: a waiting caller used to
+        # repeat that host-wide traversal while another caller retired files.
+        try:fcntl.flock(global_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'removed':[],'remaining':None,'held':[],'errors':[],
+                    'over_cap':None,'maintenance':'owned-by-peer'}
+        active=active_sources() if active is None else active
         groups={}
         for p in root.iterdir():
             if not p.is_symlink() and (p.is_dir() or (p.name.endswith('.prep') and p.is_file())):
@@ -86,6 +93,10 @@ def prune(root,mirror,locks,max_age=43200,max_count=128,active=None,now=None):
                 # A failed tomb remains evidence under its original lease.
                 # Keep retiring other copies; admission judges its own source.
                 errors.append({'source':name,'error':str(error),'errno':error.errno})
+        # Git metadata retirement belongs to the same maintenance owner too;
+        # doing this in every CLI after releasing the lease recreates overlap.
+        if prune_git and mirror.exists():
+            subprocess.run(['git','-C',str(mirror),'worktree','prune'],check=True,stdout=sys.stderr)
         return {'removed':removed,'remaining':count,'held':held,'errors':errors,'over_cap':count>max_count}
 
 if __name__=='__main__':
@@ -95,10 +106,9 @@ if __name__=='__main__':
     parser.add_argument('--locks',type=Path,default=Path('/mnt/bb/locks/wt-sdk'))
     parser.add_argument('--max-count',type=int,default=128)
     args=parser.parse_args()
-    result=prune(args.root,args.mirror,args.locks,max_count=args.max_count)
+    result=prune(args.root,args.mirror,args.locks,max_count=args.max_count,prune_git=True)
     print('[buildbox] wt-sdk '+json.dumps(result),file=sys.stderr)
     if result['errors']:
         print('BB_WT_PRUNE_FAILED '+json.dumps(result['errors']),file=sys.stderr)
     if result['over_cap']:
         print('BB_DISK_LOW INFRA: SDK source-copy count cap held by active jobs',file=sys.stderr);sys.exit(224)
-    if args.mirror.exists():subprocess.run(['git','-C',str(args.mirror),'worktree','prune'],check=True,stdout=sys.stderr)

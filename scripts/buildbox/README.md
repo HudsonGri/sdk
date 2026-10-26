@@ -165,3 +165,12 @@ checkout, clean and runner copy. HEAD and the copied runner are verified again
 before publishing results. The attempted commit is persisted before preparation
 or dispatch, so a coordinator restart cannot forget an infrastructure hold.
 Only a changed commit or explicit `.rerun` authorizes that held input again.
+
+Receipt admission arms only its own metadata and watcher. Historical recovery
+is an explicit maintenance operation (`node buildbox-receipt.mjs recover DIR`),
+not a prerequisite of client, remote-wrapper or native admission. It must not
+be invoked by each producer. SDK source retirement takes its nonblocking global
+maintenance lease before inspecting host processes; a concurrent caller reports
+`maintenance=owned-by-peer` with unknown capacity, rather than repeating that
+traversal or certifying the peer's result. Per-source leases and disk admission
+remain authoritative for the admitted job.

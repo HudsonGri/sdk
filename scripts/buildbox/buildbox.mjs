@@ -35,7 +35,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { arm, atomic, finish, recover } from './buildbox-receipt.mjs';
+import { arm, atomic, finish } from './buildbox-receipt.mjs';
 const RECEIPT_TOOL = fs.readFileSync(new URL('./buildbox-receipt.mjs', import.meta.url), 'utf8');
 
 // One build box (user, 2026-10-21): the pool is bb2 and only bb2; "we only ever stay at a single build box". Every other
@@ -710,7 +710,6 @@ cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.j
 export PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 BB_CALLER_RLIMITS_JSON=$(python3 /home/var/bin/admission_policy.py capture-limits) || exit 224
 export BB_CALLER_RLIMITS_JSON BB_CALLER_RLIMITS_READY=1
-node $J.receipt-tool.mjs recover /mnt/bb/jobs
 node $J.receipt-tool.mjs arm $J.receipt-meta.v2.json $$
 receipt_done() {
   rc=$?; trap - EXIT
@@ -1053,7 +1052,8 @@ function coldNotice() {
     say(`COLD BOX: bb1 was auto-started ${min} min ago after a deallocation (${fs.readFileSync(COLD_MARK, 'utf8').trim().slice(0, 160)}); its local /mnt/bb was wiped; bb-warm restores sccache and one hot target per flavour from the persistent disk (saved every 30 min), the rest rebuilds: expect slower first builds`); } catch {}
 }
 export function beginReceipt(argv) {
-  recover(LOGDIR);
+  // arm installs this job's watcher. Historical recovery is an explicit owner
+  // operation, never a host-wide prerequisite of unrelated job admission.
   const stamp = Date.now() + '-' + process.pid + '-' + crypto.randomUUID().slice(0, 8);
   const logFile = `${LOGDIR}/${stamp}.log`, metaFile = `${LOGDIR}/${stamp}.receipt-meta.v2.json`;
   fs.closeSync(fs.openSync(logFile, 'a'));
@@ -1274,15 +1274,18 @@ function mergeBase(co) {
 }
 async function maintainSourceCopies(repo, notes, run = sshRun) {
   if (repo !== 'sdk') return;
+  const recovery = q('ssh bb2 /home/var/bin/prune-wt-sdk.sh');
   try {
     const prune = await run('/home/var/bin/prune-wt-sdk.sh', { timeout: 120000 });
     const diagnostic = String(prune.stderr ?? '').trim();
     const warnings = diagnostic.split(/\r?\n/).filter(line => /^BB_WT_PRUNE_FAILED(?:\s|$)/u.test(line));
     if (prune.status === 0 && warnings.length === 0) return;
-    const reason = `BB_WT_PRUNE_FAILED rc=${prune.status}: ${prune.status === 0 ? warnings.join('\n') : diagnostic}`;
+    const detail = (prune.status === 0 ? warnings.join('\n') : diagnostic)
+      || String(prune.error?.message || prune.signal || 'transport returned no diagnostic; maintenance result unobserved');
+    const reason = `BB_WT_PRUNE_FAILED rc=${prune.status} kind=WORKTREE_MAINTENANCE step=source-retirement owner=gate-speed recovery=${recovery}: ${detail}`;
     notes.push(reason); say(reason);
   } catch (error) {
-    const reason = `BB_WT_PRUNE_FAILED ${error.message}`;
+    const reason = `BB_WT_PRUNE_FAILED kind=WORKTREE_MAINTENANCE step=source-retirement owner=gate-speed recovery=${recovery}: ${error.message || String(error) || 'maintenance exception without diagnostic'}`;
     notes.push(reason); say(reason);
   }
   // Maintenance cannot deny another worktree. Its own preparation and the
@@ -1345,9 +1348,12 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
   let rc = okOut && okErr ? await remoteRc(J) : null;
   clearInterval(hb); log.end();
   if (rc === null) {
-    say(`lost the build box job ${J.slice(13)} (no reattach within ${REATTACH_SEC}s or it vanished); falling back`);
-    heal('job connection lost'); sshRun(`p=$(cat ${J}.pid 2>/dev/null) && kill -TERM -- -$p; true`, { timeout: 20000 });
-    return unavailable('job-lost', `no reattach within ${REATTACH_SEC}s`);
+    const recovery = `ssh bb2 ${q('cat '+J+'.receipt.json')}`;
+    say(`kind=JOB_CUSTODY step=follow-existing-job owner=gate-speed job=${J.slice(13)} recovery=${q(recovery)} detail='transport ended without an authoritative terminal receipt; preserve the existing job'`);
+    // Transport absence grants no process identity or termination authority.
+    // Its existing receipt watcher/watchdog retains custody; recovery consumes
+    // that same job rather than signalling a potentially reused numeric PID.
+    return unavailable('job-lost', `terminal receipt unobserved; recovery=${recovery}`);
   }
   const terminal = await sshRun(`cat ${J}.receipt.json`, { timeout: 45000 });
   if (terminal.status === 0) {

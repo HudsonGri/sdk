@@ -16,6 +16,30 @@ function run(module,code,unshare=false){
  const result=spawnSync(unshare?'sudo':args.shift(),unshare?['-n','--preserve-env','unshare','--pid','--fork','--kill-child','--mount','--mount-proc','setpriv','--reuid=var','--regid=var','--init-groups',...args]:args,{encoding:'utf8'});
  assert.equal(result.status,0,result.stderr+result.stdout);return result;
 }
+
+test('one kernel watcher lease prevents recovery from multiplying process owners',async()=>{
+ const {root,module}=fixture();let owner;
+ try{
+  fs.appendFileSync(module,'\nexport {startWatcher};\n');
+  const r=await import(module);
+  const file=root+'/job.receipt-meta.v2.json',receipt=root+'/job.terminal';
+  r.atomic(file,{owner:{pid:process.pid,identity:r.processIdentity(process.pid),pid_namespace:r.pidNamespace()},
+    receipt_file:receipt,argv:[],admission_start:new Date().toISOString()});
+  r.atomic(receipt,{receipt_file:receipt,exit_status:0,termination:'command'});
+  owner=spawn('flock',['--exclusive',file+'.watch-lock','bash','-c','printf ready; cat'],{stdio:['pipe','pipe','pipe']});
+  await new Promise((resolve,reject)=>{owner.once('error',reject);owner.stdout.once('data',resolve);});
+  const watcher=r.startWatcher(file);
+  const status=await new Promise((resolve,reject)=>{watcher.once('error',reject);watcher.once('close',resolve);});
+  assert.equal(status,1,'duplicate watcher must exit at the held kernel lease');
+  // The captured former launch shape directly execs the same real watcher.
+  // It returns zero despite another owner holding the lease.
+  const former=spawnSync(process.execPath,[module,'watch',file],{encoding:'utf8'});
+  assert.equal(former.status,0,former.stderr);
+ }finally{
+  if(owner){owner.stdin.end();await new Promise(resolve=>owner.once('close',resolve));}
+  fs.rmSync(root,{recursive:true,force:true});
+ }
+});
 test('CPU custody retains its terminal link without inventing completed counters',()=>{
  const {root,module}=fixture();
  try{
