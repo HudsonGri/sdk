@@ -19,17 +19,19 @@ export const scriptedSelections=Object.freeze([
 export function scriptedScenario(artifacts,codex,selection){
  assert.ok(scriptedSelections.includes(selection),
    'step=select scripted host scenario; recovery: select '+scriptedSelections.join('|'));
- const binary=artifacts.artifacts.acyclic.path,graphcoder=artifacts.artifacts.graphcoder.path;
- const cases=selection.startsWith('managed:') ? [
-  ...['lifecycle','recursive','resume'].map(name=>({name,
-    args:[join(here,'managed-session.py'),binary,graphcoder,resolve(codex),name],
-    accepts:run=>run.stdout.includes('"suite": "managed-native-session-'+name+'"')})),
-  {name:'bounded-framing',args:[join(here,'mcp-framing.py'),binary],
-    accepts:run=>JSON.parse(run.stdout).cases.length===9},
-] : ['codex','claude-code','pi'].map(name=>({name,
+ const [kind,name]=selection.split(':');
+ const binary=artifacts.artifacts.acyclic.path;
+ if(name==='bounded-framing')return {name,selection,
+  args:[join(here,'mcp-framing.py'),binary],
+  accepts:run=>JSON.parse(run.stdout).cases.length===9};
+ const graphcoder=artifacts.artifacts.graphcoder.path;
+ if(kind==='scale')return {name,selection,
   args:[join(here,'shared-mount-scale.py'),binary,graphcoder,name],
-  accepts:run=>run.stdout.includes('"sessions_alive_at_both_samples": true')}));
- return {...cases.find(entry=>entry.name===selection.split(':')[1]),selection};
+  accepts:run=>run.stdout.includes('"sessions_alive_at_both_samples": true')};
+ assert.ok(codex,'step=admit managed sandbox executable; recovery: supply Codex 0.164 or later for '+selection);
+ return {name,selection,
+  args:[join(here,'managed-session.py'),binary,graphcoder,resolve(codex),name],
+  accepts:run=>run.stdout.includes('"suite": "managed-native-session-'+name+'"')};
 }
 
 // E2E callers provide their existing process scope, environment and cancellation
@@ -47,17 +49,21 @@ export async function runScriptedScenario({scenario,processes,directory,env,
 }
 
 async function main(){
- const [cargo,output,codex,mode,...extra]=process.argv.slice(2);
- const recovery='node plugin/tests/hosts/qualify-scripted.mjs CARGO_JSON FRESH_OUTPUT CODEX managed|scale|SELECTED_SCENARIO';
- assert.ok(cargo&&output&&codex&&!extra.length&&
+ const [cargo,output,hostOrMode,selected,...extra]=process.argv.slice(2);
+ const mode=selected??hostOrMode,codex=selected?hostOrMode:undefined;
+ const recovery='node plugin/tests/hosts/qualify-scripted.mjs CARGO_JSON FRESH_OUTPUT [CODEX] managed|scale|SELECTED_SCENARIO';
+ assert.ok(cargo&&output&&!extra.length&&
    (['managed','scale'].includes(mode)||scriptedSelections.includes(mode)),
    'step=admit scripted host qualification; recovery: '+recovery);
+ const selections=scriptedSelections.includes(mode)?[mode]:scriptedSelections.filter(name=>name.startsWith(mode+':'));
+ assert.ok(codex||selections.every(name=>name==='managed:bounded-framing'||name.startsWith('scale:')),
+  'step=admit managed sandbox executable; recovery: '+recovery);
  const directory=resolve(output);await mkdir(directory);
  const records=await readFile(cargo,'utf8');
- const artifacts=await stageArtifacts(['acyclic','graphcoder'].map(name=>({
+ const binaries=selections.every(name=>name==='managed:bounded-framing')?['acyclic']:['acyclic','graphcoder'];
+ const artifacts=await stageArtifacts(binaries.map(name=>({
    name,target:name,test:false,records,
  })),join(directory,'bin'));
- const selections=scriptedSelections.includes(mode)?[mode]:scriptedSelections.filter(name=>name.startsWith(mode+':'));
  const receipts=[];
  for(const selection of selections){
   const entry=scriptedScenario(artifacts,codex,selection);
