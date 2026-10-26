@@ -146,9 +146,19 @@ impl WireSession {
         let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
             return Err(WireSessionError::InvalidSubscription);
         };
-        if follow.delivery != wire::SessionDelivery::All as i32 {
+        if follow.delivery != wire::SessionDelivery::All as i32 || subscription.filter.is_some() {
             return Err(WireSessionError::InvalidSubscription);
         }
+        let resume = subscription
+            .resume
+            .as_ref()
+            .ok_or(WireSessionError::InvalidSubscription)?;
+        if subscription.channel.is_some() {
+            return Err(WireSessionError::InvalidSubscription);
+        }
+        // Validate before the lazy future takes custody of caller-owned bytes.
+        wire_codec::session::validate_follow(follow, resume)
+            .map_err(WireSessionError::Stream)?;
         let path = wire_codec::session::stream_path(&follow.resource)
             .map_err(WireSessionError::Stream)?;
         if path != agent {
@@ -202,7 +212,12 @@ impl WireSession {
         };
         match stream.poll_next_unpin(context) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Some(Ok(frame))) => Poll::Ready(Ok(Some(frame))),
+            Poll::Ready(Some(Ok(frame))) => {
+                if matches!(frame.body.as_ref(), Some(wire::session_frame::Body::Closed(_))) {
+                    self.follows.remove(agent);
+                }
+                Poll::Ready(Ok(Some(frame)))
+            }
             Poll::Ready(Some(Err(error))) => {
                 self.follows.remove(agent);
                 Poll::Ready(Err(WireSessionError::Stream(error)))
@@ -214,7 +229,7 @@ impl WireSession {
         }
     }
 
-    /// Number of live selected-agent follows, independent of stored swarm size.
+    /// Admitted selected follows, including pending opens, independent of swarm size.
     #[must_use]
     pub fn followed_agents(&self) -> usize {
         self.follows.len()
