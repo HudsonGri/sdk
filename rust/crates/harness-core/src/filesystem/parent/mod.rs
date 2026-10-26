@@ -18,11 +18,7 @@ pub struct ParentProjectController<'a, A, O> {
 /// Inspected project changes whose publication remains bound to the parent controller.
 pub struct ParentMergePlan<A, O> {
     pub(in crate::filesystem) plan: JoinPlan<A, O>,
-    pub(in crate::filesystem) child_project: VolumeRef,
-    pub(in crate::filesystem) parent_project: VolumeRef,
-    pub(in crate::filesystem) parent_scope: Scope,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::filesystem) native_custody: Option<acyclic_fs::NativeAllocation>,
+    pub(in crate::filesystem) metadata: metadata::MergeMetadata,
 }
 
 /// Prepared child-owned prefix and its exact reader grants.
@@ -139,4 +135,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
     }
 }
 mod inherited;
+mod metadata;
 mod project;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::filesystem) mod publication;

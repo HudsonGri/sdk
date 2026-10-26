@@ -203,8 +203,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         #[cfg(target_arch = "wasm32")]
         let native_io: Option<PreparationIo> = None;
         let cancellation = acyclic_fs::CancellationToken::new();
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = native_io.is_some();
         let io = if let Some(io) = native_io {
             io
         } else {
@@ -270,36 +268,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })?;
         io.remaining()?;
         guard().await?;
-        let (child_project, parent_project, parent_scope) =
-            crate::executor::with_history_io(Some(&io), |work| -> Result<_> {
-                Ok((
-                    source.copy(work)?,
-                    self.project.copy(work)?,
-                    self.authority.scope().copy(work)?,
-                ))
-            })?;
+        let metadata = self.merge_metadata(source, Some(&io))?;
         drop(source_ref);
         drop(target_ref);
-        #[cfg(not(target_arch = "wasm32"))]
-        let native_custody = if native {
-            let scope_owned = parent_scope.logical_owned_bytes()?;
-            let retained = child_project
-                .logical_owned_bytes()?
-                .checked_add(parent_project.logical_owned_bytes()?)
-                .and_then(|bytes| bytes.checked_add(scope_owned))
-                .ok_or_else(|| io.invalid("native merge plan ownership overflows"))?;
-            Some(io.into_native_custody(retained)?)
-        } else {
-            None
-        };
-        Ok(ParentMergePlan {
-            plan,
-            child_project,
-            parent_project,
-            parent_scope,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody,
-        })
+        Ok(ParentMergePlan { plan, metadata })
     }
 
     /// Publishes the inspected plan with optional exact conflict-side selections.
@@ -314,55 +286,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let work = custody.work();
             let io = PreparationIo::from_native_work(work)?;
             self.require_merge_plan(plan, Some(&io))?;
-            let mut history = io.history_io();
-            let mut observer = Some(&mut history as &mut dyn crate::store::HistoryIo);
-            let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
-            let authority = self
-                .authority
-                .verifier()
-                .authenticate_scope(self.authority.scope(), quota.work())?;
-            quota.adopt(authority.logical_owned_bytes()?)?;
-            let project = self.project.copy_in_quota(&mut quota)?;
-            let bytes = std::mem::size_of::<(
-                crate::core::VerifiedScope,
-                VolumeRef,
-                acyclic_fs::NativeAllocation,
-            )>() as u64
-                + (2 * std::mem::size_of::<usize>()) as u64;
-            quota.retain(bytes)?;
-            quota.observer()?.allocation_attempt(bytes)?;
-            let custody = quota
-                .into_custody()?
-                .ok_or_else(|| io.invalid("native merge owner has no custody"))?;
-            let owner = Arc::new((authority, project, custody));
+            let owner = self.publication_authority(&io)?;
             let mut guard = move |original: &acyclic_fs::NativeMaterializationWork| {
-                std::future::ready((|| {
-                    if !owner.2.work().shares_allocation_context(original) {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unauthorized,
-                            reason: "merge publication owner belongs to another original resource",
-                        });
-                    }
-                    let io = PreparationIo::from_native_work(original)?;
-                    owner.0.recheck(&mut Some(&mut io.history_io()))?;
-                    if !owner
-                        .0
-                        .scope()
-                        .capabilities()
-                        .contains(capability::PROJECT_MERGE)
-                        || !io.contains_capability(
-                            owner.0.scope().capabilities(),
-                            &owner.1,
-                            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
-                        )?
-                    {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unauthorized,
-                            reason: "parent project publication is not currently granted",
-                        });
-                    }
-                    Ok(())
-                })())
+                std::future::ready(owner.require(original))
             };
             let options = Self::merge_options(
                 plan,
@@ -514,7 +440,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             io.as_ref(),
         )?;
         let receipt = crate::executor::with_history_io(io.as_ref(), |work| -> Result<_> {
-            let source_project = plan.child_project.copy(work)?;
+            let source_project = plan.metadata.child_project.copy(work)?;
             let target_project = self.project.copy(work)?;
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let receipt = ProjectMergeReceipt {
@@ -592,6 +518,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && !plan
+                .metadata
                 .native_custody
                 .as_ref()
                 .is_some_and(|guard| guard.work().shares_allocation_context(work))
@@ -602,7 +529,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 "merge plan belongs to another original parent controller",
             ));
         }
-        if plan.parent_project != self.project || &plan.parent_scope != self.authority.scope() {
+        if plan.metadata.parent_project != self.project
+            || &plan.metadata.parent_scope != self.authority.scope()
+        {
             return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
