@@ -13,6 +13,9 @@ use std::{
 
 #[path = "agent_model/driver.rs"]
 mod driver;
+#[cfg(all(feature = "filesystem", feature = "test-support"))]
+#[path = "agent_model/wired.rs"]
+mod wired;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -493,7 +496,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
         1,
         Wake::Inbox {
             sequence: 0,
-            record: InboxRecord::ForkAdopted(adopted(id(2))),
+            record: InboxRecord::ForkAdopted(Box::new(adopted(id(2)))),
         },
     )
     .await;
@@ -517,7 +520,7 @@ async fn first_input_must_adopt_this_agent() -> Result {
         1,
         Wake::Inbox {
             sequence: 0,
-            record: InboxRecord::ForkAdopted(adopted(id(1))),
+            record: InboxRecord::ForkAdopted(Box::new(adopted(id(1)))),
         },
     )
     .await?;

@@ -120,7 +120,7 @@ pub struct Message {
     /// Stable message identity.
     pub id: IntentId,
     /// Message body.
-    pub body: FileRef,
+    pub body: Box<FileRef>,
 }
 
 /// Terminal result of an agent.
@@ -130,7 +130,7 @@ pub enum AgentOutcome {
     /// Completed, with an optional result file.
     Succeeded {
         /// Result file.
-        result: Option<FileRef>,
+        result: Option<Box<FileRef>>,
     },
     /// Failed with a bounded description.
     Failed {
@@ -188,7 +188,7 @@ pub struct Hook {
     /// Stable hook identity.
     pub id: IntentId,
     /// Event file.
-    pub event: FileRef,
+    pub event: Box<FileRef>,
 }
 
 /// The only input to an agent.
@@ -196,7 +196,7 @@ pub struct Hook {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum InboxRecord {
     /// First record of every agent.
-    ForkAdopted(ForkAdopted),
+    ForkAdopted(Box<ForkAdopted>),
     /// `send`.
     Message(Message),
     /// A child finished.

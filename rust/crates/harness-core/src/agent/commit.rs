@@ -189,7 +189,7 @@ pub fn spawn(
     adopted.agent = child_id;
     adopted.parent = Some(parent.clone());
     adopted.forked_at = at_tail;
-    let record = InboxRecord::ForkAdopted(adopted).encode()?;
+    let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
     Ok(Spawn {
         request: CommitRequest {
             conditions: vec![CommitCondition::Absent {
@@ -222,7 +222,7 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
             }],
             mutations: vec![CommitMutation::Append {
                 path: inbox,
-                records: vec![InboxRecord::ForkAdopted(adopted).encode()?.into()],
+                records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
             }],
             idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
         },
