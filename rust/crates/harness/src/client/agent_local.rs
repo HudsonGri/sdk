@@ -57,6 +57,9 @@ pub enum LocalAgentError {
 
 type Result<T> = std::result::Result<T, LocalAgentError>;
 
+/// Largest staged plain-text prompt accepted by every native agent entry.
+pub const MAXIMUM_AGENT_PROMPT_BYTES: usize = 65_536;
+
 /// A settled record and its bounded, authenticated output file.
 pub struct AgentTurn {
     /// Sequence in the conversation, for pagination and render identity.
@@ -85,11 +88,24 @@ impl LocalAgentClient {
         local: Arc<LocalHarness>,
         maximum_output_bytes: u64,
     ) -> Result<Self> {
+        Self::connect_window(local, 128, maximum_output_bytes).await
+    }
+
+    /// Select at most 128 recent conversation records; zero selects only new
+    /// turns. This changes demand, never creates a second history or stream.
+    pub async fn connect_window(
+        local: Arc<LocalHarness>,
+        recent_records: u32,
+        maximum_output_bytes: u64,
+    ) -> Result<Self> {
         validate_output_limit(maximum_output_bytes)?;
+        if recent_records > 128 {
+            return Err(Error::Invalid("recent agent window exceeds 128 records".into()).into());
+        }
         let (_, root) = local.agents().await?;
         let conversation = tail(&local, root.conversation()?).await?;
         let status = tail(&local, root.status()?).await?;
-        Self::connect(local, conversation.saturating_sub(128), status.saturating_sub(1), maximum_output_bytes).await
+        Self::connect(local, conversation.saturating_sub(u64::from(recent_records)), status.saturating_sub(1), maximum_output_bytes).await
     }
 
     /// Attach the local root to its existing authenticated Streams pool.
@@ -121,6 +137,9 @@ impl LocalAgentClient {
 
     /// Stage and send one user intent through the LocalHarness actor entry.
     pub async fn prompt(&self, id: &IntentId, text: &str) -> Result<Delivered> {
+        if text.is_empty() || text.len() > MAXIMUM_AGENT_PROMPT_BYTES {
+            return Err(Error::Invalid("agent prompt must be 1..=65536 bytes".into()).into());
+        }
         Ok(self.local.prompt(id, text).await?)
     }
 

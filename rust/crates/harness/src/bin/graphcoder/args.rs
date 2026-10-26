@@ -35,7 +35,7 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t)]
     pub input_format: InputFormat,
     /// Stable identity of a prompt submission. JSONL lines carry their own ids.
-    #[arg(long, conflicts_with = "input_format")]
+    #[arg(long, conflicts_with = "input_format", requires = "prompt")]
     pub operation: Option<String>,
     /// Reopen the last interactive conversation, including after a normal quit.
     #[arg(long, conflicts_with_all = ["prompt", "input_format"])]
@@ -86,6 +86,7 @@ mod tests {
         );
         assert!(Args::try_parse_from(["graphcoder", "--resume", "-p", "hello"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "-p", "hello"]).is_ok());
+        assert!(Args::try_parse_from(["graphcoder", "--operation", "unused"]).is_err());
         assert!(Args::try_parse_from(["graphcoder", "--search-config", "search.json"]).is_err());
         // Every actor JSONL line supplies its own stable IntentId.
         assert!(Args::try_parse_from(["graphcoder", "--input-format", "jsonl"]).is_ok());
