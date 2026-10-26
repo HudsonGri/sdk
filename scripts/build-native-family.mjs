@@ -1051,6 +1051,13 @@ async function build(options) {
   if (options.target === undefined) throw new Error(`build requires --target <rust-triple>\n\n${usage()}`);
   if (options.output === undefined) throw new Error(`build requires --output <native-bundle>; stage copies the completed bundle into the package\n\n${usage()}`);
   if (process.env.RUSTC_WORKSPACE_WRAPPER) throw new Error("native build provenance does not support RUSTC_WORKSPACE_WRAPPER: workspace delegates can change compiler arguments after capture; unset RUSTC_WORKSPACE_WRAPPER");
+  // Every family enters through the same admission boundary. In particular,
+  // rejected arguments cannot launch a generator (and therefore Cargo).
+  try {
+    execFileSync(process.execPath, [resolve(root, "scripts/generate.mjs"), family.key], { stdio: "inherit" });
+  } catch (cause) {
+    throw new Error(`step=native-generation; recovery=node scripts/generate.mjs ${family.key}`, { cause });
+  }
   assertCleanSource();
   assertCurrentNativeFamily();
   const output = resolve(options.output);
