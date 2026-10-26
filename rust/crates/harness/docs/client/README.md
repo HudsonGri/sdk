@@ -49,6 +49,20 @@ reuse an unchanged view; `record(index)` copies only the requested visible turn.
 Sequences cross as exact `BigInt` values. `currentStatus()` reads the Rust fold
 and returns null until a real status arrives, rather than fabricating idle state.
 
+A selected follow failure is reported to the reader and retires that follow.
+Continue reading to receive events from the remaining healthy selections; the
+failed path does not remain in the polling rotation. Its final bounded view
+remains available. When no live follow remains, reads return a typed closure
+instead of waiting for a stream that can no longer wake them.
+
+The public TS client exports actor/session views rather than `FileClient`,
+`TaskVolume` or `ClientViews`. Native `FilesystemFileQuery`,
+`MemoryHarnessStorage::file_query`, `LocalHarness::scratch_files` and
+`LocalHarness::project_diff` are removed. Read a settled entry's immutable file
+reference through the host's authorized content reader. Replacement filesystem
+page, cut, backfill and diff bindings remain separate integration work; the
+retired query adapter is not a compatibility entry point for them.
+
 GraphCoder's prompt, JSONL, dumb-terminal and interactive entries now use the
 same actor client. Interactive input retains one submitted receipt and restores
 an excess submission to the editor before staging. Its disposable AgentRenderer
@@ -68,8 +82,8 @@ scrolls separately from the transcript. Scrollbar seeks retain stable source
 identities. `harness-tui` owns the shared read/frame input boundary and sparse
 `SourceRows` identity map, independently of the storage provider.
 
-The whole-client migration is in progress: TaskVolume folds and old Swarm
-bindings still need replacement. The generic
+The whole-client migration is in progress: internal TaskVolume folds, browser
+legacy bindings and their durable-host fixtures still need replacement. The generic
 absent-stream follow, same-cut child-status projection, actor-native input
 composition, project/skill catalog capture, remaining command dispatch,
 approvals, terminal effects and historical backfill remain open. These source changes
