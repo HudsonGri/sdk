@@ -212,7 +212,7 @@ pub use prompt_files::PromptFiles;
 mod scroll_files;
 #[cfg(feature = "tui")]
 pub use scroll_files::{
-    frame_due, input_burst, scroll_tui, transcript_motion, tui_anchor, tui_modal_scroll,
+    scroll_tui, tui_anchor, tui_modal_scroll,
 };
 
 #[cfg(all(
@@ -251,3 +251,6 @@ pub use local_identity::{local_identity, resume_local_identity, select_local_ide
 #[cfg(test)]
 #[cfg(all(feature = "tui", not(acyclic_harness_loom)))]
 mod task_files_tests;
+
+#[cfg(feature = "tui")]
+pub use crate::tui::{frame_due, input_burst, transcript_motion};
