@@ -1,5 +1,16 @@
 //! Bounded view demand and provider-owned pages shared by client adapters.
 
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+mod control;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use control::{AgentExchangeError, PreparedAgentInvocation};
+
 #[cfg(any(feature = "grpc", feature = "wasm"))]
 mod command;
 #[cfg(any(feature = "grpc", feature = "wasm"))]

@@ -1,8 +1,8 @@
 //! Admission and ownership of frontend commands, using the public Rust codec.
 
 use acyclic_harness_client::{
-    AgentControlFailure, CommandError, MAX_AGENT_COMMAND_BYTES, MAX_AGENT_REPLY_BYTES,
-    PreparedCommand, decode_agent_reply,
+    AgentControlFailure, AgentExchangeError, CommandError, MAX_AGENT_COMMAND_BYTES,
+    MAX_AGENT_REPLY_BYTES, PreparedAgentInvocation, PreparedCommand, decode_agent_reply,
 };
 use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
@@ -46,6 +46,43 @@ impl WasmAgentCommand {
     pub fn value(&self) -> Result<JsValue, JsValue> {
         let value = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
         super::json::to_js_admitted(&value)
+    }
+
+    /// Execute this command once on the same pool used by AgentClient and
+    /// filesystem follows. The host binding supplies the canonical Actors
+    /// invocation; Rust refuses a body different from this held command.
+    #[wasm_bindgen(unchecked_return_type = "AgentReply")]
+    pub async fn execute(
+        &self,
+        stream: &acyclic_stream::WasmStream,
+        invocation: &Uint8Array,
+        credential: u32,
+    ) -> Result<JsValue, JsValue> {
+        let (bytes, ()) = super::bytes::snapshot(invocation, |length| {
+            if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
+                Err(command_error(CommandError::Capacity))
+            } else {
+                Ok(())
+            }
+        })?;
+        let invocation =
+            PreparedAgentInvocation::new(&self.command, bytes.into()).map_err(command_error)?;
+        let session = stream.session_client().ok_or_else(|| {
+            let error = js_sys::Error::new("an authenticated session is required");
+            error.set_name("unsupported");
+            JsValue::from(error)
+        })?;
+        match invocation.execute(&session, credential).await {
+            Ok(reply) => super::json::to_js_admitted(&reply),
+            Err(AgentExchangeError::Control(AgentControlFailure::Unknown(request))) => Err(
+                super::agent_client::actor_error(crate::agent::Error::Unknown(request)),
+            ),
+            Err(cause) => {
+                let error = js_sys::Error::new(&cause.to_string());
+                error.set_name(cause.code());
+                Err(error.into())
+            }
+        }
     }
 
     /// Decode the host result against this exact original command. An uncertain
