@@ -21,9 +21,18 @@ pub(crate) struct NativeWorkWindow {
 #[derive(Debug, Default)]
 struct WindowState {
     ledger: WindowLedger,
+    projection: Option<WindowProjection>,
     /// The first runtime failure inside this window, not yet reported. Each window has
     /// its own, so a failure is reported only to the invocation that caused it.
     failure: Option<crate::DemandError>,
+}
+
+/// A projection established and settled under this window's original leaf.
+/// It is usable only until another window or a raw leaf access invalidates it.
+#[derive(Debug)]
+struct WindowProjection {
+    epoch: u64,
+    budget: WorkBudget,
 }
 
 /// The only cumulative state a window's budget is derived from.
@@ -80,6 +89,7 @@ impl WindowLedger {
     }
     /// This window after an operation moved the shared work and pending reservations,
     /// with the work it charged.
+    #[cfg(test)]
     fn settle(
         &self,
         work: (&WorkCounters, &WorkCounters),
@@ -87,6 +97,17 @@ impl WindowLedger {
         stored: &WorkBudget,
         limit: &WorkBudget,
     ) -> Result<(Self, WorkBudget), WorkError> {
+        self.settle_projected(work, pending, stored, limit, None)
+            .map(|(ledger, budget, _)| (ledger, budget))
+    }
+    fn settle_projected(
+        &self,
+        work: (&WorkCounters, &WorkCounters),
+        pending: (&WorkCounters, &WorkCounters),
+        stored: &WorkBudget,
+        limit: &WorkBudget,
+        mut projection: Option<WorkBudget>,
+    ) -> Result<(Self, WorkBudget, Option<WorkBudget>), WorkError> {
         #[cfg(test)]
         crate::performance::CUMULATIVE_PASSES.with(|passes| passes.set(passes.get() + 1));
         let mut next = *self;
@@ -108,11 +129,22 @@ impl WindowLedger {
                     next.held.$field = held.checked_sub(pending.0.$field)
                         .ok_or(WorkError::Overflow)?;
                     budget.$field = add_bounded(stored.$field, charged, limit.$field)?;
+                    // Shared work and this window's consumed work advance by the
+                    // same charged amount. Only the held reservation changes the
+                    // next projection, including work reconciled by view gates.
+                    if let Some(view) = &mut projection {
+                        match view.$field.checked_add(self.held.$field)
+                            .and_then(|available| available.checked_sub(next.held.$field))
+                        {
+                            Some(available) => view.$field = available,
+                            None => projection = None,
+                        }
+                    }
                 }
             })*};
         }
         crate::performance::additive_counters!(settle);
-        Ok((next, budget))
+        Ok((next, budget, projection))
     }
 }
 
@@ -127,8 +159,7 @@ impl NativeWorkWindow {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.base()
-            .state(|state| state.within_window(Some(self), operation))
+        self.base().state_in_window(Some(self), operation)
     }
     /// Whether `view` is the meter this window's opening context used: native I/O
     /// metered through it belongs to this window. A view opened inside the window
@@ -222,6 +253,7 @@ impl crate::demand::DemandWork {
         operation: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let Some(window) = window else {
+            self.invalidate_window_projection();
             return operation(self);
         };
         // A window is entered only while the original leaf is held. Keep
@@ -234,19 +266,25 @@ impl crate::demand::DemandWork {
             stored: WorkBudget,
             work: WorkCounters,
             pending: WorkCounters,
+            projection: Option<WorkBudget>,
         }
         impl Drop for Transition<'_, '_> {
             fn drop(&mut self) {
                 let peak = self.state.budget.peak_allocation_bytes;
-                let settled = self.ledger.ledger.settle(
+                let settled = self.ledger.ledger.settle_projected(
                     (&self.work, &self.state.work),
                     (&self.pending, &self.state.pending_reservations()),
                     &self.stored,
                     &self.state.original_budget(),
+                    self.projection,
                 );
+                self.ledger.projection = None;
                 self.state.budget = match settled {
-                    Ok((settled, budget)) => {
+                    Ok((settled, budget, projection)) => {
                         self.ledger.ledger = settled;
+                        if let (Some(epoch), Some(budget)) = (self.state.window_epoch, projection) {
+                            self.ledger.projection = Some(WindowProjection { epoch, budget });
+                        }
                         budget
                     }
                     Err(error) => {
@@ -263,7 +301,13 @@ impl crate::demand::DemandWork {
         let pending = self.pending_reservations();
         let mut ledger = window.state();
         let outside = self.replace_native_io_failure(ledger.failure.take());
-        self.budget = match ledger.ledger.view(&self.original_budget(), &work) {
+        let projected = match &ledger.projection {
+            Some(view) if Some(view.epoch) == self.window_epoch => Ok(view.budget),
+            _ => ledger.ledger.view(&self.original_budget(), &work),
+        };
+        self.invalidate_window_projection();
+        let projection = projected.as_ref().ok().copied();
+        self.budget = match projected {
             Ok(view) => view,
             Err(error) => {
                 self.fail_window_invariant(error);
@@ -278,6 +322,7 @@ impl crate::demand::DemandWork {
             work,
             pending,
             outside,
+            projection,
         };
         operation(transition.state)
     }

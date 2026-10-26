@@ -28,6 +28,12 @@ impl NativeDemandReadMeter {
     }
     #[track_caller]
     pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
+        let mut state = self.lock_inner();
+        state.invalidate_window_projection();
+        state
+    }
+    #[track_caller]
+    fn lock_inner(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
         #[cfg(all(test, not(acyclic_fs_loom)))]
         lock_probe::visit(self);
         crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
@@ -46,6 +52,14 @@ impl NativeDemandReadMeter {
     #[track_caller]
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(&mut self.lock())
+    }
+    /// The window owns the complete transition while the original leaf is held.
+    pub(crate) fn with_window_leaf<T>(
+        &self,
+        window: Option<&crate::materializer::NativeWorkWindow>,
+        operation: impl FnOnce(&mut DemandWork) -> T,
+    ) -> T {
+        self.lock_inner().within_window(window, operation)
     }
 }
 

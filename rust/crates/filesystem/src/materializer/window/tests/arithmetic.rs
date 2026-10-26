@@ -89,6 +89,49 @@ proptest! {
         }
         crate::performance::additive_counters!(check);
     }
+
+    #[test]
+    fn settled_projection_matches_fresh_ledger_arithmetic(values in counter_values()) {
+        macro_rules! check {
+            ($($field:ident),* $(,)?) => {$({
+                let mut inputs = [WorkCounters::UNCHARGED; 8];
+                for (input, value) in inputs.iter_mut().zip(&values) {
+                    input.$field = *value;
+                }
+                let [consumed, held, before, after, p0, p1, stored, limit] = inputs;
+                let ledger = WindowLedger { consumed, held };
+                if let Ok(view) = reference_view(ledger, limit, before) {
+                    let actual = ledger.settle_projected(
+                        (&before, &after), (&p0, &p1), &stored, &limit, Some(view));
+                    let expected = reference_settle(ledger, (before, after), (p0, p1), stored, limit);
+                    assert_eq!(actual.as_ref().map(|(l, b, _)| (*l, *b)), expected.as_ref().copied());
+                    if let Ok((next, _, Some(projected))) = actual {
+                        assert_eq!(Ok(projected), reference_view(next, limit, after));
+                    }
+                }
+                // A representable transition on every counter, including finite
+                // limits, unbounded limits and independent reservation changes.
+                let mut limit = WorkCounters::UNBOUNDED;
+                let mut before = WorkCounters::UNCHARGED;
+                let mut after = before;
+                let mut held = before;
+                let mut pending_after = before;
+                let mut consumed = before;
+                limit.$field = if values[0] & 1 == 0 { u64::MAX } else { 1024 };
+                consumed.$field = values[1] % 128;
+                before.$field = consumed.$field + values[2] % 128;
+                after.$field = before.$field + values[3] % 128;
+                held.$field = values[4] % 128;
+                pending_after.$field = values[5] % 128;
+                let ledger = WindowLedger { consumed, held };
+                let view = reference_view(ledger, limit, before).unwrap();
+                let (next, _, projected) = ledger.settle_projected(
+                    (&before, &after), (&held, &pending_after), &limit, &limit, Some(view)).unwrap();
+                assert_eq!(projected, Some(reference_view(next, limit, after).unwrap()));
+            })*};
+        }
+        crate::performance::additive_counters!(check);
+    }
 }
 
 #[test]

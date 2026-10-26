@@ -15,6 +15,9 @@ pub struct DemandWork {
     pub(super) cancellation: CancellationToken,
     pub(crate) native_scope: NativeScope,
     pub(super) roots: Admissions,
+    /// Authority for a projection retained by a window on this original ledger.
+    /// Raw leaf access and every window transition invalidate older authority.
+    pub(crate) window_epoch: Option<u64>,
 }
 /// Authority and accounting context restored together at the original leaf.
 #[derive(Default)]
@@ -40,7 +43,11 @@ impl DemandWork {
             cancellation: cancellation.clone(),
             native_scope: NativeScope::default(),
             roots: Admissions::default(),
+            window_epoch: Some(1),
         }
+    }
+    pub(crate) fn invalidate_window_projection(&mut self) {
+        self.window_epoch = self.window_epoch.and_then(|epoch| epoch.checked_add(1));
     }
     #[inline]
     pub(crate) fn scope<T, R>(

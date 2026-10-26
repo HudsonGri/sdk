@@ -115,19 +115,24 @@ impl NativeMaterializationWork {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.state.with_original_leaf(|state| {
-            state.within_window(self.window.as_deref(), |state| {
-                state.scope(
-                    |work| &mut work.native_scope,
-                    crate::demand::NativeScope {
-                        native_invocation: self.invocation.as_ref().map(Arc::downgrade),
-                        native_resource: self.resource.as_ref().map(Arc::downgrade),
-                        capture_custody: None,
-                        recheck_items: self.recheck_items,
-                    },
-                    operation,
-                )
-            })
+        self.state_in_window(self.window.as_deref(), operation)
+    }
+    pub(super) fn state_in_window<T>(
+        &self,
+        window: Option<&NativeWorkWindow>,
+        operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
+    ) -> T {
+        self.state.with_window_leaf(window, |state| {
+            state.scope(
+                |work| &mut work.native_scope,
+                crate::demand::NativeScope {
+                    native_invocation: self.invocation.as_ref().map(Arc::downgrade),
+                    native_resource: self.resource.as_ref().map(Arc::downgrade),
+                    capture_custody: None,
+                    recheck_items: self.recheck_items,
+                },
+                operation,
+            )
         })
     }
     pub(crate) fn with_original_leaf<T>(
