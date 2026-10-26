@@ -193,52 +193,6 @@ impl WasmAgentCommand {
         super::json::to_js_admitted(&value)
     }
 
-    /// Pure preflight for all fixture/client inputs before any dispatch starts.
-    #[wasm_bindgen(js_name = validateInvocation)]
-    pub fn validate_invocation(&self, encoded: &Uint8Array) -> Result<(), JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
-            if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
-                Err(command_error(CommandError::Capacity))
-            } else {
-                Ok(())
-            }
-        })?;
-        PreparedAgentInvocation::new(&self.command, bytes.into())
-            .map(|_| ())
-            .map_err(command_error)
-    }
-
-    /// Execute this command once on the same pool used by AgentClient and
-    /// filesystem follows. The host binding supplies the canonical Actors
-    /// invocation; Rust refuses a body different from this held command.
-    #[wasm_bindgen(unchecked_return_type = "AgentReply")]
-    pub async fn execute(
-        &self,
-        stream: &acyclic_stream::WasmStream,
-        invocation: &Uint8Array,
-        credential: u32,
-    ) -> Result<JsValue, JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(invocation, |length| {
-            if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
-                Err(command_error(CommandError::Capacity))
-            } else {
-                Ok(())
-            }
-        })?;
-        let invocation =
-            PreparedAgentInvocation::new(&self.command, bytes.into()).map_err(command_error)?;
-        let session = stream.session_client().ok_or_else(|| {
-            let error = js_sys::Error::new("an authenticated session is required");
-            error.set_name("unsupported");
-            JsValue::from(error)
-        })?;
-        let reply = invocation
-            .execute(&session, credential)
-            .await
-            .map_err(exchange_error)?;
-        super::json::to_js_admitted(&reply)
-    }
-
     /// Decode the host result against this exact original command. An uncertain
     /// result throws the shared typed error with its owned protobuf request.
     #[wasm_bindgen(unchecked_return_type = "AgentReply")]

@@ -41,6 +41,12 @@ function hasClass(exports: Record<string, unknown>, name: string, prefix: string
       && methods.every(method => typeof exports[method === "free" ? `__wbg_${prefix}_free` : `${prefix}_${method}`] === "function");
 }
 
+function hasStaticMethods(exports: Record<string, unknown>, name: string, prefix: string, methods: readonly string[]): boolean {
+  return typeof exports[name] === "function"
+    ? methods.every(method => typeof (exports[name] as unknown as Record<string, unknown>)[method] === "function")
+    : methods.every(method => typeof exports[`${prefix}_${method}`] === "function");
+}
+
 /** Reject a stale binding before runtime code can call a missing validator. */
 export function assertHarnessWasmExports(value: unknown): void {
   assertClientWasmExports(value);
@@ -77,8 +83,10 @@ export function assertClientWasmExports(value: unknown): void {
     "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "controls", "free",
   ], true);
   const commands = hasClass(exports, "WasmAgentCommand", "wasmagentcommand", [
-    "bytes", "value", "reply", "execute", "validateInvocation", "free",
-  ], true);
+    "bytes", "value", "reply", "free",
+  ], true) && hasStaticMethods(exports, "WasmAgentCommand", "wasmagentcommand", [
+    "maximumCommandBytes", "maximumInvocationBytes", "maximumReplyBytes",
+  ]);
   const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "observe", "free"], true);
   const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);
   const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
