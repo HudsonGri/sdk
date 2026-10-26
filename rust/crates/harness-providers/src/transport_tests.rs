@@ -140,43 +140,14 @@ fn failure(error: &Error) -> Option<ModelTransportFailure> {
 const ATTEMPTS: usize = 1 + crate::RetrySpec::DEFAULT.attempts as usize;
 
 #[tokio::test]
-async fn refused_socket_is_a_typed_connect_failure() -> Result<()> {
-    // Retain ownership of the address without listening. Releasing a listener before
-    // connecting lets another process acquire it and changes the failure under test.
-    let socket = tokio::net::TcpSocket::new_v4().map_err(|_| invalid("socket"))?;
-    socket
-        .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
-        .map_err(|_| invalid("bind"))?;
-    let port = socket.local_addr().map_err(|_| invalid("addr"))?.port();
-    assert_ne!(port, 0);
-    let response = ReqwestTransport::new()?
-        .send(HttpRequest {
-            url: format!("http://127.0.0.1:{port}/v1"),
-            headers: [("authorization".into(), "Bearer scripted-key".into())].into(),
-            body: bytes::Bytes::from_static(b"{}"),
-        })
-        .await;
-    let Err(error) = response else {
-        return Err(invalid("non-listening socket accepted a request"));
-    };
-    assert_eq!(
-        failure(&error),
-        Some(ModelTransportFailure::Connect),
-        "{error}"
-    );
-    assert!(!error.to_string().contains("127.0.0.1"), "{error}");
-    assert!(!error.to_string().contains("scripted-key"));
-    drop(socket);
-    Ok(())
-}
-
-#[tokio::test]
 async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() -> Result<()> {
-    // Port zero cannot identify a listening TCP service: binding zero allocates a
-    // nonzero port. Exercise every real transport attempt without repeatedly paying
-    // the OS's closed-port refusal delay, covered separately by the owned socket.
+    // Port zero cannot name a listener. Releasing an ephemeral port races a
+    // different binder and triggers Windows' delayed connection refusal.
+    // The live-server cases below are the control for a reachable destination.
     let (provider, transport) = model("http://127.0.0.1:0/v1")?;
-    let error = generate(&provider).await.expect_err("unaddressable port");
+    let error = generate(&provider)
+        .await
+        .expect_err("impossible destination port");
     assert_eq!(
         failure(&error),
         Some(ModelTransportFailure::Connect),
@@ -194,7 +165,7 @@ async fn unreachable_host_is_a_typed_connect_failure_after_bounded_redelivery() 
     let error = provider
         .count_tokens(&prepared)
         .await
-        .expect_err("unaddressable port");
+        .expect_err("impossible destination port");
     assert_eq!(
         failure(&error),
         Some(ModelTransportFailure::Connect),
@@ -264,5 +235,36 @@ async fn tls_failure_is_typed_and_never_redelivered() -> Result<()> {
     assert_eq!(error.code(), acyclic_harness_core::wire::ErrorCode::Invalid);
     assert_eq!(transport.sent.load(Ordering::SeqCst), 1);
     assert_eq!(accepted.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn refused_socket_is_a_typed_connect_failure() -> Result<()> {
+    // Retain ownership of the address without listening. Releasing a listener before
+    // connecting lets another process acquire it and changes the failure under test.
+    let socket = tokio::net::TcpSocket::new_v4().map_err(|_| invalid("socket"))?;
+    socket
+        .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .map_err(|_| invalid("bind"))?;
+    let port = socket.local_addr().map_err(|_| invalid("addr"))?.port();
+    assert_ne!(port, 0);
+    let response = ReqwestTransport::new()?
+        .send(HttpRequest {
+            url: format!("http://127.0.0.1:{port}/v1"),
+            headers: [("authorization".into(), "Bearer scripted-key".into())].into(),
+            body: bytes::Bytes::from_static(b"{}"),
+        })
+        .await;
+    let Err(error) = response else {
+        return Err(invalid("non-listening socket accepted a request"));
+    };
+    assert_eq!(
+        failure(&error),
+        Some(ModelTransportFailure::Connect),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("127.0.0.1"), "{error}");
+    assert!(!error.to_string().contains("scripted-key"));
+    drop(socket);
     Ok(())
 }
