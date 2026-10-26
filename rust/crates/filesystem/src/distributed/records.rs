@@ -21,29 +21,6 @@ pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
     (object_key(object) == key).then_some(object)
 }
 
-pub(super) fn authority_child(
-    child: &acyclic_stream::StreamPath,
-) -> Result<AuthorityId, AuthorityStoreError> {
-    let encoded = child
-        .as_str()
-        .strip_prefix("fs/authorities/")
-        .ok_or_else(|| {
-            AuthorityStoreError::Corrupt("Stream authority child escaped its parent".to_owned())
-        })?;
-    if encoded.len() != 32 || encoded.contains('/') {
-        return Err(AuthorityStoreError::Corrupt(
-            "Stream authority child has a noncanonical identity".to_owned(),
-        ));
-    }
-    let mut bytes = [0_u8; 16];
-    hex::decode_to_slice(encoded, &mut bytes).map_err(|_| {
-        AuthorityStoreError::Corrupt(
-            "Stream authority child has a noncanonical identity".to_owned(),
-        )
-    })?;
-    Ok(AuthorityId::from_bytes(bytes))
-}
-
 pub(super) fn decode_publication_gate(
     value: &[u8],
 ) -> Result<Option<OperationId>, AuthorityStoreError> {
@@ -63,12 +40,23 @@ pub(super) fn stream_key(
     domain: &[u8],
     identity: &[u8],
 ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    placed_stream_key(&[], domain, identity)
+}
+
+/// A retry key inside one placement's key scope.
+pub(super) fn placed_stream_key(
+    scope: &[u8],
+    domain: &[u8],
+    identity: &[u8],
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
     let mut value = Vec::with_capacity(
-        domain
+        scope
             .len()
+            .saturating_add(domain.len())
             .saturating_add(identity.len())
             .saturating_add(1),
     );
+    value.extend_from_slice(scope);
     value.extend_from_slice(domain);
     value.push(0);
     value.extend_from_slice(identity);
@@ -98,15 +86,12 @@ pub(super) fn record_bytes<'a, const N: usize>(
 ) -> Option<&'a [u8; N]> {
     bytes.strip_prefix(domain)?.try_into().ok()
 }
+#[cfg(test)]
 pub(super) fn stream_path(
     authority: AuthorityId,
     suffix: &str,
 ) -> Result<StreamPath, AuthorityStoreError> {
-    StreamPath::new(format!(
-        "fs/authorities/{}{suffix}",
-        hex::encode(authority.into_bytes())
-    ))
-    .map_err(map_stream_error)
+    AuthorityPlacement::default().stream_path(authority, suffix)
 }
 pub(super) fn decode_lineage_generation(bytes: &[u8]) -> Result<GenerationId, AuthorityStoreError> {
     record_bytes::<32>(bytes, LINEAGE_DOMAIN)
@@ -180,7 +165,7 @@ pub(super) fn generation_from_payload(
     Ok(Some(GenerationId::new(digest)))
 }
 #[cfg(test)]
-pub(super) async fn read_one<P: acyclic_stream::StreamProvider>(
+pub(super) async fn read_one<P: crate::distributed::AuthorityProvider + ?Sized>(
     provider: &P,
     path: acyclic_stream::StreamPath,
     from: u64,

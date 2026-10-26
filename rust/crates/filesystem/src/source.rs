@@ -72,7 +72,7 @@ pub enum SourceState {
 }
 
 /// Terminal source reconciliation result.
-pub enum ReconcileOutcome<A, O> {
+pub enum ReconcileOutcome<A: 'static, O: 'static> {
     /// Source changes, if any, are durably represented by this generation.
     Clean(Generation<A, O>),
     /// Continuity is lost and an explicit full rescan is required.
@@ -125,7 +125,7 @@ struct RecoveredSourceOperation {
     head: Head,
 }
 
-struct SourceSession<A, O> {
+struct SourceSession<A: 'static, O: 'static> {
     workspace: Workspace<A, O>,
     checkout: Checkout<A, O>,
     watcher: NativeWatch,
@@ -138,11 +138,11 @@ struct SourceSession<A, O> {
 }
 
 /// Cloneable handle to one exact attached native directory.
-pub struct Source<A, O> {
+pub struct Source<A: 'static, O: 'static> {
     inner: Arc<Mutex<SourceSession<A, O>>>,
 }
 
-impl<A, O> Clone for Source<A, O> {
+impl<A: 'static, O: 'static> Clone for Source<A, O> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -608,7 +608,7 @@ async fn persist_state_outcome<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reconcile_outcome_from_fact(session, fact)
 }
 
-fn reconcile_outcome_from_fact<A, O>(
+fn reconcile_outcome_from_fact<A: 'static, O: 'static>(
     session: &SourceSession<A, O>,
     fact: SourceFact,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
@@ -1582,6 +1582,9 @@ mod tests {
     impl AsyncAuthorityStore for GatedAuthorityStore {
         fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
             self.inner.operation_claims()
+        }
+        fn actor_scope(&self) -> [u8; 16] {
+            self.inner.actor_scope()
         }
 
         async fn create_authority<G: crate::AuthorityGuard>(

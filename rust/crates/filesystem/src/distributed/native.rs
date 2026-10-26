@@ -3,9 +3,7 @@ use super::*;
 impl<'a> AuthorityWork<'a> {
     pub(super) fn absorb(&mut self, child: &AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
         if !self.is_native() {
-            self.work = self
-                .work
-                .with_backend(child.spent(), self.allocations.live_bytes())?;
+            self.record(child.spent())?;
             self.check()?;
         }
         Ok(())
@@ -28,7 +26,7 @@ impl<'a> AuthorityWork<'a> {
             drop(self.request_allocation.take());
             return Ok(());
         }
-        self.release(self.allocations.live_bytes())
+        self.allocations.release_scratch().map_err(authority_error)
     }
 
     pub(super) fn hold_opaque(&mut self, bytes: u64) -> Result<(), AuthorityStoreError> {
@@ -42,7 +40,7 @@ impl<'a> AuthorityWork<'a> {
     }
 
     pub(super) fn vec<T>(&mut self, capacity: usize) -> Result<Vec<T>, AuthorityStoreError> {
-        let (value, allocation) = self.vec_owned(capacity)?;
+        let (value, allocation) = crate::async_storage::authority_parts(self.vec_owned(capacity)?);
         let _ = &allocation;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(mut allocation) = allocation {
@@ -68,7 +66,9 @@ impl<'a> AuthorityWork<'a> {
     pub(super) fn native_meter(
         &mut self,
     ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>, AuthorityStoreError> {
-        let original = self.original.expect("native SDK funding");
+        let original = self
+            .original
+            .ok_or(AuthorityStoreError::NativeOriginalUnsupported)?;
         if let Some(allocation) = &self.request_allocation
             && let Some(meter) = allocation.work().authority_read_meter_for(original)
         {
@@ -97,11 +97,10 @@ impl<'a> AuthorityWork<'a> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn native_io_failure(&self, error: std::io::Error) -> AuthorityStoreError {
-        AuthorityStoreError::NativeOriginal(
-            self.original
-                .expect("native SDK funding")
-                .runtime_error(error),
-        )
+        match self.original {
+            Some(original) => AuthorityStoreError::NativeOriginal(original.runtime_error(error)),
+            None => AuthorityStoreError::Io(error),
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -120,17 +119,24 @@ impl<'a> AuthorityWork<'a> {
     }
 
     pub(super) fn bytes(&mut self, payload: &[u8]) -> Result<Bytes, AuthorityStoreError> {
-        let buffer = self.byte_buffer(&[], &[payload])?;
+        let buffer = self.byte_buffer(&[], &[], &[payload])?;
         #[cfg(not(target_arch = "wasm32"))]
         if self.original.is_some() {
             let mut buffer = buffer;
-            buffer.1.as_mut().expect("native buffer custody").grow(
-                crate::kernel::allocation::bytes_owner_control_bytes::<ForkBytes>()?,
-            )?;
-            return Ok(Bytes::from_owner(ForkBytes {
-                bytes: buffer.0,
-                _allocation: buffer.1.expect("native buffer custody"),
-            }));
+            buffer
+                .1
+                .as_mut()
+                .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?
+                .grow(crate::kernel::allocation::bytes_owner_control_bytes::<
+                    ForkBytes,
+                >()?)?;
+            return match buffer {
+                (bytes, Some(allocation)) => Ok(Bytes::from_owner(ForkBytes {
+                    bytes,
+                    _allocation: allocation,
+                })),
+                (_, None) => Err(crate::NativeTreeMaterializationError::MissingCustody.into()),
+            };
         }
         self.plain_bytes(buffer.0)
     }
@@ -151,7 +157,16 @@ impl<'a> AuthorityWork<'a> {
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
-        let buffer = self.byte_buffer(domain, fields)?;
+        self.scoped_stream_bytes(&[], domain, fields)
+    }
+
+    fn scoped_stream_bytes(
+        &mut self,
+        scope: &[u8],
+        domain: &[u8],
+        fields: &[&[u8]],
+    ) -> Result<acyclic_stream::OwnedBytes, AuthorityStoreError> {
+        let buffer = self.byte_buffer(scope, domain, fields)?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut buffer = buffer;
         #[cfg(not(target_arch = "wasm32"))]
@@ -168,44 +183,56 @@ impl<'a> AuthorityWork<'a> {
 
     fn byte_buffer(
         &mut self,
+        scope: &[u8],
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<(Vec<u8>, AuthorityAllocation), AuthorityStoreError> {
         let length = fields
             .iter()
             .try_fold(domain.len(), |n, field| n.checked_add(field.len()))
+            .and_then(|n| n.checked_add(scope.len()))
             .ok_or(crate::WorkError::Overflow)?;
         let writes = WorkCounters {
-            bytes_encoded: if domain.is_empty() { 0 } else { length as u64 },
+            bytes_encoded: if scope.is_empty() && domain.is_empty() {
+                0
+            } else {
+                length as u64
+            },
             bytes_copied: length as u64,
             ..WorkCounters::UNCHARGED
         };
         self.admit(writes)?;
         let mut buffer = self.vec_owned::<u8>(length)?;
-        buffer.0.extend_from_slice(domain);
+        buffer.value.extend_from_slice(scope);
+        buffer.value.extend_from_slice(domain);
         for field in fields {
-            buffer.0.extend_from_slice(field);
+            buffer.value.extend_from_slice(field);
         }
         self.charge(writes)?;
-        Ok(buffer)
+        Ok(crate::async_storage::authority_parts(buffer))
     }
 
     pub(super) fn path(
         &mut self,
+        placement: &AuthorityPlacement,
         authority: AuthorityId,
         suffix: &str,
         generation: Option<GenerationId>,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
         match generation {
-            Some(generation) => {
-                self.identity_path(authority, suffix, Some(generation.digest().as_bytes()))
-            }
-            None => self.identity_path(authority, suffix, None),
+            Some(generation) => self.identity_path(
+                placement,
+                authority,
+                suffix,
+                Some(generation.digest().as_bytes()),
+            ),
+            None => self.identity_path(placement, authority, suffix, None),
         }
     }
 
     pub(super) fn operation_path(
         &mut self,
+        placement: &AuthorityPlacement,
         authority: AuthorityId,
         operation: OperationId,
     ) -> Result<StreamPath, AuthorityStoreError> {
@@ -213,7 +240,7 @@ impl<'a> AuthorityWork<'a> {
         // Per-authority index directories otherwise consume one extra provider
         // path for every authority, even when it has only its initial operation.
         self.prefixed_identity_path(
-            b"fs/operations/",
+            placement.operations_prefix(),
             authority,
             "",
             Some(&operation.into_bytes()),
@@ -222,11 +249,12 @@ impl<'a> AuthorityWork<'a> {
 
     fn identity_path(
         &mut self,
+        placement: &AuthorityPlacement,
         authority: AuthorityId,
         suffix: &str,
         identity: Option<&[u8]>,
     ) -> Result<StreamPath, AuthorityStoreError> {
-        self.prefixed_identity_path(b"fs/authorities/", authority, suffix, identity)
+        self.prefixed_identity_path(placement.authorities_prefix(), authority, suffix, identity)
     }
 
     fn prefixed_identity_path(
@@ -332,10 +360,11 @@ impl<'a> AuthorityWork<'a> {
 
     pub(super) fn key(
         &mut self,
+        scope: &[u8],
         domain: &[u8],
         fields: &[&[u8]],
     ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
-        let bytes = self.stream_bytes(domain, fields)?;
+        let bytes = self.scoped_stream_bytes(scope, domain, fields)?;
         acyclic_stream::IdempotencyKey::new(bytes).map_err(|error| {
             if self.is_native() {
                 AuthorityStoreError::NativeStream(error)
@@ -343,6 +372,32 @@ impl<'a> AuthorityWork<'a> {
                 map_stream_error(error)
             }
         })
+    }
+
+    pub(super) fn folded_key(
+        &mut self,
+        domain: &[u8],
+        left: &acyclic_stream::IdempotencyKey,
+        right: &acyclic_stream::IdempotencyKey,
+    ) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+        let fields = [left.as_bytes(), right.as_bytes()];
+        let bytes = fields
+            .iter()
+            .try_fold(domain.len() as u64, |bytes, field| {
+                bytes.checked_add(8)?.checked_add(field.len() as u64)
+            })
+            .ok_or(crate::WorkError::Overflow)?;
+        let hashing = codec_work(0, 0, bytes);
+        self.admit(hashing)?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(domain);
+        for field in fields {
+            hasher.update(&(field.len() as u64).to_le_bytes());
+            hasher.update(field);
+        }
+        let digest = hasher.finalize();
+        self.charge(hashing)?;
+        self.key(&[], domain, &[digest.as_bytes()])
     }
 
     pub(super) fn request_write_work(
@@ -424,32 +479,6 @@ impl<'a> AuthorityWork<'a> {
         })
         .map(|(record, _)| record)
         .map_err(authority_error)
-    }
-
-    pub(super) fn durable_digest(
-        &mut self,
-        authority: AuthorityId,
-        record: &crate::streams_record::BorrowedStreamsDurableRecord<'_>,
-    ) -> Result<Digest, AuthorityStoreError> {
-        let hashing = codec_work(
-            0,
-            0,
-            crate::foundation::AUTHORITY_COMMIT_DIGEST_ENVELOPE_BYTES
-                .checked_add(record.payload.len() as u64)
-                .ok_or(crate::WorkError::Overflow)?,
-        );
-        self.admit(hashing)?;
-        let digest = authority_commit_digest(
-            authority,
-            record.epoch,
-            record.sequence,
-            record.operation_id,
-            record.fingerprint,
-            record.previous_digest,
-            record.payload,
-        );
-        self.charge(hashing)?;
-        Ok(digest)
     }
 
     pub(super) fn decode_fixed<const N: usize>(

@@ -148,7 +148,7 @@ mod content_model;
 mod detached;
 mod diff;
 pub(crate) mod policy_cache;
-pub(crate) use diff::diff_generation_file_tables;
+use crate::kernel::diff_generation_file_tables;
 mod directory;
 mod error;
 mod extents;
@@ -157,6 +157,10 @@ mod merged_names;
 #[cfg(feature = "native-mount")]
 mod rename_bindings;
 pub(crate) use extents::seek_record_extent_with_accounting;
+#[cfg(any(test, feature = "distributed"))]
+mod composition;
+#[cfg(any(test, feature = "distributed"))]
+pub use composition::{CreateSpec, ForkSpec};
 mod fork;
 mod fs;
 mod generation;
@@ -185,6 +189,7 @@ mod read;
 mod read_accounting;
 mod reader;
 mod rebase;
+mod rebase_footprint;
 mod resolved_read;
 mod retention;
 mod retirement;
@@ -196,6 +201,7 @@ mod volume_creation;
 mod work;
 mod workspace_creation;
 
+pub use crate::kernel::{DirectoryBindingChange, FileRecordChange, GenerationDiff};
 pub(crate) use access_policy::policy_head_is_current;
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;
@@ -217,9 +223,6 @@ pub use content_model::FileCloneRequest;
 use content_model::content_input_path_bytes;
 pub use content_model::{ContentAddress, ContentFile};
 pub use detached::DetachedFile;
-pub use diff::DirectoryBindingChange;
-pub use diff::FileRecordChange;
-pub use diff::GenerationDiff;
 pub use diff::MergePreparation;
 pub use directory::DirectoryRecordEntry;
 pub use directory::DirectoryRecordPage;
@@ -301,7 +304,7 @@ pub(crate) use staging::stage_content_for_volume_with_accounting;
 pub use transactions::AuthoredLiveMutationResult;
 pub use transactions::AuthoredTransactionResult;
 use transactions::mutation_path_owned_bytes;
-use tree::directory_entries;
+
 use tree::list_directory_to_file_root_with_accounting;
 use volume_creation::CREATION_FINGERPRINT_DOMAIN;
 pub use volume_creation::CreationOperation;

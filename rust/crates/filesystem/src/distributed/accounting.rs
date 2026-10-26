@@ -1,8 +1,13 @@
 use super::*;
 
-impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthority<'_, P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
+    for AccountingAuthority<'_, P>
+{
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.0.operation_claims()
+    }
+    fn actor_scope(&self) -> [u8; 16] {
+        self.0.placement.actor_scope()
     }
 
     async fn head(
@@ -75,7 +80,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
     }
 }
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     /// Reads a bounded historical accounting page, including retired authorities.
     pub async fn accounting_page<O: crate::AsyncObjectStore>(
         &self,

@@ -32,13 +32,13 @@ pub(super) fn resample_payload() -> bool {
     FAULT.with(Cell::get) == Fault::ResamplePayload
 }
 
-pub(super) async fn resampled_payload<P: StreamProvider>(
+pub(super) async fn resampled_payload<P: crate::distributed::AuthorityProvider + ?Sized>(
     store: &StreamAuthorityStore<P>,
     authority: AuthorityId,
     work: &mut AuthorityWork<'_>,
 ) -> Result<Bytes, AuthorityStoreError> {
     let tail = store.tail_of(authority, "/records", work).await?;
-    let path = work.path(authority, "/records", None)?;
+    let path = work.path(&AuthorityPlacement::default(), authority, "/records", None)?;
     let path_bytes = path.as_str().len() as u64;
     let latest = store.record(path, tail - 1, work).await;
     work.release(path_bytes)?;

@@ -1,10 +1,10 @@
-struct Publication<'a, A, O> {
+struct Publication<'a, A: 'static, O: 'static> {
     shared: &'a SharedCheckout<A, O>,
     original: Option<SharedCheckoutState<A, O>>,
     fence: Option<tokio::sync::RwLockWriteGuard<'a, ()>>,
 }
 
-impl<A, O> Drop for Publication<'_, A, O> {
+impl<A: 'static, O: 'static> Drop for Publication<'_, A, O> {
     fn drop(&mut self) {
         let Some(mut original) = self.original.take() else {
             return;
@@ -113,16 +113,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                         deadline,
                     )
                 };
-                let ack = super::publication::seal_checkout_with_permit_guarded_with_native_work(
-                    &mut original.checkout,
-                    operation,
-                    permit,
-                    force,
-                    crate::kernel::KernelAccounting::native(work, cancellation),
-                    &mut guarded,
-                    proof,
-                )
-                .await?;
+                // Erase the seal state machine into its own funded frame so callers
+                // prove `Send` for a shallow type instead of the whole composition.
+                let seal = native_future(work, || {
+                    super::publication::seal_checkout_with_permit_guarded_with_native_work(
+                        &mut original.checkout,
+                        operation,
+                        permit,
+                        force,
+                        crate::kernel::KernelAccounting::native(work, cancellation),
+                        &mut guarded,
+                        proof,
+                    )
+                })
+                .map_err(FsError::from)?
+                .erase_send();
+                let ack = seal.await?;
                 original.acknowledge_publication(operation, ack, context, acknowledged)?;
                 Ok(())
             }

@@ -1,6 +1,6 @@
 use super::*;
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
     /// Creates or replaces one complete UTF-8 file.
     pub async fn write_text(&mut self, path: &str, text: &str) -> Result<(), WorkspaceError> {
         self.write(
@@ -29,7 +29,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 
-    async fn write_with_accounting(
+    pub(super) async fn write_with_accounting(
         &mut self,
         path: &str,
         bytes: impl Into<acyclic_stream::OwnedBytes>,

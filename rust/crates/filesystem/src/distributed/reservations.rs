@@ -1,6 +1,7 @@
 use super::*;
 
 fn request(
+    placement: &AuthorityPlacement,
     authority: AuthorityId,
     snapshot: Option<AuthoritySnapshot>,
     operation: OperationId,
@@ -10,12 +11,12 @@ fn request(
 ) -> Result<CommitRequest, AuthorityStoreError> {
     let gate = match gate {
         Some(path) => path,
-        None => work.path(authority, "/publication-gate", None)?,
+        None => work.path(placement, authority, "/publication-gate", None)?,
     };
     let mut conditions = work.vec(if snapshot.is_some() { 4 } else { 2 })?;
     if let Some(snapshot) = snapshot {
         conditions.push(CommitCondition::Tail {
-            path: work.path(authority, "/epochs", None)?,
+            path: work.path(placement, authority, "/epochs", None)?,
             expected: snapshot.epoch_tail,
         });
     }
@@ -25,12 +26,12 @@ fn request(
     });
     if let Some(snapshot) = snapshot {
         conditions.push(CommitCondition::Tail {
-            path: work.path(authority, "/records", None)?,
+            path: work.path(placement, authority, "/records", None)?,
             expected: snapshot.head.sequence.get() + 1,
         });
     }
     conditions.push(CommitCondition::Absent {
-        path: work.path(authority, "/retirement", None)?,
+        path: work.path(placement, authority, "/retirement", None)?,
     });
     let body = if snapshot.is_some() {
         work.stream_bytes(PUBLICATION_GATE_ACTIVE, &[&operation.into_bytes()])?
@@ -48,6 +49,7 @@ fn request(
         conditions,
         mutations,
         idempotency_key: work.key(
+            placement.key_scope(),
             domain,
             &[
                 &authority.into_bytes(),
@@ -105,7 +107,74 @@ fn key_matches(key: &[u8], domain: &[u8], parts: &[&[u8]]) -> bool {
     remaining.is_empty()
 }
 
+fn verify_release(
+    placement: &AuthorityPlacement,
+    reservation: PublicationReservation,
+    observation: &acyclic_stream::IdempotencyObservation,
+    work: &mut AuthorityWork<'_>,
+) -> Result<(), AuthorityStoreError> {
+    if !key_matches(
+        observation
+            .idempotency_key
+            .as_bytes()
+            .strip_prefix(placement.key_scope())
+            .unwrap_or_default(),
+        b"release-publication\0",
+        &[
+            &reservation.authority_id.into_bytes(),
+            &reservation.operation_id.into_bytes(),
+            &reservation.gate_tail.to_le_bytes(),
+        ],
+    ) {
+        return Err(authority_corrupt(
+            "publication release observation has another retry identity",
+            work,
+        ));
+    }
+    let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
+        return Err(authority_corrupt(
+            "publication release identity retained another Stream mutation family",
+            work,
+        ));
+    };
+    let CommitOutcome::Committed(envelope) = outcome else {
+        return Err(AuthorityStoreError::RejectedStatic(
+            "publication reservation is no longer active",
+        ));
+    };
+    let mut request = request(
+        placement,
+        reservation.authority_id,
+        None,
+        reservation.operation_id,
+        reservation.gate_tail,
+        None,
+        work,
+    )?;
+    let end = reservation
+        .gate_tail
+        .checked_add(1)
+        .ok_or(crate::WorkError::Overflow)?;
+    let request_digest = digest(&mut request, work)?;
+    let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
+        unreachable!("release is one append");
+    };
+    let valid = request_digest == observation.request_digest
+        && matches!(envelope.mutations.as_slice(), [acyclic_stream::CommittedMutation::Append(append)]
+            if &append.path == gate && append.start == reservation.gate_tail && append.end == end && append.tail == end
+            && matches!(append.records.as_slice(), [record] if record.sequence == reservation.gate_tail
+        && record.commit_id == envelope.commit_id && record.value.as_ref() == PUBLICATION_GATE_FREE));
+    if !valid {
+        return Err(authority_corrupt(
+            "publication release observation does not bind the original gate release",
+            work,
+        ));
+    }
+    Ok(())
+}
+
 fn qualified(
+    placement: &AuthorityPlacement,
     observation: &acyclic_stream::IdempotencyObservation,
     authority: AuthorityId,
     operation: OperationId,
@@ -116,7 +185,11 @@ fn qualified(
         return Ok(false);
     };
     if !key_matches(
-        observation.idempotency_key.as_bytes(),
+        observation
+            .idempotency_key
+            .as_bytes()
+            .strip_prefix(placement.key_scope())
+            .unwrap_or_default(),
         b"reserve-publication\0",
         &[
             &authority.into_bytes(),
@@ -149,7 +222,7 @@ fn qualified(
     }
     Ok(key_matches(
         append.path.as_str().as_bytes(),
-        b"fs/authorities/",
+        placement.authorities_prefix(),
         &[&hex, b"/publication-gate"],
     ) && append.start == prior
         && append.end == tail
@@ -163,13 +236,13 @@ fn qualified(
         ))
 }
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn reservation_gate(
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(StreamPath, u64, Option<OperationId>), AuthorityStoreError> {
-        let gate = work.path(authority, "/publication-gate", None)?;
+        let gate = work.path(&self.placement, authority, "/publication-gate", None)?;
         let tail = self.tail(gate.clone(), work).await?;
         let from = tail
             .checked_sub(1)
@@ -192,7 +265,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         AuthorityStoreError,
     > {
         let baseline = work.allocations.live_bytes();
-        let key = work.key(domain, parts)?;
+        let key = work.key(self.placement.key_scope(), domain, parts)?;
         let key_bytes = work
             .allocations
             .live_bytes()
@@ -272,11 +345,19 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             )
             .await?;
         let observation = observed.0.as_ref().ok_or_else(unavailable)?;
-        if !qualified(observation, authority_id, operation_id, gate_tail, work)? {
+        if !qualified(
+            &self.placement,
+            observation,
+            authority_id,
+            operation_id,
+            gate_tail,
+            work,
+        )? {
             return Err(unavailable());
         }
         let snapshot = self.fork_snapshot(authority_id, work).await?;
         let mut candidate = request(
+            &self.placement,
             authority_id,
             Some(snapshot),
             operation_id,
@@ -381,6 +462,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<ReservationOutcome, AuthorityStoreError> {
+        let actor = self.actor(authority, work)?;
+        let journal = actor.lease(work).await?;
+        let _revision = actor.begin(journal)?;
         work.check()?;
         let snapshot = self.fork_snapshot(authority, work).await?;
         if snapshot.head != expected {
@@ -415,7 +499,15 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             });
         }
         let gate_tail = tail.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-        let request = request(authority, Some(snapshot), operation, tail, Some(gate), work)?;
+        let request = request(
+            &self.placement,
+            authority,
+            Some(snapshot),
+            operation,
+            tail,
+            Some(gate),
+            work,
+        )?;
         let output = self.commit(request, None, work, None::<&mut ()>).await;
         work.release_request()?;
         let output = output.map_err(|error| error.into_error(std::convert::identity))?;
@@ -445,6 +537,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         reservation: PublicationReservation,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
+        let actor = self.actor(reservation.authority_id, work)?;
+        let journal = actor.lease(work).await?;
+        let _revision = actor.begin(journal)?;
         work.check()?;
         let observed = self
             .inspect_reservation(
@@ -458,59 +553,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             )
             .await?;
         if let Some(observation) = &observed.0 {
-            if !key_matches(
-                observation.idempotency_key.as_bytes(),
-                b"release-publication\0",
-                &[
-                    &reservation.authority_id.into_bytes(),
-                    &reservation.operation_id.into_bytes(),
-                    &reservation.gate_tail.to_le_bytes(),
-                ],
-            ) {
-                return Err(authority_corrupt(
-                    "publication release observation has another retry identity",
-                    work,
-                ));
-            }
-            let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
-                return Err(authority_corrupt(
-                    "publication release identity retained another Stream mutation family",
-                    work,
-                ));
-            };
-            let CommitOutcome::Committed(envelope) = outcome else {
-                return Err(AuthorityStoreError::RejectedStatic(
-                    "publication reservation is no longer active",
-                ));
-            };
-            let mut request = request(
-                reservation.authority_id,
-                None,
-                reservation.operation_id,
-                reservation.gate_tail,
-                None,
-                work,
-            )?;
-            let end = reservation
-                .gate_tail
-                .checked_add(1)
-                .ok_or(crate::WorkError::Overflow)?;
-            let request_digest = digest(&mut request, work)?;
-            let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
-                unreachable!("release is one append");
-            };
-            let valid = request_digest == observation.request_digest
-                && matches!(envelope.mutations.as_slice(), [acyclic_stream::CommittedMutation::Append(append)]
-                    if &append.path == gate && append.start == reservation.gate_tail && append.end == end && append.tail == end
-                    && matches!(append.records.as_slice(), [record] if record.sequence == reservation.gate_tail
-                        && record.commit_id == envelope.commit_id && record.value.as_ref() == PUBLICATION_GATE_FREE));
-            if !valid {
-                return Err(authority_corrupt(
-                    "publication release observation does not bind the original gate release",
-                    work,
-                ));
-            }
-            drop(request);
+            verify_release(&self.placement, reservation, observation, work)?;
             drop(observed);
             work.release_request()?;
             return work.finish(());
@@ -525,6 +568,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ));
         }
         let request = request(
+            &self.placement,
             reservation.authority_id,
             None,
             reservation.operation_id,

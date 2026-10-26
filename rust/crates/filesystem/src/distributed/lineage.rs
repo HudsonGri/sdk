@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) fn creation_request(
         &self,
         request: &mut CommitRequest,
@@ -9,11 +9,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         proposed: Option<&ProposedCommit>,
         source: Option<(StreamPath, u64, GenerationId)>,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(), AuthorityStoreError> {
-        let root = work.path(authority, "", None)?;
-        let records = work.path(authority, "/records", None)?;
-        let epochs = work.path(authority, "/epochs", None)?;
-        let gate = work.path(authority, "/publication-gate", None)?;
+    ) -> Result<super::actor::PreparedProjection, AuthorityStoreError> {
+        let mut head = Head::genesis(epoch);
+        let lineage_tail = source.as_ref().map_or(0, |(_, tail, _)| *tail);
+        let root = work.path(&self.placement, authority, "", None)?;
+        let records = work.path(&self.placement, authority, "/records", None)?;
+        let epochs = work.path(&self.placement, authority, "/epochs", None)?;
+        let gate = work.path(&self.placement, authority, "/publication-gate", None)?;
         request.conditions.extend(
             [&root, &records, &epochs, &gate]
                 .map(|path| CommitCondition::Absent { path: path.clone() }),
@@ -35,6 +37,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 payload: &commit.payload,
             };
             record.digest = work.durable_digest(authority, &record)?;
+            head = Head {
+                epoch: record.epoch,
+                sequence: record.sequence,
+                digest: record.digest,
+            };
             let encoded = StreamsDurableRecord::encode_borrowed_with(
                 &record,
                 STREAM_RECORD_LIMIT,
@@ -50,7 +57,24 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             work.append_record(&mut request.mutations, records, [genesis])?;
             None
         };
-        self.creation_changes(request, authority, proposed, generation, work)?;
+        let changes = self.creation_changes(request, authority, proposed, generation, work)?;
+        let lineage_tail = lineage_tail
+            .checked_add(u64::from(generation.is_some()))
+            .ok_or(crate::WorkError::Overflow)?;
+        let projection = super::actor::PreparedProjection::creation(
+            head,
+            proposed.map(|commit| commit.operation_id),
+            changes,
+            lineage_tail,
+            proposed.and_then(|commit| commit.publication.as_ref()),
+            super::actor::GenerationSeeds {
+                inherited: source
+                    .as_ref()
+                    .map(|(_, tail, generation)| (*generation, *tail)),
+                published: generation,
+            },
+            work,
+        )?;
         let epoch = work.stream_bytes(EPOCH_DOMAIN, &[&epoch.get().to_le_bytes()])?;
         work.append_record(&mut request.mutations, epochs, [epoch])?;
         work.append_record(
@@ -61,9 +85,22 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             )],
         )?;
         if source.is_none() && generation.is_none() {
-            return Ok(());
+            return Ok(projection);
         }
-        let lineage = work.path(authority, "/lineage", None)?;
+        self.creation_lineage(request, authority, source, generation, lineage_tail, work)?;
+        Ok(projection)
+    }
+
+    fn creation_lineage(
+        &self,
+        request: &mut CommitRequest,
+        authority: AuthorityId,
+        source: Option<(StreamPath, u64, GenerationId)>,
+        generation: Option<GenerationId>,
+        lineage_tail: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        let lineage = work.path(&self.placement, authority, "/lineage", None)?;
         request.conditions.push(CommitCondition::Absent {
             path: lineage.clone(),
         });
@@ -79,7 +116,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             .map(|(_, tail, generation)| (*tail, *generation));
         match source {
             Some((source, at_tail, generation)) => {
-                let locator = work.path(authority, "/generations/", Some(generation))?;
+                let locator = work.path(
+                    &self.placement,
+                    authority,
+                    "/generations/",
+                    Some(generation),
+                )?;
                 request.conditions.push(CommitCondition::Absent {
                     path: locator.clone(),
                 });
@@ -104,12 +146,16 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     "a fork cannot publish its source generation again",
                 ));
             }
-            let locator = work.path(authority, "/generations/", Some(generation))?;
+            let locator = work.path(
+                &self.placement,
+                authority,
+                "/generations/",
+                Some(generation),
+            )?;
             request.conditions.push(CommitCondition::Absent {
                 path: locator.clone(),
             });
-            let tail = inherited.map_or(0, |(tail, _)| tail).saturating_add(1);
-            let value = work.stream_bytes(LINEAGE_TAIL_DOMAIN, &[&tail.to_le_bytes()])?;
+            let value = work.stream_bytes(LINEAGE_TAIL_DOMAIN, &[&lineage_tail.to_le_bytes()])?;
             work.append_record(&mut request.mutations, locator, [value])?;
         }
         Ok(())
@@ -122,7 +168,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         proposed: Option<&ProposedCommit>,
         generation: Option<GenerationId>,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(), AuthorityStoreError> {
+    ) -> Result<Option<(crate::VolumeId, u64)>, AuthorityStoreError> {
         if let (Some(proposed), Some(generation)) = (proposed, generation) {
             let (path, records) = self.publication_changes(
                 authority,
@@ -132,14 +178,23 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Sequence::new(1),
                 work,
             )?;
+            let volume = proposed
+                .publication
+                .as_ref()
+                .ok_or(AuthorityStoreError::RejectedStatic(
+                    "creation has no namespace seal",
+                ))?
+                .volume();
+            let tail = crate::foundation::usize_to_u64(records.len());
             request
                 .conditions
                 .push(CommitCondition::Absent { path: path.clone() });
             request
                 .mutations
                 .push(CommitMutation::Append { path, records });
+            return Ok(Some((volume, tail)));
         }
-        Ok(())
+        Ok(None)
     }
 
     pub(super) async fn create<G: AuthorityGuard>(
@@ -149,6 +204,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
+        let actor = self.actor(authority, work)?;
+        let journal = actor.lease(work).await?;
+        let revision = actor.begin(journal)?;
         match self.fork_snapshot(authority, work).await {
             Ok(snapshot) => {
                 self.fork_gate(authority, work).await?;
@@ -161,9 +219,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut request = CommitRequest {
             conditions: work.vec(4)?,
             mutations: work.vec(4)?,
-            idempotency_key: work.key(b"create\0", &[&authority.into_bytes()])?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"create\0",
+                &[&authority.into_bytes()],
+            )?,
         };
-        self.creation_request(&mut request, authority, epoch, None, None, work)?;
+        let projection = self.creation_request(&mut request, authority, epoch, None, None, work)?;
         let outcome = self
             .commit(request, None, work, guard.as_deref_mut())
             .await?;
@@ -171,7 +233,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             work.release_request()?;
         }
         let value = match &outcome.0 {
-            CommitOutcome::Committed(_) => CreateAuthorityOutcome::Created(Head::genesis(epoch)),
+            CommitOutcome::Committed(envelope) => {
+                actor
+                    .complete(revision, projection.seal(envelope.commit_id), work)
+                    .await?;
+                CreateAuthorityOutcome::Created(Head::genesis(epoch))
+            }
             CommitOutcome::Conflict(_) => {
                 let snapshot = self.fork_snapshot(authority, work).await?;
                 self.fork_gate(authority, work).await?;
@@ -189,17 +256,21 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<bool, AuthorityError<G::Error>> {
+        let actor = self.actor(authority, work)?;
+        let journal = actor.lease(work).await?;
+        let revision = actor.begin(journal)?;
         work.check()?;
         let mut request = CommitRequest {
             // Initial namespace changes add one stream to the creation CAS.
             conditions: work.vec(9)?,
             mutations: work.vec(9)?,
             idempotency_key: work.key(
+                self.placement.key_scope(),
                 b"operation\0",
                 &[&authority.into_bytes(), &commit.operation_id.into_bytes()],
             )?,
         };
-        self.creation_request(
+        let projection = self.creation_request(
             &mut request,
             authority,
             Epoch::GENESIS,
@@ -213,6 +284,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
         match outcome {
             Ok(output) if matches!(output.0, CommitOutcome::Committed(_)) => {
+                if let CommitOutcome::Committed(envelope) = &output.0 {
+                    actor
+                        .complete(revision, projection.seal(envelope.commit_id), work)
+                        .await?;
+                }
                 seal(work, guard).await?;
                 return Ok(true);
             }
@@ -250,6 +326,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
+        let actor = self.actor(destination, work)?;
+        let journal = actor.lease(work).await?;
+        let revision = actor.begin(journal)?;
         work.check()?;
         let (lineage, tail) = self
             .resolve_source_fork_point(source.authority, source.generation, work)
@@ -265,9 +344,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut request = CommitRequest {
             conditions: work.vec(6)?,
             mutations: work.vec(6)?,
-            idempotency_key: work.key(b"fork-authority\0", &[&operation.into_bytes()])?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"fork-authority\0",
+                &[&operation.into_bytes()],
+            )?,
         };
-        self.creation_request(
+        let projection = self.creation_request(
             &mut request,
             destination,
             Epoch::GENESIS,
@@ -281,6 +364,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
         let value = match result {
             Ok(output) if matches!(output.0, CommitOutcome::Committed(_)) => {
+                if let CommitOutcome::Committed(envelope) = &output.0 {
+                    actor
+                        .complete(revision, projection.seal(envelope.commit_id), work)
+                        .await?;
+                }
                 CreateAuthorityOutcome::Created(Head::genesis(Epoch::GENESIS))
             }
             Ok(_)
@@ -309,24 +397,21 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
         mut guard: Option<&mut G>,
     ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
-        let lease = match permit {
-            PublicationPermit::Unrestricted => None,
-            PublicationPermit::Lease {
-                authority_id,
-                workspace_id,
-                lease_id,
-                expires_at_millis,
-            } if fork.lineage.is_some_and(|source| {
-                source.authority == AuthorityId::from_bytes(authority_id)
-                    && source.authority
-                        == volume_authority_id(
-                            crate::WorkspaceId::from_bytes(workspace_id).volume_id(),
-                        )
-            }) =>
-            {
-                Some((workspace_id, lease_id, expires_at_millis))
-            }
-            _ => return Ok(WorkspaceForkOutcome::CreationRejected),
+        if fork.destination == fork.retention {
+            return Ok(WorkspaceForkOutcome::CreationRejected);
+        }
+        // Fixed identity order prevents two-volume fork custody from cycling.
+        let mut identities = [fork.destination, fork.retention];
+        identities.sort_by_key(|identity| identity.into_bytes());
+        let first_actor = self.actor(identities[0], work)?;
+        let second_actor = self.actor(identities[1], work)?;
+        let first_journal = first_actor.lease(work).await?;
+        let second_journal = second_actor.lease(work).await?;
+        let first_revision = first_actor.begin(first_journal)?;
+        let second_revision = second_actor.begin(second_journal)?;
+        let lease = match fork_lease(&fork, permit) {
+            Ok(lease) => lease,
+            Err(outcome) => return Ok(outcome),
         };
         let lineage = match fork.lineage {
             Some(source) if source.lineage == crate::GenerationFork::PublishedPrefix => {
@@ -338,13 +423,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             _ => None,
         };
         let lease_path = lease
-            .map(|(workspace, lease, expires)| {
-                work.lease_path(
-                    crate::WorkspaceId::from_bytes(workspace),
-                    crate::OperationLeaseId::from_bytes(lease),
-                    expires,
-                )
-            })
+            .map(|lease| work.lease_path(lease.workspace, lease.operation, lease.expires))
             .transpose()?;
         if let Some(path) = &lease_path {
             let active = match self.tail(path.clone(), work).await {
@@ -361,36 +440,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 return Ok(outcome);
             }
         }
-        let mut request = CommitRequest {
-            conditions: work.vec(18)?,
-            mutations: work.vec(17)?,
-            idempotency_key: work.key(
-                b"workspace-fork-attempt\0",
-                &[
-                    &fork.destination.into_bytes(),
-                    &fork.creation.operation_id.into_bytes(),
-                    lease_path
-                        .as_ref()
-                        .map_or(&[][..], |path| path.as_str().as_bytes()),
-                ],
-            )?,
-        };
-        self.creation_request(
-            &mut request,
-            fork.retention,
-            Epoch::GENESIS,
-            Some(&fork.retained),
-            None,
-            work,
-        )?;
-        self.creation_request(
-            &mut request,
-            fork.destination,
-            Epoch::GENESIS,
-            Some(&fork.creation),
-            lineage,
-            work,
-        )?;
+        let (mut request, retention_projection, destination_projection) =
+            self.prepare_fork_records(&fork, lineage, lease_path.as_ref(), work)?;
         if let Some(path) = lease_path {
             request
                 .conditions
@@ -399,7 +450,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let outcome = self
             .publish_with_policy(
                 request,
-                lease.map(|(_, _, expires)| expires),
+                lease.map(|lease| lease.expires),
                 work,
                 guard.as_deref_mut(),
             )
@@ -409,6 +460,17 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
         match outcome {
             Ok(output) if matches!(output.0, CommitOutcome::Committed(_)) => {
+                if let CommitOutcome::Committed(envelope) = &output.0 {
+                    let retained = retention_projection.seal(envelope.commit_id);
+                    let created = destination_projection.seal(envelope.commit_id);
+                    let (first, second) = if identities[0] == fork.retention {
+                        (retained, created)
+                    } else {
+                        (created, retained)
+                    };
+                    first_actor.complete(first_revision, first, work).await?;
+                    second_actor.complete(second_revision, second, work).await?;
+                }
                 seal(work, guard).await?;
                 Ok(WorkspaceForkOutcome::Committed)
             }
@@ -424,6 +486,52 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn prepare_fork_records(
+        &self,
+        fork: &WorkspaceForkCommit,
+        lineage: Option<(StreamPath, u64, GenerationId)>,
+        lease_path: Option<&StreamPath>,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<
+        (
+            CommitRequest,
+            super::actor::PreparedProjection,
+            super::actor::PreparedProjection,
+        ),
+        AuthorityStoreError,
+    > {
+        let mut request = CommitRequest {
+            conditions: work.vec(18)?,
+            mutations: work.vec(17)?,
+            idempotency_key: work.key(
+                self.placement.key_scope(),
+                b"workspace-fork-attempt\0",
+                &[
+                    &fork.destination.into_bytes(),
+                    &fork.creation.operation_id.into_bytes(),
+                    lease_path.map_or(&[][..], |path| path.as_str().as_bytes()),
+                ],
+            )?,
+        };
+        let retention_projection = self.creation_request(
+            &mut request,
+            fork.retention,
+            Epoch::GENESIS,
+            Some(&fork.retained),
+            None,
+            work,
+        )?;
+        let destination_projection = self.creation_request(
+            &mut request,
+            fork.destination,
+            Epoch::GENESIS,
+            Some(&fork.creation),
+            lineage,
+            work,
+        )?;
+        Ok((request, retention_projection, destination_projection))
     }
 
     async fn recover_fork_records(
@@ -443,14 +551,14 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             {
                 Ok(value) => value,
                 Err(error) if authority_missing(&error) => None,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             };
         }
         let retention_occupied = if retained.is_none() {
             match self.tail_of(fork.retention, "/records", work).await {
                 Ok(tail) => tail > 1,
                 Err(error) if authority_missing(&error) => false,
-                Err(error) => return Err(error.into()),
+                Err(error) => return Err(error),
             }
         } else {
             false
@@ -471,5 +579,39 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             _ if retention_occupied => Ok(WorkspaceForkOutcome::RetentionConflict),
             _ => Ok(WorkspaceForkOutcome::CreationRejected),
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ForkLease {
+    workspace: crate::WorkspaceId,
+    operation: crate::OperationLeaseId,
+    expires: u64,
+}
+
+fn fork_lease(
+    fork: &WorkspaceForkCommit,
+    permit: PublicationPermit,
+) -> Result<Option<ForkLease>, WorkspaceForkOutcome> {
+    match permit {
+        PublicationPermit::Unrestricted => Ok(None),
+        PublicationPermit::Lease {
+            authority_id,
+            workspace_id,
+            lease_id,
+            expires_at_millis,
+        } if fork.lineage.is_some_and(|source| {
+            source.authority == AuthorityId::from_bytes(authority_id)
+                && source.authority
+                    == volume_authority_id(crate::WorkspaceId::from_bytes(workspace_id).volume_id())
+        }) =>
+        {
+            Ok(Some(ForkLease {
+                workspace: crate::WorkspaceId::from_bytes(workspace_id),
+                operation: crate::OperationLeaseId::from_bytes(lease_id),
+                expires: expires_at_millis,
+            }))
+        }
+        _ => Err(WorkspaceForkOutcome::CreationRejected),
     }
 }
