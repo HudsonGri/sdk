@@ -252,6 +252,9 @@ impl CheckoutTools {
                 PublicationPermit::Unrestricted,
             )?
             .await?;
+            // The baseline this capture retained commits with the turn.
+            self.record_diff_base(context, view.workspace().id())
+                .await?;
             let input = shell.ok_or_else(|| Error::Invalid("shell input is absent".into()))?;
             let files = output::Output::open(context, request).await?;
             let mounts = Arc::clone(&state.mounts);

@@ -434,6 +434,13 @@ impl ToolContext {
         self.task.as_ref()
     }
 
+    /// The effects of the agent turn this call runs in, which commit with
+    /// the turn's settlement; `None` outside an agent turn.
+    #[must_use]
+    pub fn turn_effects(&self) -> Option<&Arc<dyn crate::agent::TurnEffects>> {
+        self.task.turn_effects.as_ref()
+    }
+
     /// Borrows this tool's attenuated authority without replacing its task.
     #[must_use]
     pub fn effective_scope(&self) -> &RuntimeScope {

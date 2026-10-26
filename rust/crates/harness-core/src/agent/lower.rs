@@ -137,7 +137,8 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     .encode()?,
                 );
             }
-            Out::Spawn { .. } => {}
+            // Spawns lower above; a baseline is folded into the state.
+            Out::Spawn { .. } | Out::DiffBase(_) => {}
         }
     }
     if conversation_count > 0 {

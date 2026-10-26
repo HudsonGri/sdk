@@ -9,7 +9,7 @@
 mod commit;
 mod driver;
 mod effects;
-pub use effects::{TurnEffect, TurnEffects, outs as effect_outs};
+pub use effects::{DiffBase, TurnEffect, TurnEffects, outs as effect_outs};
 mod goal;
 pub use goal::{GOAL_INTENT, TurnGoal};
 mod handler;

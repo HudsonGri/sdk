@@ -174,6 +174,11 @@ impl AgentTool {
             }
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str()}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
+            TurnEffect::DiffBase(_) => {
+                return Err(Error::Conflict(
+                    "agent tool call recorded a diff baseline".into(),
+                ));
+            }
         };
         Ok(ToolResult { value })
     }

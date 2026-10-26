@@ -105,6 +105,7 @@ impl AgentHarness {
                         owned_interactions: None,
                         owned_mailbox: None,
                         output_content: None,
+                        turn_effects: None,
                         model_steps: Arc::new((AtomicUsize::new(0), None)),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_purpose: None,
@@ -159,12 +160,14 @@ impl AgentHarness {
     /// A live (non-durable) context for one agent turn. Its scope is this
     /// runtime's (tools, limits, run limits) plus the agent's volume `grants`;
     /// the agent's private volume reads and writes through `private`, and
-    /// other volumes keep this runtime's own content bindings.
+    /// other volumes keep this runtime's own content bindings. Its tools
+    /// record effects that commit with the turn through `turn_effects`.
     pub fn agent_context(
         self: &Arc<Self>,
         turn: OperationId,
         grants: &Capabilities,
         private: ContentBindings,
+        turn_effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     ) -> Result<TaskContext> {
         if private.writer.is_none() {
             return Err(Error::Invalid("agent private content has no writer".into()));
@@ -184,6 +187,7 @@ impl AgentHarness {
             owned_interactions: None,
             owned_mailbox: None,
             output_content: Some(private),
+            turn_effects,
             model_steps: Arc::new((AtomicUsize::new(0), None)),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_purpose: None,

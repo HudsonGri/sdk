@@ -33,7 +33,7 @@ impl LocalHarness {
     /// Waiting for its baseline does not capture or mutate the checkout.
     #[cfg(any(test, feature = "native-execution"))]
     pub async fn project_diff(
-        &self,
+        self: &Arc<Self>,
         budget: acyclic_fs::WorkBudget,
         maximum: u32,
     ) -> Result<(
@@ -47,10 +47,17 @@ impl LocalHarness {
             .ok_or_else(|| Error::Unsupported("project diff requires a checkout".into()))?;
         let (selected, _) = workspace.selected_view().await?;
         let selected = selected.as_ref().unwrap_or_else(|| workspace.view());
+        // A reopened harness reads the baseline back from the root agent's state.
+        if self.root_authority.is_some() {
+            let (agents, root) = self.agents().await?;
+            if let Some(base) = agents.state(root).await.map_err(storage)?.diff_base {
+                super::checkout_tools::diff::restore(&workspace.diff_bases, base);
+            }
+        }
         let base =
             super::checkout_tools::diff::baseline(&workspace.diff_bases, selected.workspace().id())
                 .await?;
-        let super::checkout_tools::diff::Baseline::Captured(base) = base else {
+        let Some(base) = base.generation else {
             return Err(Error::Unsupported(
                 "project diff before-images unavailable: checkout contains an unreadable source file".into(),
             ));

@@ -55,6 +55,7 @@ pub(super) fn test_context(harness: Arc<AgentHarness>) -> Result<TaskContext> {
         policy_overrides: Vec::new(),
         owned_interactions: None,
         owned_mailbox: None,
+        turn_effects: None,
         output_content: None,
         model_steps: Arc::new((AtomicUsize::new(0), None)),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

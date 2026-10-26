@@ -61,6 +61,8 @@ pub struct TaskContext {
     #[doc(hidden)]
     pub owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
     pub(super) output_content: Option<ContentBindings>,
+    /// Effects of the agent turn this context runs, committed when it settles.
+    pub(super) turn_effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_purpose: Option<IssuedContextPurpose>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -157,6 +159,7 @@ impl TaskContext {
             owned_interactions: self.owned_interactions.clone(),
             owned_mailbox: self.owned_mailbox.clone(),
             output_content: self.output_content.clone(),
+            turn_effects: self.turn_effects.clone(),
             model_steps: Arc::clone(&self.model_steps),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_purpose: None,

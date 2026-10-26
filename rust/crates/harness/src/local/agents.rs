@@ -99,7 +99,19 @@ impl TurnExecutors for Executors {
                 turn,
                 &authority.grants,
                 authority.content.clone(),
+                authority.effects.clone(),
             )?;
+            // The checkout's diff baseline lives in the agent state that
+            // committed it.
+            #[cfg(any(test, feature = "native-execution"))]
+            if let Some(workspace) = local.workspace() {
+                super::checkout_tools::diff::open_turn(
+                    &workspace.diff_bases,
+                    agent,
+                    authority.effects.as_deref(),
+                )
+                .await?;
+            }
             let reader = authority.content.reader.clone();
             let (model, provider) = local.agent()?;
             let provider = provider

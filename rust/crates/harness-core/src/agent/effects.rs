@@ -40,6 +40,20 @@ pub enum TurnEffect {
         /// Archive intent.
         id: IntentId,
     },
+    /// The diff baseline a command captured; it settles into the agent's state.
+    DiffBase(DiffBase),
+}
+
+/// The diff baseline of one workspace: its head generation when its first
+/// command began, or `None` when the checkout held a source file the capture
+/// could not read. The first one recorded stays in the agent's state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffBase {
+    /// Workspace the baseline belongs to.
+    pub workspace: acyclic_fs::WorkspaceId,
+    /// Head generation at the workspace's first command.
+    pub generation: Option<acyclic_fs::GenerationId>,
 }
 
 impl TurnEffect {
@@ -89,6 +103,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                 }),
             }),
             TurnEffect::Archive { target, id } => Some(Out::Archive { target, id }),
+            TurnEffect::DiffBase(base) => Some(Out::DiffBase(base)),
         })
         .collect()
 }

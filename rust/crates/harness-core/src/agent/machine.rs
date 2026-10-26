@@ -6,8 +6,8 @@
 //! commit.
 
 use super::{
-    AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase, Sender,
-    StatusRecord, VolumeBinding,
+    AgentOutcome, AgentPath, ChildDone, DiffBase, Error, ForkAdopted, InboxRecord, IntentId, Phase,
+    Sender, StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -108,6 +108,10 @@ pub struct AgentState {
     pub reported: bool,
     /// Turn driver checkpoint while a turn is in progress.
     pub turn: Option<Vec<u8>>,
+    /// Diff baseline of the workspace this agent's commands run in, committed
+    /// with the turn that captured it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff_base: Option<DiffBase>,
 }
 
 impl AgentState {
@@ -131,6 +135,7 @@ impl AgentState {
             closed: false,
             reported: false,
             turn: None,
+            diff_base: None,
         }
     }
 
@@ -198,6 +203,8 @@ pub enum Out {
         /// Archive intent.
         id: IntentId,
     },
+    /// Keep this diff baseline in the agent's state unless it holds one.
+    DiffBase(DiffBase),
     /// Spawn a child.
     Spawn {
         /// Spawning intent; names the child.
@@ -332,6 +339,14 @@ pub async fn step<T: TurnDriver + ?Sized>(
     } else {
         run(driver, &mut state, cursor, alarm_wake, &mut outs).await?;
     }
+    // A recorded baseline joins the checkpoint this commit writes.
+    outs.retain(|out| match out {
+        Out::DiffBase(base) => {
+            state.diff_base.get_or_insert(*base);
+            false
+        }
+        _ => true,
+    });
     track_children(&mut state, &outs)?;
     let alarm = match kernel::alarm(
         control(&state),

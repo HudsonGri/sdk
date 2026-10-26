@@ -334,7 +334,9 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
     assert_eq!(provider.request_count(), 4);
     assert!(
         matches!(
-            harness.project_diff(acyclic_fs::WorkBudget::UNBOUNDED, 128).await,
+            std::sync::Arc::new(harness)
+                .project_diff(acyclic_fs::WorkBudget::UNBOUNDED, 128)
+                .await,
             Err(Error::Unsupported(message)) if message.contains("unreadable source file")
         ),
         "an inaccessible before-image must never appear as an empty diff"
