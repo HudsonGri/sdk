@@ -100,12 +100,20 @@ async fn roundtrip(prompt: String) -> Result<()> {
     // Retain the exact native owner: successful reopening must come from close
     // detaching its namespace, rather than Arc destruction happening to win.
     let retained_mounts = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
+    crate::local::workspace::volumes::project_unscoped(&retained_mounts).await?;
     harness.close().await?;
 
     let harness = LocalHarness::open(
         crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
             .state_directory(state.path())
             .without_default_tools(),
+    )
+    .await?;
+    // Reopening only the durable command files does not prove the old native
+    // destination is reusable. Exercise the same projection through this OS's
+    // real mount adapter while the previous owner is still retained.
+    crate::local::workspace::volumes::project_unscoped(
+        &harness.workspace.as_ref().unwrap().mounts,
     )
     .await?;
     let mut owner = CommandSession::open(
