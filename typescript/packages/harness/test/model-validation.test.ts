@@ -346,6 +346,7 @@ const constructedWasmClasses = [
   ["WasmHypothesisClient", "wasmhypothesisclient_new"],
   ["WasmAgentClient", "wasmagentclient_new"],
   ["WasmWireSession", "wasmwiresession_new"],
+  ["WasmPageWindow", "wasmpagewindow_new"],
   ["WasmReducer", "wasmreducer_new"],
   ["WasmProviderRegistry", "wasmproviderregistry_new"],
 ] as const;
