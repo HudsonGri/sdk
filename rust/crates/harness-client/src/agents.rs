@@ -345,7 +345,9 @@ impl AgentClient {
                     }
                     Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause.into())),
                     Poll::Ready(Ok(None)) => {
-                        return Poll::Ready(Err(AgentClientError::ResourceClosed(resource.clone())));
+                        return Poll::Ready(Err(AgentClientError::ResourceClosed(
+                            resource.clone(),
+                        )));
                     }
                     Poll::Ready(Ok(Some(frame))) => {
                         if matches!(frame.body, Some(wire::session_frame::Body::Closed(_))) {

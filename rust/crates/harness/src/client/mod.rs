@@ -64,10 +64,6 @@ mod plan_panel;
 #[cfg(feature = "tui")]
 pub use plan_panel::PlanPanel;
 mod interests;
-pub use acyclic_harness_client::{
-    DemandError, DemandPolicy, PageDirection, PageRequest, PageWindow, PageWindowError,
-    PageWindowPolicy, ViewDemand, WindowPage,
-};
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
@@ -75,6 +71,10 @@ pub use acyclic_harness_client::{
 pub use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentSelection, StreamView, StreamViewPolicy,
     WireSession, WireSessionError,
+};
+pub use acyclic_harness_client::{
+    DemandError, DemandPolicy, PageDirection, PageRequest, PageWindow, PageWindowError,
+    PageWindowPolicy, ViewDemand, WindowPage,
 };
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
