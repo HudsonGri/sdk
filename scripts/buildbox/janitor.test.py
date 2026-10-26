@@ -48,6 +48,22 @@ class Janitor(unittest.TestCase):
             janitor.clean_jobs()
         self.assertEqual(sorted(p.name for p in (self.root / 'jobs').iterdir()), ['job-live', 'job-recent'])
 
+    def test_leaked_keys_reclaimed_only_after_outliving_any_job(self):
+        state = self.root / 'state'
+        state.mkdir()
+        invalidated = []
+        fake = lambda *args: invalidated.append(args[1]) if args[0] == 'invalidate' else ''
+        with mock.patch.object(janitor, 'STATE', state), mock.patch.object(janitor, 'keyctl', fake), \
+                mock.patch.object(janitor, 'leaked_keys', return_value={'11', '22'}):
+            janitor.reclaim_keys()  # First sighting: nothing is old enough.
+            self.assertEqual(invalidated, [])
+            seen = janitor.json.loads((state / 'keys.json').read_text())
+            seen['11'] -= janitor.KEY_AGE + 1
+            (state / 'keys.json').write_text(janitor.json.dumps(seen))
+            janitor.reclaim_keys()
+        self.assertEqual(invalidated, ['11'])
+        self.assertEqual(sorted(janitor.json.loads((state / 'keys.json').read_text())), ['22'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -7,6 +7,9 @@ Oldest-first eviction to fixed budgets, never anything a live process uses:
                              while over JOBS_BUDGET; never one a live process names
   wt-sdk   /mnt/bb/wt-sdk    prune-wt-sdk.py (lease-aware) with WT_AGE / WT_COUNT,
                              plus orphaned .prep markers
+  keys     @u, _persistent   test-leaked user keys (KEY_PREFIXES) invalidated once
+                             first seen KEY_AGE ago, beyond any job's 10-minute cap;
+                             they live in the shared per-uid quota (200 keys)
 One run at a time (flock), at most once per INTERVAL (stamp). Never touches
 /mnt/bb/cx, docker or anything outside the three roots. Log: /mnt/bb/log/janitor.log
 """
@@ -15,6 +18,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,6 +28,7 @@ SCCACHE, SCCACHE_BUDGET = Path('/mnt/bb/sccache'), 50 * GiB
 JOBS, JOBS_BUDGET, JOB_AGE, JOB_MIN_AGE = Path('/mnt/bb/jobs'), 40 * GiB, 6 * 3600, 3600
 WT_AGE, WT_COUNT = 6 * 3600, 32  # ~1.7 GiB per copy: ~55 GiB
 INTERVAL = 600
+KEY_PREFIXES, KEY_AGE = ('acyclic.authority.signing-seed.v1:', 'keyring-rs:'), 20 * 60
 STATE = Path('/mnt/bb/locks/janitor')
 LOG = Path('/mnt/bb/log/janitor.log')
 
@@ -167,6 +172,40 @@ def clean_wt_sdk():
         errors=len(result['errors']))
 
 
+def keyctl(*args):
+    return subprocess.run(['keyctl', *args], capture_output=True, text=True, timeout=30).stdout.strip()
+
+
+def leaked_keys():
+    """Serials of test-prefixed user keys reachable from @u and the persistent keyring."""
+    rings = ['@u', keyctl('get_persistent', '@s')]  # The service links @u (KeyringMode=shared).
+    found = set()
+    for ring in filter(None, rings):
+        for serial in keyctl('rlist', ring).split():
+            kind, _, _, _, description = (keyctl('rdescribe', serial).split(';', 4) + [''] * 5)[:5]
+            if kind == 'user' and description.startswith(KEY_PREFIXES):
+                found.add(serial)
+    return found
+
+
+def reclaim_keys():
+    seen_file, now = STATE / 'keys.json', time.time()
+    try:
+        seen = json.loads(seen_file.read_text())
+    except (OSError, ValueError):
+        seen = {}
+    current = leaked_keys()
+    seen = {serial: seen.get(serial, now) for serial in current}
+    reclaimed = 0
+    for serial, first in list(seen.items()):
+        if now - first > KEY_AGE:
+            keyctl('invalidate', serial)  # Invalidated keys leave the quota at the next key GC.
+            del seen[serial]
+            reclaimed += 1
+    seen_file.write_text(json.dumps(seen))
+    log('keys', tracked=len(seen), reclaimed=reclaimed)
+
+
 def main(force=False):
     STATE.mkdir(parents=True, exist_ok=True)
     with (STATE / 'run.lock').open('a') as lock:
@@ -180,7 +219,7 @@ def main(force=False):
         stamp.touch()
         free = shutil.disk_usage('/mnt/bb')
         log('start', free_gib=round(free.free / GiB, 1))
-        for step in (evict_sccache, clean_jobs, clean_wt_sdk):
+        for step in (reclaim_keys, evict_sccache, clean_jobs, clean_wt_sdk):
             try:
                 step()
             except Exception as error:  # One root's failure never blocks the others.
