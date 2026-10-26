@@ -1,10 +1,83 @@
 //! Typed agent controls over the same canonical Actors session as observation.
-use crate::{AgentControlFailure, AgentReply, CommandError, PreparedCommand, decode_agent_reply};
+use crate::{
+    AgentCommand, AgentControlFailure, AgentReply, CommandError, PreparedCommand,
+    decode_agent_reply, encode_agent_reply,
+};
 use acyclic_actors::{domain, wire};
 use acyclic_stream::{StreamError, session::Client};
 use bytes::Bytes;
 use prost::Message as _;
 use std::borrow::Cow;
+
+/// Pure protocol admission used by both the client and the owning host. The
+/// authenticated session supplies authority separately; no field here grants it.
+fn decode_invocation(encoded: &[u8]) -> Result<wire::InvokeActorRequest, CommandError> {
+    if encoded.len() > acyclic_stream::MAX_COMMAND_BYTES {
+        return Err(CommandError::Capacity);
+    }
+    let request = wire::InvokeActorRequest::decode(encoded).map_err(|_| CommandError::Invalid)?;
+    if request.encode_to_vec().as_slice() != encoded {
+        return Err(CommandError::Invalid);
+    }
+    let request =
+        domain::InvokeActorRequest::try_from(request).map_err(|_| CommandError::Invalid)?;
+    Ok(wire::InvokeActorRequest::from(request))
+}
+
+/// The owning host's pure decoder for the same public invocation sent by the
+/// client. Construct this before provider I/O, then pass the actual session's
+/// CallAuthorization through the host's existing admission and execution path.
+/// This value asserts no identity, performs no dispatch and owns no retry loop.
+pub struct AgentCall {
+    invocation: wire::InvokeActorRequest,
+    command: AgentCommand,
+}
+
+impl AgentCall {
+    /// Bound and validate the complete canonical Actors envelope and its agent
+    /// command before any host work. Unknown fields cannot disappear in transit.
+    pub fn decode(encoded: &[u8]) -> Result<Self, CommandError> {
+        let invocation = decode_invocation(encoded)?;
+        let command = PreparedCommand::decode(&invocation.body)?;
+        Ok(Self {
+            invocation,
+            command,
+        })
+    }
+
+    /// Canonical routing and original command bytes, never authenticated scope.
+    pub fn invocation(&self) -> &wire::InvokeActorRequest {
+        &self.invocation
+    }
+
+    /// The admitted public command, shared by every backend's dispatcher.
+    pub fn command(&self) -> &AgentCommand {
+        &self.command
+    }
+
+    /// Encode a successful exchange, including typed refusals and Unknown, in
+    /// the canonical Actors response. Borrowing leaves the exact uncertain
+    /// request with its host owner even if validation or output capacity fails.
+    pub fn reply(
+        &self,
+        result: &Result<AgentReply, acyclic_harness_core::agent::Error>,
+    ) -> Result<Bytes, CommandError> {
+        let response = wire::InvokeActorResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: encode_agent_reply(result, &self.command)?,
+        };
+        if response.encoded_len() > acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
+        {
+            return Err(CommandError::Capacity);
+        }
+        let response =
+            domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
+        Ok(wire::InvokeActorResponse::from(response)
+            .encode_to_vec()
+            .into())
+    }
+}
 
 /// A host-published canonical Actors address and dispatch metadata. It contains
 /// no command body or reusable per-invocation ordering sequence. Authentication
@@ -15,18 +88,10 @@ impl AgentBinding {
     /// Admit bounded canonical host metadata before retaining it. The host uses
     /// the same binding for local, Actors and managed deployments.
     pub fn new(encoded: &[u8]) -> Result<Self, CommandError> {
-        if encoded.len() > acyclic_stream::MAX_COMMAND_BYTES {
-            return Err(CommandError::Capacity);
-        }
-        let request =
-            wire::InvokeActorRequest::decode(encoded).map_err(|_| CommandError::Invalid)?;
-        if !request.body.is_empty()
-            || request.invocation_order.is_some()
-            || request.encode_to_vec().as_slice() != encoded
-        {
+        let request = decode_invocation(encoded)?;
+        if !request.body.is_empty() || request.invocation_order.is_some() {
             return Err(CommandError::Invalid);
         }
-        domain::InvokeActorRequest::try_from(request.clone()).map_err(|_| CommandError::Invalid)?;
         Ok(Self(request))
     }
 
@@ -145,6 +210,47 @@ mod tests {
     }
 
     #[test]
+    fn host_and_client_share_exact_invocation_and_reply_schema()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let original = b"{ \"kind\" : \"root\" }";
+        let encoded = invocation(original.to_vec()).encode_to_vec();
+        let call = AgentCall::decode(&encoded)?;
+        assert_eq!(call.invocation().body.as_slice(), original);
+        assert!(matches!(call.command(), AgentCommand::Root));
+        let agent = crate::AgentPath::try_from(
+            "harness/agents/00000000000000000000000000000001".to_owned(),
+        )?;
+        let result = Ok(AgentReply::Root {
+            agent: agent.clone(),
+        });
+        let encoded = call.reply(&result)?;
+        let response = wire::InvokeActorResponse::decode(encoded)?;
+        assert_eq!(response.status, 200);
+        assert!(matches!(
+            decode_agent_reply(&response.body, &AgentCommand::Root)?,
+            Ok(AgentReply::Root { agent: actual }) if actual == agent
+        ));
+        assert!(matches!(&result, Ok(AgentReply::Root { agent: actual }) if actual == &agent));
+        Ok(())
+    }
+
+    #[test]
+    fn host_call_refuses_hidden_envelope_fields_and_asserted_identity() {
+        let mut encoded = invocation(b"{\"kind\":\"root\"}".to_vec()).encode_to_vec();
+        encoded.extend_from_slice(&[0xf8, 0x07, 0x01]);
+        assert!(matches!(
+            AgentCall::decode(&encoded),
+            Err(CommandError::Invalid)
+        ));
+        let encoded =
+            invocation(b"{\"kind\":\"root\",\"principal\":\"admin\"}".to_vec()).encode_to_vec();
+        assert!(matches!(
+            AgentCall::decode(&encoded),
+            Err(CommandError::Invalid)
+        ));
+    }
+
+    #[test]
     fn invocation_retains_exact_command_and_rejects_another_body()
     -> Result<(), Box<dyn std::error::Error>> {
         let command = PreparedCommand::new(&AgentCommand::Root)?;
@@ -232,17 +338,10 @@ impl<'a> PreparedAgentInvocation<'a> {
     /// Validate the canonical Actors envelope before opening a session channel.
     /// Its body must be the exact admitted command bytes, including the intent.
     pub fn new(command: &'a PreparedCommand, encoded: Bytes) -> Result<Self, CommandError> {
-        if encoded.len() > acyclic_stream::MAX_COMMAND_BYTES {
-            return Err(CommandError::Capacity);
-        }
-        let invocation = wire::InvokeActorRequest::decode(encoded.as_ref())
-            .map_err(|_| CommandError::Invalid)?;
-        if invocation.encode_to_vec().as_slice() != encoded.as_ref()
-            || &invocation.body[..] != command.as_bytes()
-        {
+        let invocation = decode_invocation(encoded.as_ref())?;
+        if invocation.body.as_slice() != command.as_bytes() {
             return Err(CommandError::Invalid);
         }
-        domain::InvokeActorRequest::try_from(invocation).map_err(|_| CommandError::Invalid)?;
         Ok(Self {
             command: Cow::Borrowed(command),
             invocation: encoded,

@@ -1,6 +1,6 @@
 //! Real endpoint runner; the host provisions the fixture through AgentHost.
 use acyclic_conformance::client::{Fixture, verify};
-use acyclic_harness::agent::{AgentId, AgentPath};
+use acyclic_harness_client::{AgentId, AgentPath};
 use acyclic_stream::grpc::Client;
 use std::io::Read as _;
 

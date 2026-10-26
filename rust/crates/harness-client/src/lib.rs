@@ -9,7 +9,9 @@ mod control;
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub use control::{AgentBinding, AgentControls, AgentExchangeError, PreparedAgentInvocation};
+pub use control::{
+    AgentBinding, AgentCall, AgentControls, AgentExchangeError, PreparedAgentInvocation,
+};
 
 #[cfg(any(feature = "grpc", feature = "wasm"))]
 mod command;
@@ -36,7 +38,13 @@ mod agents;
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use acyclic_harness_core::agent::{
-    AgentPath, ConversationEntry, Delivered, Error as AgentError, IntentId, Phase, StatusRecord,
+    AgentId, AgentPath, AgentRecord, ConversationEntry, Delivered, Error as AgentError, IntentId,
+    Phase, StatusRecord,
+};
+#[cfg(any(feature = "grpc", feature = "wasm"))]
+pub use acyclic_harness_core::{
+    interaction::{ApprovalBinding, Interaction},
+    model::ModelContent,
 };
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),

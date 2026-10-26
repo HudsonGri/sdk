@@ -7,9 +7,9 @@
 pub mod controls;
 pub mod tool_output;
 
-use acyclic_harness::agent::{AgentPath, AgentRecord as _, ConversationEntry, StatusRecord};
 use acyclic_harness_client::{
-    AgentClient, AgentClientError, AgentEvent, AgentSelection, DemandError, WireSessionError,
+    AgentClient, AgentClientError, AgentEvent, AgentPath, AgentRecord as _, AgentSelection,
+    ConversationEntry, DemandError, StatusRecord, WireSessionError,
 };
 use acyclic_stream::{StreamProvider, session::Client};
 use serde::{Deserialize, Serialize};
