@@ -402,8 +402,6 @@ impl Opening {
             root: owner.agent,
             root_authority: Some(issuer.clone()),
             agents: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "grpc")]
-            session: tokio::sync::OnceCell::new(),
             task_files,
             project: owner.project.clone(),
             scratch,

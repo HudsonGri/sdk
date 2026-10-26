@@ -27,13 +27,9 @@ impl LocalHarness {
         let failure = |error| crate::agent::Error::Turn(Box::new(error));
         self.agents().await.map_err(failure)?;
         let hosted = self.agents.get().ok_or(crate::agent::Error::NoSuchAgent)?;
-        if agent != &hosted.root
-            && !agent
-                .as_str()
-                .starts_with(&format!("{}/children/", hosted.root.as_str()))
-        {
-            return Err(crate::agent::Error::NoSuchAgent);
-        }
+        // Every agent on this harness's stream is one of its own roots
+        // (`agents`, `conversation`) or their descendants; an unknown path
+        // has no actor state and is refused here.
         let state = hosted.agents.state(agent).await?;
         let from = match responder {
             ApprovalResponder::Human(principal) => Sender::User {

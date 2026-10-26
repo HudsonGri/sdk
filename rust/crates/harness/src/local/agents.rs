@@ -122,40 +122,40 @@ impl LocalHarness {
         Ok((&hosted.agents, &hosted.root))
     }
 
-    /// Send `prompt` to the root agent as message `id`: one staged body file
-    /// on its private volume, then one inbox commit. Retrying the same `id`
-    /// with the same prompt replays exactly.
+    /// Root agent `id` of this harness: one conversation over the harness's
+    /// volumes under the configured approval policy. The first call creates it
+    /// in one commit; later calls (also after reopen) replay that commit and
+    /// host the existing agent.
+    pub async fn conversation(self: &Arc<Self>, id: &IntentId) -> Result<AgentPath> {
+        let (agents, root) = self.agents().await?;
+        let agent = crate::agent::AgentId::derive(&root.id(), id.as_str());
+        let policy = crate::contract::canonical_json_bytes(&self.approval_policy)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let policy = self
+            .stage(&agent, "policy", &policy, "application/json")
+            .await?;
+        let mut adopted = self.adoption(agent);
+        adopted.policy = Some(policy);
+        agents.create(id, adopted).await.map_err(storage)
+    }
+
+    /// Send `prompt` to `agent` as message `id`: one staged body file on its
+    /// private volume, then one inbox commit. Retrying the same `id` with the
+    /// same prompt replays exactly.
     /// An uncertain inbox commit returns `agent::Error::Unknown` with its exact
     /// request; retain it and settle it through `agent::submit`.
     pub async fn prompt(
         self: &Arc<Self>,
+        agent: &AgentPath,
         id: &IntentId,
         prompt: &str,
     ) -> std::result::Result<Delivered, crate::agent::Error> {
         let preparation = |error| crate::agent::Error::Turn(Box::new(error));
-        let (agents, root) = self.agents().await.map_err(preparation)?;
-        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.prompt.v1");
-        hasher.update(root.as_str().as_bytes());
-        hasher.update(&[0]);
-        hasher.update(id.as_str().as_bytes());
-        let mut bytes = [0; 16];
-        hasher.finalize_xof().fill(&mut bytes);
-        let operation = OperationId::from_bytes(bytes);
+        let (agents, _) = self.agents().await.map_err(preparation)?;
         let body = self
-            .input_publisher_with_limit(self.limits.file_bytes)
-            .map_err(preparation)?
-            .stage_once(
-                operation,
-                &format!("inputs/{operation}.txt"),
-                prompt.as_bytes(),
-                "text/plain",
-                "prompt",
-                ContentAccess::default(),
-            )
-            .map_err(preparation)?
+            .stage(&agent.id(), id.as_str(), prompt.as_bytes(), "text/plain")
             .await
-            .map_err(preparation)?
-            .0;
+            .map_err(preparation)?;
         let from = Sender::User {
             principal: "local".into(),
         };
@@ -164,7 +164,57 @@ impl LocalHarness {
             id: id.clone(),
             body: Box::new(body),
         });
-        agents.send(root, &from, &message).await
+        agents.send(agent, &from, &message).await
+    }
+
+    /// Stage `bytes` once for `agent` under `name` on the private volume.
+    async fn stage(
+        &self,
+        agent: &crate::agent::AgentId,
+        name: &str,
+        bytes: &[u8],
+        media: &str,
+    ) -> Result<crate::conversation::FileRef> {
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.prompt.v1");
+        hasher.update(agent.as_str().as_bytes());
+        hasher.update(&[0]);
+        hasher.update(name.as_bytes());
+        let mut operation = [0; 16];
+        hasher.finalize_xof().fill(&mut operation);
+        let operation = OperationId::from_bytes(operation);
+        Ok(self
+            .input_publisher_with_limit(self.limits.file_bytes)?
+            .stage_once(
+                operation,
+                &format!("inputs/{operation}"),
+                bytes,
+                media,
+                name,
+                ContentAccess::default(),
+            )?
+            .await?
+            .0)
+    }
+
+    /// A root agent over this harness's private, project and scratch volumes.
+    fn adoption(&self, agent: crate::agent::AgentId) -> ForkAdopted {
+        let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
+            name: name.to_owned(),
+            volume: volume.clone(),
+        };
+        ForkAdopted {
+            agent,
+            parent: None,
+            forked_at: 0,
+            conversation_tail: 0,
+            volumes: vec![
+                bind(PRIVATE_VOLUME, &self.journal),
+                bind("project", &self.project),
+                bind("scratch", &self.scratch),
+            ],
+            brief: None,
+            policy: None,
+        }
     }
 
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
@@ -201,26 +251,10 @@ impl LocalHarness {
             )
             .map_err(storage)?,
         );
-        let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
-            name: name.to_owned(),
-            volume: volume.clone(),
-        };
         let root = agents
             .create(
                 &IntentId::try_from("root").map_err(storage)?,
-                ForkAdopted {
-                    agent: id,
-                    parent: None,
-                    forked_at: 0,
-                    conversation_tail: 0,
-                    volumes: vec![
-                        bind(PRIVATE_VOLUME, &self.journal),
-                        bind("project", &self.project),
-                        bind("scratch", &self.scratch),
-                    ],
-                    brief: None,
-                    policy: None,
-                },
+                self.adoption(id),
             )
             .await
             .map_err(storage)?;

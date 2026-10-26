@@ -48,7 +48,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let id = IntentId::try_from("hello").map_err(agent)?;
-    let delivered = harness.prompt(&id, "hello").await.map_err(agent)?;
+    let delivered = harness.prompt(&root, &id, "hello").await.map_err(agent)?;
     let Delivered::Committed { inbox } = delivered else {
         return Err(Error::Conflict(format!("prompt was not delivered: {delivered:?}")));
     };
@@ -80,7 +80,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .await?;
     assert!(!output.is_empty());
     // The same intent replays its commit at the same sequence; no second turn runs.
-    assert_eq!(harness.prompt(&id, "hello").await.map_err(agent)?, delivered);
+    assert_eq!(harness.prompt(&root, &id, "hello").await.map_err(agent)?, delivered);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
     Ok(())
 }

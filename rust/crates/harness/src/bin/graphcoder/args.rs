@@ -9,7 +9,7 @@ pub enum InputFormat {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Coding agent over the harness client")]
+#[command(version, about = "Coding agent on the local harness's agents")]
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root"])]
@@ -37,7 +37,8 @@ pub struct Args {
     pub prompt: Option<String>,
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
     pub input_format: InputFormat,
-    /// Resume/replay this submission instead of allocating a new launch identity.
+    /// Conversation identity: reopen it, and replay its already sent prompts,
+    /// instead of starting a new conversation.
     #[arg(long)]
     pub operation: Option<String>,
     /// Reopen the last interactive conversation, including after a normal quit.
