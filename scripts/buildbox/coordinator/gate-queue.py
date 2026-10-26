@@ -8,7 +8,8 @@ the active queue until the drain acknowledges them, including partial clears,
 failed output delivery and coordinator death. Admission removes duplicates.
 """
 import argparse
-import hashlib
+import importlib.util
+import json
 from contextlib import contextmanager
 import os
 from pathlib import Path
@@ -86,6 +87,27 @@ def acknowledge(state, prs):
         raise ValueError('PR numbers must be positive integers')
     claim = queue_path(state, 'active')
     publish(claim, set(members(claim)) - set(prs))
+
+
+def withdraw(state, prs):
+    """Release frozen requests only at the same idle boundary as dispatch."""
+    if not prs or any(not isinstance(p,int) or p<=0 for p in prs):
+        raise ValueError('withdraw requires positive PR numbers')
+    state.mkdir(parents=True,exist_ok=True)
+    lease=state/'.lock'
+    try:lease.mkdir()
+    except FileExistsError:
+        import shlex
+        command=shlex.join([sys.executable,str(Path(__file__).resolve()),str(state),'withdraw','all',*map(str,prs)])
+        raise ValueError('kind=QUEUE_BUSY step=withdraw-frozen-request: active gate retains custody; '
+                         'recovery command (after its terminal idle boundary): '+command)
+    try:
+        with locked(state):
+            before={name:members(queue_path(state,name)) for name in sorted(QUEUES)}
+            after={name:sorted(set(values)-set(prs)) for name,values in before.items()}
+            for name,values in after.items():publish(queue_path(state,name),values)
+            return {'operation':'withdraw','prs':sorted(set(prs)),'before':before,'after':after}
+    finally:lease.rmdir()
 
 
 def baseline_state(current):
@@ -180,17 +202,22 @@ def dispatch(state, script):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('state', type=Path)
-    parser.add_argument('operation', choices=['add', 'take', 'move', 'has', 'ack', 'dispatch',
+    parser.add_argument('operation', choices=['add', 'take', 'move', 'has', 'ack', 'dispatch', 'withdraw',
                                             'baseline-version', 'baseline-park', 'baseline-ready'])
     parser.add_argument('queue')
     parser.add_argument('values', nargs='*')
     args = parser.parse_args()
     try:
+        if args.operation=='withdraw':
+            if args.queue!='all':raise ValueError('withdraw requires all queues')
+            print(json.dumps(withdraw(args.state,list(map(int,args.values)))))
+            return 0
         if args.operation == 'baseline-ready':
-            if not args.values:
-                raise ValueError('baseline-ready requires a main commit and its qualified logs')
-            evidence = ':'.join(hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in args.values)
-            print(int(publish_baseline(args.state, args.queue+':'+evidence)))
+            spec = importlib.util.spec_from_file_location('queue_baseline', Path(__file__).resolve().with_name('gate-baseline.py'))
+            baseline = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(baseline)
+            evidence = baseline.publication_identity(args.queue, args.values)
+            print(int(publish_baseline(args.state, evidence)))
             return 0
         if args.operation in ('baseline-version', 'baseline-park'):
             if args.queue != 'baseline-pending':

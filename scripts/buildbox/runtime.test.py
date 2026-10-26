@@ -101,12 +101,79 @@ events=socket.socket(fileno=int(sys.argv[2]))
         process=subprocess.Popen([sys.executable,'-c',loader+observer,str(self.cpu_fixture.control/'bb-admit.py'),str(writer.fileno()),*args],env=env,pass_fds=[writer.fileno()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         cleanup.callback(retire_process,process);writer.close()
         return process,events
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None,inner_cleanup=False,legacy_compiler=False):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
         env=self.worker_env({'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
+        worker=self.worker(negative)
+        if legacy_compiler:
+            source=worker.read_text()
+            worker.write_text(source.replace('compiler_job=compiler_request(canonical_argv(argv,os.environ),os.environ)',
+                "compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))"))
+        if inner_cleanup:
+            source=worker.read_text()
+            needle="        runtime['cleanup_mount_namespace']=os.readlink('/proc/self/ns/mnt')"
+            assert source.count(needle)==1
+            worker.write_text(source.replace(needle,'        remove_home(job)\n'+needle))
+        result=subprocess.run([sys.executable,str(worker),*argv],cwd=cwd or self.d,env=env,capture_output=True)
+        runtime_file=Path(str(meta)+'.runtime')
+        if runtime_file.exists():
+            # Same boundary as finishLocked: the worker and its private mount
+            # namespace have exited before the receipt owner walks storage.
+            try:
+                with patch.object(job,'JOBS',self.d/'jobs'):
+                    if cleanup_failure:
+                        with patch.object(job,'remove_home',side_effect=OSError('cleanup control')):job.cleanup_runtime(runtime_file)
+                    else:job.cleanup_runtime(runtime_file)
+            except OSError as error:
+                runtime=json.loads(runtime_file.read_text());runtime['cleanup_error']=str(error);job.atomic(runtime_file,runtime)
+                result=subprocess.CompletedProcess(result.args,224,result.stdout,result.stderr+b'[buildbox] cleanup INFRA: '+str(error).encode())
         return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
+
+    def test_same_mount_namespace_has_no_home_deletion_authority(self):
+        directory=self.d/'jobs'/'job-mount-owner';directory.mkdir(parents=True)
+        file=self.d/'mount-owner.json'
+        runtime={'hermetic_home':str(directory),'cleanup_mount_namespace':os.readlink('/proc/self/ns/mnt')}
+        file.write_text(json.dumps(runtime))
+        with patch.object(job,'JOBS',self.d/'jobs'):
+            with self.assertRaisesRegex(RuntimeError,'outer mount namespace'):job.cleanup_runtime(file)
+            self.assertTrue(directory.exists())
+            # Actual old boundary, with its missing namespace guard, deletes
+            # the same owned tree before the private mounts are retired.
+            with patch.object(job,'require_outer_cleanup'):job.cleanup_runtime(file)
+            self.assertFalse(directory.exists())
+
+    def test_fuse_mount_namespace_retires_before_home_traversal(self):
+        # Reuse the real fusermount protocol already exercised below. Closing
+        # its transferred fd without unmounting leaves an actual ENOTCONN
+        # mount. No synthetic filesystem error is injected into this control.
+        code='''import array,os,socket,subprocess,tempfile
+from pathlib import Path
+mount=Path(tempfile.mkdtemp(dir=os.environ['TMPDIR']))
+a,b=socket.socketpair()
+try:
+ env={**os.environ,'_FUSE_COMMFD':str(b.fileno())}
+ child=subprocess.Popen(['/usr/bin/fusermount3','-o','rw,nosuid,nodev,fsname=gate-cleanup-control','--',str(mount)],env=env,pass_fds=[b.fileno()],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ b.close()
+ data,ancillary,_,_=a.recvmsg(1,socket.CMSG_SPACE(4))
+ out,err=child.communicate()
+ assert child.returncode==0,(child.returncode,err)
+ descriptors=array.array('i')
+ for level,kind,value in ancillary:
+  if level==socket.SOL_SOCKET and kind==socket.SCM_RIGHTS:descriptors.frombytes(value)
+ assert descriptors,'fusermount did not transfer its mounted FUSE device'
+ for descriptor in descriptors:os.close(descriptor)
+ print('DISCONNECTED_FUSE_MOUNT')
+finally:a.close();b.close()
+'''
+        for broken in [False,True]:
+            result,runtime=self.run_job([sys.executable,'-c',code],inner_cleanup=broken)
+            if broken:
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn(b'Transport endpoint is not connected',result.stderr)
+            else:self.assertEqual(result.returncode,0,result.stderr.decode())
+            self.assertTrue(runtime['home_removed'])
+            self.assertFalse(Path(runtime['hermetic_home']).exists())
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')
@@ -377,6 +444,22 @@ finally:a.close();b.close()
             self.assertEqual(json.loads(result.stdout)['rustc'],'/home/var/bin/bigstack/rustc' if gate else 'fixture-capture-tool')
             self.assertEqual(json.loads(result.stdout)['wrapper'],'') # explicit cold/disabled policy remains
 
+    def test_script_compiler_opt_in_selects_the_same_native_policy(self):
+        code='import os,json;print(json.dumps({"rustc":os.environ.get("RUSTC"),"wrapper":os.environ.get("RUSTC_WRAPPER")}))'
+        result,runtime=self.run_job([sys.executable,'-c',code],extra={'BUILD_SLOT_COMPILER':'1','RUSTC':'fixture-capture-tool'})
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertTrue(runtime['compiler_job'])
+        self.assertEqual(json.loads(result.stdout),{'rustc':'/home/var/bin/bigstack/rustc','wrapper':''})
+        # The old classifier sees only Python, so the explicit producer loses
+        # compiler policy. Run the actual same runtime with just that old edge.
+        old,_=self.run_job([sys.executable,'-c',code],extra={'BUILD_SLOT_COMPILER':'1','RUSTC':'fixture-capture-tool'},legacy_compiler=True)
+        self.assertEqual(old.returncode,0,old.stderr.decode())
+        self.assertEqual(json.loads(old.stdout)['rustc'],'fixture-capture-tool')
+        refused,_=self.run_job([sys.executable,'-c','print("must not execute")'],extra={'BUILD_SLOT_COMPILER':'guess'})
+        self.assertEqual(refused.returncode,224,refused.stderr.decode())
+        self.assertEqual(refused.stdout,b'')
+        self.assertIn(b'kind=COMPILER_POLICY step=compiler-declaration',refused.stderr)
+
     def test_exited_cache_cpu_is_incomplete_never_zero(self):
         server={'pid':123,'identity':'fixture'}
         with patch.object(job,'child_cpu',return_value=12),patch.object(job,'cache_cpu',return_value=None),patch.object(job.subprocess,'run') as stats:
@@ -389,6 +472,22 @@ finally:a.close();b.close()
             complete=job.cost_receipt({},server,2,3,time.monotonic())
         self.assertEqual(complete['attributed_cpu_seconds'],15)
         self.assertNotIn('cpu_incomplete_reason',complete)
+
+    def test_nested_worker_cannot_inherit_outer_exports(self):
+        # Retained from qualified-runtime.test.py supplied by main-green.
+        # An isolated receipt cannot adopt its enclosing producer's export.
+        code='''import os
+from pathlib import Path
+assert 'BB_JOB_PRIVATE_MOUNT' not in os.environ
+assert 'BB_JOB_GIT_SOURCE' not in os.environ
+assert Path(os.environ['CARGO_TARGET_DIR'])==Path(os.environ['HOME']).parent/'target'
+print("nested output",end="")'''
+        with patch.dict(os.environ,{'BB_JOB_EXPORT_SPEC':json.dumps({'prefix':'/invalid-outer-job','paths':[]}),
+                'BB_JOB_PRIVATE_MOUNT':'1','BB_JOB_GIT_SOURCE':'/invalid-outer-source'}):
+            result,runtime=self.run_job([sys.executable,'-c',code])
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertEqual(result.stdout,b'nested output')
+        self.assertNotIn('export_error',runtime)
 
     def test_unreadable_directories_cleanup_negative_control(self):
         p=self.d/'job';(p/'moved/deep').mkdir(parents=True);(p/'moved/deep/data').write_bytes(b'x')

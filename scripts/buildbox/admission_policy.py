@@ -218,6 +218,19 @@ def canonical_argv(argv, env):
     return argv
 
 
+def compiler_request(argv, env):
+    """One compiler-policy opt-in for native and script-driven producers."""
+    opt=env.get('BUILD_SLOT_COMPILER')
+    if opt not in (None,'1'):
+        raise RuntimeError('kind=COMPILER_POLICY step=compiler-declaration owner=gate-speed: '
+                           'BUILD_SLOT_COMPILER must be absent or 1; recovery command: '+
+                           shlex.join(['env','BUILD_SLOT_COMPILER=1','/home/var/bin/build-slot',*argv]))
+    if opt=='1' or (argv and Path(argv[0]).name=='cargo'):return True
+    if env.get('BUILD_SLOT_GATE_LOG'):return True
+    meta=env.get('BUILD_SLOT_RECEIPT_META')
+    return bool(meta and json.loads(Path(meta).read_text()).get('gate_log'))
+
+
 def resolve_wrapper(env, compiler=False, cwd=None):
     cwd = Path(cwd or os.getcwd()).resolve()
     search = os.pathsep.join(str((cwd/entry).resolve()) if not os.path.isabs(entry) else entry

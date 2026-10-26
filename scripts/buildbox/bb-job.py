@@ -21,7 +21,7 @@ import tempfile
 import time
 import uuid
 import bb_target_store
-from admission_policy import resolve_wrapper, capture_limits, restore_limits, LIMIT_ENV, cache_authority, disk_pressure, disk_free, disk_low
+from admission_policy import compiler_request, resolve_wrapper, capture_limits, restore_limits, LIMIT_ENV, cache_authority, disk_pressure, disk_free, disk_low
 from admission_policy import process_identity as identity, atomic_json as atomic, cargo_query, canonical_argv
 import cpu_leases
 import input_closure
@@ -400,7 +400,7 @@ def run(argv,namespace_ready=False):
         os.environ.pop('BB_CALLER_RLIMITS_READY',None)
         os.environ['BB_JOB_NAMESPACE_PATH']=os.environ.get('PATH','/usr/bin:/bin')
         os.execvp('sudo',['sudo','-n','--preserve-env','unshare','--mount','--propagation','private','--pid','--fork','--kill-child','--mount-proc',sys.executable,str(Path(__file__).resolve()),'home-namespace',*argv])
-    compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))
+    compiler_job=compiler_request(canonical_argv(argv,os.environ),os.environ)
     # Nested build-slot reuses the enclosing job's home/admission/server, rather
     # than consuming a second tenant slot or changing the tested environment.
     if os.environ.get('BB_JOB_ACTIVE')=='1':
@@ -437,8 +437,9 @@ def run(argv,namespace_ready=False):
     admission_file=Path(meta+'.admission')
     admission=json.loads(admission_file.read_text()) if admission_file.exists() else {'tier':env.get('BB_ADMIT_TIER'),'tenant':env.get('BB_ADMIT_TENANT'),'wait_seconds':env.get('BB_ADMIT_WAIT_SECONDS'),'build_jobs':env.get('CARGO_BUILD_JOBS')}
     if admission.get('build_jobs'):env['CARGO_BUILD_JOBS']=str(admission['build_jobs'])
-    runtime={'hermetic_home':str(job),'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
-             'admission':admission,'cpu_lease':cpu_owner, 'input_closure':input_proof, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
+    runtime={'hermetic_home':str(job),'cleanup_mount_namespace':os.readlink('/proc/self/ns/mnt'),
+             'targets_policy':'job-owned','cache':'not-started','disk_free':disk(),
+             'admission':admission,'cpu_lease':cpu_owner,'compiler_job':compiler_job, 'input_closure':input_proof, 'caller_rlimits':json.loads(env[LIMIT_ENV]), 'exec_rlimits':capture_limits()}
     runtimefile=Path(meta+'.runtime'); atomic(runtimefile,runtime)
     server=None; child=None; rc=224; units=[]
     def interrupted(n,f):
@@ -546,18 +547,29 @@ def run(argv,namespace_ready=False):
         for sig in [signal.SIGTERM,signal.SIGINT,signal.SIGHUP]: signal.signal(sig,signal.SIG_IGN)
         if child: child.close()
         stop_server(server)
-        try:remove_home(job)
-        except OSError as error:
-            runtime['cleanup_error']=str(error);atomic(runtimefile,runtime)
-            print('[buildbox] cleanup INFRA: '+str(error),file=sys.stderr,flush=True)
-            return 224
-        runtime['home_removed']=True; runtime['targets_removed']=True; atomic(runtimefile,runtime)
+        # The receipt owner reaps this namespace before traversing its storage.
+        # A dead FUSE server can leave ENOTCONN mounts here; destroying this
+        # namespace first removes those mounts without walking through them.
+        runtime['cleanup_mount_namespace']=os.readlink('/proc/self/ns/mnt')
+        runtime['cleanup_deferred']='outer-receipt-owner'
+        atomic(runtimefile,runtime)
         custody.close()
         for unit in units:unit.close()
 
 
+def require_outer_cleanup(runtime, file):
+    namespace=runtime.get('cleanup_mount_namespace')
+    if namespace and namespace==os.readlink('/proc/self/ns/mnt'):
+        import shlex
+        recovery=shlex.join([sys.executable,str(Path(__file__).resolve()),'cleanup',str(file)])
+        raise RuntimeError('kind=CLEANUP_NAMESPACE step=retire-private-mount-namespace: '
+                           'cleanup requires an outer mount namespace after worker exit; '
+                           'recovery command (from the outer receipt owner): '+recovery)
+
+
 def cleanup_runtime(file):
     runtime=json.loads(Path(file).read_text())
+    require_outer_cleanup(runtime,file)
     if not runtime.get('hermetic_home'):
         stop_server(runtime.get('sccache_server'));return
     job=Path(runtime['hermetic_home'])
@@ -578,6 +590,7 @@ def cleanup_outer(prefix):
     import contextlib
     runtime=Path(str(prefix)+'.receipt-meta.v2.json.runtime')
     metadata=json.loads(runtime.read_text()) if runtime.exists() else {}
+    require_outer_cleanup(metadata,runtime)
     home=metadata.get('hermetic_home')
     with home_lease(Path(home),exclusive=True) if home else contextlib.nullcontext():
         for suffix in ['.targets','.tmp']:

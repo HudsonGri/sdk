@@ -253,7 +253,7 @@ const requestHash=crypto.createHash('sha256').update(inner.slice(first+1).split(
 if(inner.slice(0,first)!=='export BB_TARGET_REQUEST_SHA256='+requestHash)throw Error('generated Cargo provenance digest lost or incomplete');
 if(!inner.includes('PATH=/home/var/bin/bb-cargo:'))throw Error('nested Cargo bypasses target proxy');
 if(input[0]==='cargo' && !inner.includes('/home/var/bin/bb-cargo/cargo'))throw Error('explicit Cargo bypasses target proxy');
-if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
+if(/(?:unset RUSTC|export RUSTC=|export RUSTC_WRAPPER=)/u.test(inner))throw Error('transport replaced the canonical admitted compiler policy');
 if(inner.includes('ulimit -n'))throw Error('job overrides caller nofile limit');
 if(!bodies[2].includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
 if(!bodies[2].includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
@@ -275,9 +275,9 @@ if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target
   }
   const generator=path.join(cwd,'generator.mjs');
   const original=fs.readFileSync(generator,'utf8');
-  fs.writeFileSync(generator,original.replace('cargoJob || Boolean(receipt?.gate_log)','cargoJob'));
+  fs.writeFileSync(generator,original.replace('${testRunner()}','${testRunner()}unset RUSTC RUSTC_WRAPPER'));
   const negative=spawnSync(process.execPath,[file],{encoding:'utf8'});
-  assert.notEqual(negative.status,0);assert.match(negative.stderr,/gate dropped compiler cache/);
+  assert.notEqual(negative.status,0);assert.match(negative.stderr,/transport replaced the canonical admitted compiler policy/);
   fs.writeFileSync(generator,original.replaceAll('BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1','BB_COLD_DISABLED_CONTROL=1'));
   const coldNegative=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:'1'}});
   assert.notEqual(coldNegative.status,0);assert.match(coldNegative.stderr,/cold jobs can restore or publish snapshots/);

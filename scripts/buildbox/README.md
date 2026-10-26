@@ -1,5 +1,25 @@
 # Build-box runtime and gate dispatch
 
+Script-driven compiler producers explicitly opt in to the same policy as direct
+Cargo with `pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BUILD_SLOT_COMPILER=1
+--env BUILD_SLOT_PR=NUMBER --env BUILD_SLOT_PHASE=LABEL bash DRIVER.sh`. This is
+the source contract for the coordinated runtime cut-over, not permission to
+install a private compiler/cache. The single `admission_policy.compiler_request`
+decision admits the wrapper before execution; the generated transport preserves
+that admitted environment. Other tools retain their own compiler capture setup.
+Declare and validate all producer/reference inputs through `input_closure.py`
+before dispatch. Keep outputs under job TMPDIR until compilation finishes;
+changing uploaded source refuses target snapshot adoption/publication. Receipts
+report the exact source/argv/toolchain and sccache counters. Cargo `fresh=false`
+alone says nothing about sccache hits. Reserve transport/export time within the
+600-second total job budget; a remote ceiling of 510 seconds is an upper bound,
+not a prediction that an unmeasured graph fits it.
+
+The worker records its private mount namespace and releases custody without
+walking job HOME. The existing terminal receipt owner first reaps the worker,
+then performs cleanup from the outer namespace. Cleanup from the recorded
+private namespace is a typed refusal, including after disconnected FUSE tests.
+
 This directory is the maintained source for the coordinator's bb2 runtime.
 `bb-job.py`, `bb-admit.py`, `bb-admit`, `build-slot`, `sccache-rustc`,
 `buildbox-receipt.mjs`, `job_exports.py` and the SDK source-copy pruner install

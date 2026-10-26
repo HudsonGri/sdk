@@ -178,6 +178,13 @@ class HostAuthority(unittest.TestCase):
 
     def client_env(self,extra=None):
         env={k:v for k,v in self.cpu_fixture.environment().items() if not k.startswith('SCCACHE_')}
+        # These clients own isolated non-repository fixtures. sudo deliberately
+        # does not forward the enclosing producer's declaration; each client
+        # declares its own complete closure instead of inheriting unrelated
+        # source/base/reference inputs from another receipt.
+        env.pop('BUILD_SLOT_INPUTS_FILE',None)
+        env.update(BUILD_SLOT_INPUTS_JSON=json.dumps({'version':1,'complete':True,'base_sha':None,'inputs':[]}),
+                   BUILD_SLOT_INPUT_BASE='none',BUILD_SLOT_INPUT_ROOT=str(self.data))
         env.update(extra or {});return env
 
     def test_concurrent_starts_leave_one_birth_verified_owner(self):
@@ -240,6 +247,31 @@ class HostAuthority(unittest.TestCase):
         stats=subprocess.run([self.service.SCCACHE,'--show-stats','--stats-format','json'],
                              env=self.policy.cache_environment({}),capture_output=True,text=True,check=True)
         self.assertEqual(json.loads(stats.stdout)['max_cache_size'],53687091200)
+
+    def test_fresh_targets_reuse_compiler_outputs_with_incremental_negative_control(self):
+        # One real tiny Rust producer, distinct from product qualification.
+        # Fresh Cargo target directories alone do not measure compiler hits.
+        name='reuse_control_'+uuid.uuid4().hex
+        source=self.data/(name+'.rs');source.write_text('pub fn value()->u64 { 42 }\n')
+        env=self.client_env({'RUSTUP_HOME':'/home/var/.rustup','TMPDIR':str(self.data)})
+        def hits():
+            result=subprocess.run([self.service.SCCACHE,'--show-stats','--stats-format','json'],
+                env=self.policy.cache_environment(env),capture_output=True,text=True,check=True)
+            stats=json.loads(result.stdout)
+            def total(value):return sum(total(v) for v in value.values()) if isinstance(value,dict) else value
+            return total(stats['stats']['cache_hits']['counts'])
+        observations=[]
+        for mode in ['cold','warm','incremental']:
+            target=self.data/(name+'-'+mode);target.mkdir(mode=0o777);target.chmod(0o777)
+            before=hits()
+            command=['runuser','-u','var','--',str(self.stage/'sccache-rustc'),
+                '/home/var/.cargo/bin/rustc','--crate-name',name,'--crate-type','rlib',
+                '--emit=link','--out-dir',str(target),str(source)]
+            if mode=='incremental':command+=['-C','incremental='+str(target/'incremental')]
+            result=subprocess.run(command,env=env,capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            observations.append(hits()-before)
+        self.assertEqual(observations,[0,1,0],observations)
 
     def test_actual_wrapper_metadata_and_nested_namespace_reuse(self):
         command=['runuser','-u','var','--',str(self.stage/'sccache-rustc'),'/home/var/.cargo/bin/rustc','-vV']
@@ -439,12 +471,20 @@ except m.CachePolicyError as error:print(error,file=sys.stderr);raise SystemExit
         entry=['/usr/sbin/runuser','-u','var','--','/usr/bin/python3','-B',str(self.cpu_fixture.control/'bb-admit.py'),'lane','cloud','--','/usr/bin/python3','-c']
         first=subprocess.Popen([*entry,f'print("ready",flush=True);open({str(release)!r}).read()'],
                                env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-        self.assertEqual(first.stdout.readline(),b'ready\n')
+        ready=first.stdout.readline()
+        if ready!=b'ready\n':
+            out,err=first.communicate(timeout=2)
+            self.fail('migration client exited before readiness: '+err.decode()+repr(out))
         second=subprocess.Popen([*entry,f'import time;time.sleep(.1);open({str(done)!r},"w").write("finished")'],
                                 env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         # Observe the real accepted ticket; timing cannot stand in for a queued
         # handshake. The first command still owns the sole slot.
-        self.assertTrue(second.stderr.readline().startswith(b'BB_ADMIT_TICKET '))
+        admitted=second.stderr.readline()
+        self.assertTrue(admitted.startswith(b'BB_INPUTS_ADMITTED '),admitted.decode())
+        proof=json.loads(admitted.removeprefix(b'BB_INPUTS_ADMITTED '))
+        self.assertIsInstance(proof,dict)
+        ticket=second.stderr.readline()
+        self.assertTrue(ticket.startswith(b'BB_ADMIT_TICKET '),ticket.decode())
         errors=[]
         def drain():
             try:

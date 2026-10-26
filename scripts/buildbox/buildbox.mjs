@@ -625,18 +625,15 @@ let jobTdir = '';  // the target dir the job actually used (its wrapper writes $
 function launchScript(src, tkey, rel, argv, J, pathPre = '', repo = 'cloud', base = '', id, maxSec = jobMaxSec(), idleOk = process.env.BUILD_SLOT_IDLE_OK === '1', receipt) {
   const tenant = tenantOf(process.env.BUILD_SLOT_LABEL || path.basename(src), process.cwd(), repo, argv);
   const watcherRefusal = 'kind=WATCHER step=watcher-retirement owner=gate-speed recovery=' + q('BUILD_SLOT_TENANT='+tenant+' /home/var/bin/build-slot '+argv.map(q).join(' '));
-  // Cargo and explicit gate jobs get the owned compiler cache. Other Node/bash jobs keep a plain toolchain env: tools they run set
-  // their own (the SDK's build:wasm puts a rustc capture wrapper on PATH with RUSTC_WORKSPACE_WRAPPER, which a global
-  // RUSTC/RUSTC_WRAPPER breaks: "sccache: Compiler not supported ... spawnSync -E ENOENT").
+  // Compiler policy belongs to admission_policy.py, including explicit
+  // BUILD_SLOT_COMPILER=1 script producers. The transport must not overwrite
+  // or clear its admitted environment after entering bb-job.
   const cargoJob = path.basename(argv[0]) === 'cargo';
-  const compilerJob = cargoJob || Boolean(receipt?.gate_log);
   const flavor = ''; const TD = `${J}.targets`; const SH = '';
   const jobHostTarget = `${TD}/.host-targets/${path.basename(hostTarget(src))}`;
   const exportSpec = { prefix: J, cwd: `/work/src/${rel}`, paths: (process.env.BUILD_SLOT_REMOTE_FETCH || '').split(/\s+/).filter(Boolean), build: cargoJob,
     targetMapping: glibcPin ? { triple: GLIBC_TRIPLE, profiles: [...glibcPin.dirs] } : null };
   const leaseFile = `/mnt/bb/locks/wt-sdk/${path.basename(src).replace(/\.prep$/, '')}.lock`;
-  const rustEnv = compilerJob && COLD ? 'export RUSTC=/home/var/bin/bigstack/rustc; export RUSTC_WRAPPER=' : compilerJob ? `export RUSTC=/home/var/bin/bigstack/rustc
-if [ "\${BB_CACHE_DISABLED:-}" = 1 ]; then export RUSTC_WRAPPER=; else export RUSTC_WRAPPER=/home/var/bin/sccache-rustc; fi` : `unset RUSTC RUSTC_WRAPPER; export CARGO_TARGET_DIR="$BB_JOB_TARGET"`;
   // /home/var/bin/bbnpm/npm: \`npm ci\` is skipped when node_modules was installed from the same lockfile hash (node_modules
   // persists per copy and seeds new copies; rsync never carries it).
   let inner = `set -u
@@ -657,7 +654,7 @@ export CARGO_INCREMENTAL=0  # job-owned targets are deleted; use shared sccache 
 export TMPDIR="$BB_JOB_TMP" CARGO_TARGET_DIR="$BB_JOB_TARGET" CARGO_PROFILE_DEV_INCREMENTAL=false CARGO_PROFILE_TEST_INCREMENTAL=false CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \\
   CARGO_NET_RETRY=5 CARGO_TERM_COLOR=\${CARGO_TERM_COLOR:-never}
 printf '[profile.default]\\nslow-timeout = { period = "60s", terminate-after = 10 }\\n' > /tmp/bb-nextest.toml  # = NEXTEST_TOOL, literal: bb-swap smokes this block verbatim
-${testRunner()}${rustEnv}
+${testRunner()}
 # Tests that read the checkout's git HEAD need a repository whose HEAD is the tree: a git-synced worktree is at the client's
 # commit already; uncommitted changes (and rsynced trees) are committed on top (ignored files stay out).
 cd /work/src && bbpre=$(git rev-parse -q --verify HEAD 2>/dev/null) || bbpre=
@@ -704,7 +701,6 @@ if [ "$BB_HOST_TARGET" != ${TD} ] && ! node -e ${q(MTIME_MAP)} "$bbI.recs" "$BB_
 rm -f "$bbI.recs"
 export BUILD_SLOT_TREE="${id.commit} ${id.tree} ${id.content}"
 export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json
-${passEnv()}
 cd /work/src/${q(rel)} && node ${J}.receipt-tool.mjs exec ${J}.receipt-meta.v2.json && ${argv.map((a, i) => q(i === 0 && path.basename(a) === 'cargo' ? '/home/var/bin/bb-cargo/cargo' : a)).join(' ')}`;
   // Hash the complete generated build environment/driver before adding the
   // digest itself. Dispatch filenames are operational, not compiler inputs.
@@ -821,6 +817,8 @@ exit $rc`;
   const admitted = 'J=' + J + '\nexport PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/home/var/bin:/usr/bin:/bin\nnode --input-type=module -e ' + admissionSave + ' ' + J + '.receipt-meta.v2.json.admission\n' + wrapper.slice(boundary);
   const cls = jobClass(argv) || 'light';
   wrapper = wrapper.slice(0, boundary) + `export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BB_ADMIT_CLASS=${q(cls)} BB_ADMIT_WRAPPED_COMMAND=1
+${passEnv()}
+${COLD ? 'export BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1\n' : ''}
 export BUILD_SLOT_INPUTS_JSON=${q(process.env.BUILD_SLOT_INPUTS_JSON || '')} BUILD_SLOT_INPUT_BASE=${q(process.env.BUILD_SLOT_INPUT_BASE || base || 'none')} BUILD_SLOT_INPUT_ROOT=${q(path.posix.join(src, rel))}
 /home/var/bin/bb-admit ${jobTier} ${q(tenant)} -- bash ${J}.admitted >> ${J}.out 2>> ${J}.err
 exit $?`;

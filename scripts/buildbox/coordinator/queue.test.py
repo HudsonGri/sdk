@@ -12,6 +12,25 @@ queue = importlib.util.module_from_spec(spec); spec.loader.exec_module(queue)
 
 
 class QueueTests(unittest.TestCase):
+    def test_withdraw_waits_for_terminal_boundary_and_preserves_peers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state=Path(temporary)
+            for name in queue.QUEUES:queue.add(state,name,[1495,1504,1508,1512])
+            (state/'.lock').mkdir()
+            before={name:queue.members(queue.queue_path(state,name)) for name in queue.QUEUES}
+            with self.assertRaisesRegex(ValueError,'QUEUE_BUSY.*withdraw-frozen-request.*recovery command'):
+                queue.withdraw(state,[1495,1504])
+            self.assertEqual(before,{name:queue.members(queue.queue_path(state,name)) for name in queue.QUEUES})
+            # Without the idle boundary, the old direct acknowledgement can
+            # discard an active claim while its payload is still executing.
+            with queue.locked(state):queue.acknowledge(state,[1495])
+            self.assertNotIn(1495,queue.members(state/'active.txt'))
+            (state/'.lock').rmdir()
+            receipt=queue.withdraw(state,[1495,1504])
+            for name in queue.QUEUES:self.assertEqual(receipt['after'][name],[1508,1512])
+            self.assertFalse((state/'.lock').exists())
+            self.assertEqual(queue.withdraw(state,[1495,1504])['after'],receipt['after'])
+
     def test_concurrent_producers_are_a_set_without_lost_peers(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)
