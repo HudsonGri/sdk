@@ -825,12 +825,12 @@ fn linux_demand_watch_accepts_directories_absent_from_the_source()
     Ok(())
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-mod native_contract;
 #[cfg(unix)]
 mod fence_cookie;
 #[cfg(target_os = "macos")]
 mod fsevents_fence;
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+mod native_contract;
 #[cfg(target_os = "linux")]
 mod root_metadata;
 mod work;
