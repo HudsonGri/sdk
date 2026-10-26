@@ -77,6 +77,7 @@ pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
 pub use spec::{Authentication, ProviderSpec, RetrySpec, TimeoutSpec};
+pub use stream::decode_recording;
 
 use acyclic_harness_core::{Error, Result};
 use serde_json::Value;
