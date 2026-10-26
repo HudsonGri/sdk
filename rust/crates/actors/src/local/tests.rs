@@ -259,8 +259,12 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
     let fired = store.load(&address).await?;
     let state = fired.state().ok_or("missing state")?;
     assert_eq!(state.cursor("inbox"), Some(2));
-    assert_eq!(state.alarm().generation(), 3);
-    assert_eq!(state.alarm().deadline_unix_ms(), None);
+    assert_eq!(state.alarm().generation(), 2, "Keep preserves generation");
+    assert_eq!(
+        state.alarm().deadline_unix_ms(),
+        Some(20),
+        "Keep preserves deadline"
+    );
     assert!(
         matches!(
             store
@@ -268,7 +272,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
                     &fired,
                     2,
                     &Trigger::Alarm {
-                        generation: 3,
+                        generation: 2,
                         now_unix_ms: 30
                     },
                     transition(4, AlarmChange::Keep),
@@ -277,7 +281,7 @@ async fn fencing_history<P: StreamProvider + ?Sized>(provider: Arc<P>) -> TestRe
                 .await,
             Err(Error::Conflict)
         ),
-        "cleared alarms cannot fire"
+        "a consumed alarm cannot publish twice even when Keep preserves its deadline"
     );
     Ok(())
 }

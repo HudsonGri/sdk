@@ -52,7 +52,8 @@ pub struct Delivery {
 /// Change to the actor's sole durable alarm, committed with its checkpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlarmChange {
-    /// Preserve the pending alarm; a delivered alarm is consumed.
+    /// Preserve the alarm generation and deadline. Delivery consumption remains
+    /// part of the same checkpoint, so a delivered generation cannot fire twice.
     Keep,
     /// Replace the alarm with a strictly positive absolute deadline.
     Set {

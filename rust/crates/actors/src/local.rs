@@ -36,9 +36,10 @@ pub enum Error {
 pub struct Alarm {
     generation: u64,
     deadline_unix_ms: Option<u64>,
+    delivered_generation: Option<u64>,
 }
 impl Alarm {
-    /// Generation increases on replacement, clear and successful firing.
+    /// Generation increases on replacement and clear; Keep preserves it.
     pub const fn generation(&self) -> u64 {
         self.generation
     }
@@ -230,6 +231,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 now_unix_ms,
             } => {
                 if state.alarm.generation != *generation
+                    || state.alarm.delivered_generation == Some(*generation)
                     || !state
                         .alarm
                         .deadline_unix_ms
@@ -237,10 +239,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 {
                     return Err(Error::Conflict);
                 }
+                // Delivery consumption is distinct from the desired alarm.
+                // Keep preserves its generation/deadline without permitting a
+                // second successful firing to publish another transition.
+                state.alarm.delivered_generation = Some(*generation);
             }
         }
         let deadline = match transition.alarm {
-            AlarmChange::Keep if matches!(trigger, Trigger::Alarm { .. }) => Some(None),
             AlarmChange::Keep => None,
             AlarmChange::Clear => Some(None),
             AlarmChange::Set {
@@ -255,6 +260,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 .checked_add(1)
                 .ok_or(Error::Invalid("alarm generation overflow"))?;
             state.alarm.deadline_unix_ms = deadline;
+            state.alarm.delivered_generation = None;
         }
         state.checkpoint = Some(transition.checkpoint);
         let mut destinations: BTreeMap<StreamPath, (CommitCondition, Vec<AppendRecord>)> =
