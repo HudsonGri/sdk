@@ -92,7 +92,7 @@ pub async fn verify<T: Transport, U: Transport>(
         .delete(&deletion)
         .await
         .map_err(|_| "secrets/delete protected failed")?;
-    allowed
+    let fourth = allowed
         .delete(&SecretDeleteRequest {
             scope: scope.into(),
             name: plain.name,
@@ -100,5 +100,14 @@ pub async fn verify<T: Transport, U: Transport>(
         })
         .await
         .map_err(|_| "secrets/delete plain failed")?;
+    let remaining = allowed
+        .list(&SecretListRequest {
+            scope: scope.into(),
+        })
+        .await
+        .map_err(|_| "secrets/list after deletion failed")?;
+    if remaining.generation != fourth.generation || !remaining.variables.is_empty() {
+        return Err("secrets/delete receipts did not match the stored scope");
+    }
     Ok(())
 }

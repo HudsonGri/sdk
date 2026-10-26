@@ -42,5 +42,7 @@ The portable `secrets::conformance::verify` accepts two clients and a fresh,
 disposable scope. The first client needs all three secrets permissions; the
 second must have product permissions and no secrets permissions. It checks CAS,
 plain/protected visibility, independent denial of every operation and deletion.
+After both delete receipts it lists the scope again, requiring no remaining rows
+and the final receipt's generation; receipts alone do not prove deletion.
 `conformance/secrets-v1.json` publishes the normative case inventory and vectors;
 these are contract examples, not captured external-provider fixtures.

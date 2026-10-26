@@ -59,6 +59,7 @@ struct Provider {
     authority: VerifiedCapability,
     ignore_cas: bool,
     leak: bool,
+    retain_deleted: bool,
 }
 fn response(status: u16, value: impl serde::Serialize) -> Result<Response, Error> {
     Ok(Response {
@@ -134,7 +135,9 @@ impl Provider {
             state.rows.insert(name.clone(), row);
             kind
         } else {
-            state.rows.remove(&name);
+            if !self.retain_deleted {
+                state.rows.remove(&name);
+            }
             SecretKind::Deleted
         };
         response(
@@ -206,6 +209,7 @@ fn client(
             authority: capability(allowed)?,
             ignore_cas,
             leak,
+            retain_deleted: false,
         },
         CredentialProvider::new(|| async { Ok("fixture-bearer".into()) }),
     ))
@@ -241,6 +245,32 @@ fn secrets_provider_conformance_and_cas_authority_visibility_negative_controls()
             secrets::conformance::verify(&allowed, &widened, "fixture").await,
             Err("secrets existing product grants implied secrets authority")
         );
+        Ok(())
+    })
+}
+
+#[test]
+fn secrets_conformance_rejects_successful_deletion_receipts_that_retain_rows() -> TestResult {
+    block_on(async {
+        let state = Arc::new(Mutex::new(State::default()));
+        let allowed = Client::new(
+            Provider {
+                state: state.clone(),
+                authority: capability(true)?,
+                ignore_cas: false,
+                leak: false,
+                retain_deleted: true,
+            },
+            CredentialProvider::new(|| async { Ok("fixture-bearer".into()) }),
+        );
+        let denied = client(&state, false, false, false)?;
+        assert_eq!(
+            secrets::conformance::verify(&allowed, &denied, "fixture").await,
+            Err("secrets/delete receipts did not match the stored scope")
+        );
+        let stored = state.lock().map_err(|_| "provider state poisoned")?;
+        assert_eq!(stored.generation, 4, "both successful deletes advanced CAS");
+        assert_eq!(stored.rows.len(), 2, "mutant retained both deleted rows");
         Ok(())
     })
 }
@@ -536,12 +566,14 @@ mod http {
                 authority: capability(true)?,
                 ignore_cas: false,
                 leak: false,
+                retain_deleted: false,
             },
             denied: Provider {
                 state,
                 authority: capability(false)?,
                 ignore_cas: false,
                 leak: false,
+                retain_deleted: false,
             },
             fault: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
