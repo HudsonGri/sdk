@@ -30,12 +30,12 @@ fn path(value: JsString) -> Result<StreamPath, JsValue> {
 }
 
 fn paths(input: &Array, maximum: usize) -> Result<Vec<StreamPath>, JsValue> {
-    if input.length() as usize > maximum {
+    let length = input.length();
+    if length as usize > maximum {
         return Err(error("CLIENT_DEMAND_CAPACITY"));
     }
-    input
-        .iter()
-        .take(maximum)
+    (0..length)
+        .map(|index| input.get(index))
         .map(|value| {
             if !value.is_string() {
                 return Err(error("CLIENT_INVALID_PATH"));
