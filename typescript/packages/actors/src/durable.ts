@@ -4,9 +4,6 @@ import type { AlarmInfo, WebSocketAutoResponse } from "./generated/guest.js";
 
 /** Host adapter admitted for one actor. Serialized addresses grant no authority. */
 export interface DurableHost {
-  getAlarm(actor: Uint8Array): Promise<bigint | null>;
-  setAlarm(actor: Uint8Array, timestamp: bigint): Promise<void>;
-  deleteAlarm(actor: Uint8Array): Promise<void>;
   deleteAll(actor: Uint8Array): Promise<void>;
   acceptWebSocket(actor: Uint8Array, socket: WebSocket, tags: readonly string[]): void;
   getWebSockets(actor: Uint8Array, tag?: string): WebSocket[];
@@ -18,7 +15,7 @@ export interface DurableHost {
   getTags(actor: Uint8Array, socket: WebSocket): string[];
 }
 
-/** One activation's scoped state. The host persists alarms and socket attachments. */
+/** One activation's scoped state. The host persists socket attachments; alarms commit with the checkpoint (acyclic_actors::local). */
 export class DurableObjectState {
   readonly #reference: ActorReference;
   readonly #host: DurableHost;
@@ -28,13 +25,6 @@ export class DurableObjectState {
   }
   get id(): ActorReference { return ActorReference.decode(this.#reference.encode()); }
   #address(): Uint8Array { return this.#reference.encode(); }
-  getAlarm(): Promise<bigint | null> { return this.#host.getAlarm(this.#address()); }
-  setAlarm(timestamp: bigint | Date): Promise<void> {
-    const at = timestamp instanceof Date ? BigInt(timestamp.getTime()) : timestamp;
-    if (at < 0n || at > 0xffff_ffff_ffff_ffffn) throw new RangeError("alarm timestamp must fit u64 milliseconds");
-    return this.#host.setAlarm(this.#address(), at);
-  }
-  deleteAlarm(): Promise<void> { return this.#host.deleteAlarm(this.#address()); }
   deleteAll(): Promise<void> { return this.#host.deleteAll(this.#address()); }
   acceptWebSocket(socket: WebSocket, tags: readonly string[] = []): void {
     tags = [...tags];

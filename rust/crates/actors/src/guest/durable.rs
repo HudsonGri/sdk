@@ -103,22 +103,6 @@ pub fn validate_web_socket_auto_response(value: &WebSocketAutoResponse) -> Resul
 }
 /// Scoped runtime effects; implementations must check the actor reference on every call.
 pub trait DurableHost: Send + Sync {
-    /// Read the actor's sole alarm timestamp, in Unix milliseconds.
-    fn get_alarm(
-        &self,
-        actor: &ActorReference,
-    ) -> impl Future<Output = Result<Option<u64>, GuestError>> + Send;
-    /// Replace the actor's sole alarm timestamp.
-    fn set_alarm(
-        &self,
-        actor: &ActorReference,
-        at: u64,
-    ) -> impl Future<Output = Result<(), GuestError>> + Send;
-    /// Clear the actor's sole alarm.
-    fn delete_alarm(
-        &self,
-        actor: &ActorReference,
-    ) -> impl Future<Output = Result<(), GuestError>> + Send;
     /// Atomically clear actor storage and alarm; the address remains usable.
     fn delete_all(
         &self,
@@ -202,18 +186,6 @@ impl<H: DurableHost> DurableObjectState<H> {
     /// Transferable address without the host adapter.
     pub const fn id(&self) -> &ActorReference {
         &self.reference
-    }
-    /// Read the sole alarm.
-    pub async fn get_alarm(&self) -> Result<Option<u64>, GuestError> {
-        self.host.get_alarm(&self.reference).await
-    }
-    /// Replace the sole alarm.
-    pub async fn set_alarm(&self, at: u64) -> Result<(), GuestError> {
-        self.host.set_alarm(&self.reference, at).await
-    }
-    /// Clear the sole alarm.
-    pub async fn delete_alarm(&self) -> Result<(), GuestError> {
-        self.host.delete_alarm(&self.reference).await
     }
     /// Clear state and alarm without deleting its address or namespace deployment.
     pub async fn delete_all(&self) -> Result<(), GuestError> {
