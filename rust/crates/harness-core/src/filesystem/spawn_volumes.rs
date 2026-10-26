@@ -1,20 +1,21 @@
 //! [`SpawnVolumes`] on Filesystem volumes placed in the agents' own stream: a
 //! child forks each parent volume at its current head, except its private
-//! volume, which starts empty, and a session-shared volume, which it shares.
+//! volume, which is created holding only the spawn's brief, and a
+//! session-shared volume, which it shares.
 //! Every fork and creation joins the parent step's commit through one sealed
 //! [`FilesystemCommit`], so the children and their volumes appear together.
 
 use super::FilesystemHost;
 use crate::{
     agent::{AgentPath, AgentState, Error, Out, SpawnVolumes, VolumeBinding},
-    conversation::{VolumeClass, VolumeOwner, VolumeRef},
+    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
 };
 use acyclic_actors::guest::{Composition, GuestError, GuestFuture};
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
     StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
 };
-use acyclic_stream::{CommitOutcome, CommitRequest, StreamError};
+use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, OwnedBytes, StreamError};
 use std::sync::Arc;
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
@@ -32,11 +33,16 @@ impl<P, O> FilesystemSpawnVolumes<P, O> {
     }
 }
 
-/// One child volume: forked from `source`, or created empty without one.
+/// Name of the brief file in a spawned child's private volume.
+const BRIEF: &str = "brief.md";
+
+/// One child volume: forked from `source`, or created holding `brief` (if
+/// any) without one.
 struct Planned {
     source: Option<VolumeRef>,
     destination: VolumeRef,
     key: [u8; 16],
+    brief: Option<OwnedBytes>,
 }
 
 fn key(child: &AgentPath, name: &str) -> [u8; 16] {
@@ -57,6 +63,7 @@ fn invalid(error: crate::Error) -> Error {
 fn plan(
     child: &AgentPath,
     binding: &VolumeBinding,
+    brief: Option<&[u8]>,
 ) -> Result<(VolumeBinding, Option<Planned>), Error> {
     let source = &binding.volume;
     if source.class() == VolumeClass::SessionShared {
@@ -86,6 +93,9 @@ fn plan(
             source: fork.then(|| source.clone()),
             destination,
             key: key(child, &binding.name),
+            brief: brief
+                .filter(|_| !fork)
+                .map(|brief| OwnedBytes::from(brief.to_vec())),
         }),
     ))
 }
@@ -103,7 +113,9 @@ where
         let mut planned = Vec::new();
         for out in outs {
             let Out::Spawn {
-                intent, volumes, ..
+                intent,
+                brief,
+                volumes,
             } = out
             else {
                 continue;
@@ -114,7 +126,7 @@ where
             ))?;
             volumes.clear();
             for binding in &parent.volumes {
-                let (bound, created) = plan(&child, binding)?;
+                let (bound, created) = plan(&child, binding, brief.as_deref())?;
                 volumes.push(bound);
                 planned.extend(created);
             }
@@ -126,6 +138,63 @@ where
                 commit: None,
             }) as Box<dyn Composition>
         }))
+    }
+
+    fn brief<'a>(
+        &'a self,
+        child: &'a AgentPath,
+        volumes: &'a [VolumeBinding],
+    ) -> BoxProviderFuture<'a, Result<Option<FileRef>, Error>> {
+        Box::pin(async move {
+            let Some(private) = volumes
+                .iter()
+                .find(|binding| binding.name == super::PRIVATE_VOLUME)
+            else {
+                return Ok(None);
+            };
+            let fs = &self.host.filesystem;
+            let cancellation = CancellationToken::new();
+            // The creating generation, which the spawn commit published and
+            // which never changes: the brief's version on every replay.
+            let generation = fs
+                .workspace_for_creation_operation(
+                    private.volume.storage_name(&mut None).map_err(invalid)?,
+                    self.host.volume_initialization().config,
+                    acyclic_fs::OperationId::from_bytes(key(child, &private.name)),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(|failure| invalid(super::map_error(failure.error)))?
+                .value
+                .ok_or(Error::Record("spawned private volume was not created"))?;
+            // The spawn wrote the brief under the spawning tool's bound.
+            let bytes = match generation
+                .read(&format!("/{BRIEF}"), u64::MAX, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+            {
+                Ok(receipt) => receipt.value,
+                Err(failure) => {
+                    let error = super::map_error(failure.error);
+                    if error.code() == crate::wire::ErrorCode::NotFound {
+                        return Ok(None);
+                    }
+                    return Err(invalid(error));
+                }
+            };
+            let descriptor =
+                FileDescriptor::from_bytes(&bytes, "text/markdown", &mut None).map_err(invalid)?;
+            FileRef::new(
+                private.volume.clone(),
+                BRIEF.to_owned(),
+                hex::encode(generation.id().digest().into_bytes()),
+                descriptor,
+                BRIEF.to_owned(),
+                &mut None,
+            )
+            .map(Some)
+            .map_err(invalid)
+        })
     }
 }
 
@@ -171,6 +240,14 @@ where
             }
         }
         let mut forks = Vec::with_capacity(heads.len());
+        // Each creation's initial files, borrowed by its spec.
+        let files: Vec<Vec<(&str, OwnedBytes)>> = self
+            .planned
+            .iter()
+            .filter(|planned| planned.source.is_none())
+            .map(|planned| planned.brief.iter().map(|brief| (BRIEF, brief.clone())).collect())
+            .collect();
+        let mut files = files.iter();
         let mut creations = Vec::new();
         let mut sources = heads.iter();
         for planned in &self.planned {
@@ -187,7 +264,10 @@ where
                 None => creations.push(CreateSpec {
                     name: destination,
                     initialization: self.host.volume_initialization(),
-                    creation: acyclic_fs::OperationId::from_bytes(planned.key).into(),
+                    creation: acyclic_fs::CreationOperation::populated(
+                        acyclic_fs::OperationId::from_bytes(planned.key),
+                        files.next().ok_or_else(|| guest("spawn creation missing"))?,
+                    ),
                 }),
             }
         }

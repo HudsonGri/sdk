@@ -1,7 +1,9 @@
 //! Spawned volumes: each child's volumes, created in the parent step's one commit.
 
-use super::{AgentState, Error, Out};
+use super::{AgentPath, AgentState, Error, Out, VolumeBinding};
+use crate::conversation::FileRef;
 use acyclic_actors::guest::Composition;
+use acyclic_stream::BoxProviderFuture;
 
 /// Binds the volumes of every child a step spawns and joins their creation to
 /// the step's commit. Bindings are a pure function of the parent and child, so
@@ -10,9 +12,22 @@ use acyclic_actors::guest::Composition;
 pub trait SpawnVolumes: acyclic_stream::ProviderPlatform + 'static {
     /// Fills the volumes of each `Out::Spawn` in `outs`, and returns the
     /// participant that creates them, or `None` when `outs` spawns nothing.
+    /// A spawn's brief is created inside the child's private volume.
     fn bind(
         &self,
         parent: &AgentState,
         outs: &mut [Out],
     ) -> Result<Option<Box<dyn Composition>>, Error>;
+
+    /// The brief file `child`'s private volume was created holding, if any.
+    ///
+    /// A file's version is the generation that holds it, and the creating
+    /// generation exists only once the spawn commit seals, after the adoption
+    /// record is written; the child names its brief at adoption instead. The
+    /// creating generation never changes, so every replay names the same file.
+    fn brief<'a>(
+        &'a self,
+        child: &'a AgentPath,
+        volumes: &'a [VolumeBinding],
+    ) -> BoxProviderFuture<'a, Result<Option<FileRef>, Error>>;
 }

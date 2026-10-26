@@ -2,6 +2,11 @@
 pub(crate) mod children;
 pub use children::{ArchiveInput, SendInput, SpawnInput, WaitInput, WaitMode};
 mod agent_files;
+mod agents;
+pub use agents::{
+    AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
+    SpawnAgentInput, bind_agent_tools,
+};
 mod agent_selection;
 pub mod shell;
 pub use shell::ShellInput;

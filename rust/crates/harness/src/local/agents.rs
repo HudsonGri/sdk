@@ -1,6 +1,7 @@
 //! The local host of the agent model: every agent of this harness on one A4
-//! runtime over the harness stream, its turns on the stock executor with this
-//! harness's model, tools, context and compaction.
+//! runtime over the filesystem's volume-authority stream, so a spawn creates
+//! its child's volumes in the spawn's own commit, and its turns on the stock
+//! executor with this harness's model, tools, context and compaction.
 
 use super::{LocalHarness, LocalStream, storage};
 use crate::{
@@ -11,7 +12,10 @@ use crate::{
     },
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
-    filesystem::{FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors, TurnLimits},
+    filesystem::{
+        FilesystemSpawnVolumes, FilesystemTurnHost, PRIVATE_VOLUME, TurnAuthority, TurnExecutors,
+        TurnLimits,
+    },
     model::ModelContent,
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
@@ -53,7 +57,7 @@ struct Executors(Weak<LocalHarness>);
 impl TurnExecutors for Executors {
     fn executor<'a>(
         &'a self,
-        _: &'a AgentState,
+        agent: &'a AgentState,
         turn: OperationId,
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
@@ -66,7 +70,7 @@ impl TurnExecutors for Executors {
             let writer = authority
                 .content
                 .writer
-                .as_deref()
+                .as_ref()
                 .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
             let prompt = match input {
                 ModelContent::Text(text) => Some(text.as_str()),
@@ -76,7 +80,7 @@ impl TurnExecutors for Executors {
                 Some(manifest) => manifest.clone(),
                 None => {
                     local
-                        .stage_context_manifest_with(turn, prompt, writer)?
+                        .stage_context_manifest_with(turn, prompt, &**writer)?
                         .await?
                 }
             };
@@ -90,11 +94,22 @@ impl TurnExecutors for Executors {
             let provider = provider
                 .bind_content(reader.clone(), local.limits.file_bytes)
                 .unwrap_or_else(|| provider.clone());
+            // The agent tools act for this turn: their effects commit with it.
+            let mut tools = local.tools().clone();
+            if let Some(effects) = &authority.effects {
+                crate::tools::bind_agent_tools(
+                    &mut tools,
+                    agent,
+                    Arc::clone(effects),
+                    Arc::clone(writer),
+                    local.limits.file_bytes,
+                )?;
+            }
             let executor = StockExecutor::new(
                 model.clone(),
                 provider,
                 crate::context::ContextPipeline::default(),
-                local.tools().clone(),
+                tools,
             )
             .with_limits(local.limits)
             .with_compaction_policy(local.compaction.clone())
@@ -172,7 +187,9 @@ impl LocalHarness {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
-        let stream = self.runtime.task_host().workflow_stream();
+        let stream = self.agent_stream.clone().ok_or_else(|| {
+            Error::Unsupported("an embedded harness has no agent stream".into())
+        })?;
         let limits = TurnLimits {
             maximum_bytes: self.limits.file_bytes,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -192,12 +209,13 @@ impl LocalHarness {
         let within =
             ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
         let agents = Arc::new(
-            AgentHost::new(
+            AgentHost::with_spawn_volumes(
                 stream,
                 ExecutorDriver::new(Arc::clone(&turns)),
                 within,
                 ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 Arc::new(SystemClock),
+                Arc::new(FilesystemSpawnVolumes::new(self.files.clone())),
             )
             .map_err(storage)?,
         );
