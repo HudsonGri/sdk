@@ -1,14 +1,20 @@
 use crate::{Step, last_content};
 use serde_json::Value;
 use std::collections::BTreeMap;
+mod recording;
+pub use recording::{CapturedBinding, RecordingProjection};
 
-#[derive(serde::Deserialize)]
+/// Selection from JSON text carried by an actual model request.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct JsonSelection {
-    text: Value,
-    pointer: String,
+pub struct JsonSelection {
+    /// Literal JSON text or an existing request-binding expression.
+    pub text: Value,
+    /// RFC 6901 pointer into the decoded text.
+    pub pointer: String,
+    /// Existing selected leaves to replace. Captured selectors require this empty.
     #[serde(default)]
-    set: BTreeMap<String, Value>,
+    pub set: BTreeMap<String, Value>,
 }
 
 /// Resolve exact JSON leaves `{"$request":"/pointer"}` or
@@ -22,7 +28,9 @@ struct JsonSelection {
 /// remains opaque, including strings which resemble binding expressions.
 pub fn bind_result(step: &Step, body: &Value) -> Result<Step, String> {
     if step.replay.is_some() {
-        return Ok(step.clone());
+        return recording::bind_recording(step, body).map_err(|error| format!(
+            "STEP bind recorded selectors failed: {error}; RECOVERY: correct recording_projection selectors against the admitted exchange and current request, then rerun harness-mock-model --script <script> --record <requests.jsonl>"
+        ));
     }
     let result = serde_json::from_str(&last_content(body, true)).unwrap_or(Value::Null);
     let mut value = serde_json::to_value(step).map_err(|error| error.to_string())?;
@@ -139,6 +147,17 @@ pub fn load_script(path: &std::path::Path) -> std::io::Result<crate::Script> {
                 step.replay = Some(acyclic_harness_core::http::recording::Exchange::load(
                     &root.join(recording),
                 )?);
+                if step.recording_projection.is_some() {
+                    step.decoded_replay = Some(Box::new(
+                        recording::decode_recording(step).map_err(|error| std::io::Error::other(format!(
+                            "STEP admit recorded projection failed: {error}; RECOVERY: correct recording_projection against the complete admitted exchange, then rerun harness-mock-model --script {} --record <requests.jsonl>", path.display()
+                        )))?,
+                    ));
+                }
+            } else if step.recording_projection.is_some() {
+                return Err(std::io::Error::other(
+                    "STEP admit recorded projection failed: recording is absent; RECOVERY: select a digest-verified recording in this step before declaring recording_projection",
+                ));
             }
         }
     }

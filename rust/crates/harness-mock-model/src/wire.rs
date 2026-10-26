@@ -146,6 +146,8 @@ fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens
 
 /// Fully selected HTTP reply. Raw captures never pass through a provider codec.
 pub struct Reply {
+    /// Raw versus derived capture identity, retained separately from wire bytes.
+    pub origin: Option<ReplayOrigin>,
     /// HTTP status.
     pub status: u16,
     /// Exact content type, absent if the recorded peer omitted it.
@@ -155,10 +157,34 @@ pub struct Reply {
     /// Keep the response open after these chunks.
     pub hold: bool,
 }
+/// A replay receipt cannot silently present derived output as the original wire.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ReplayOrigin {
+    /// True only for an explicitly declared semantic projection.
+    pub derived: bool,
+    /// Unmodified provenance of the original admitted exchange.
+    pub provenance: acyclic_harness_core::http::recording::Provenance,
+}
 /// The single response selection path for both scripts and verified captures.
 pub fn reply(path: &str, step: &Step, input_tokens: u64) -> Option<Reply> {
+    if let Some(derived) = &step.derived_replay {
+        // A declared semantic projection uses this same codec. The verified
+        // original capture remains on the outer step and is never rewritten.
+        let replay = step.replay.as_ref()?;
+        step.recording_projection.as_ref()?;
+        let mut reply = reply(path, derived, input_tokens)?;
+        reply.origin = Some(ReplayOrigin {
+            derived: true,
+            provenance: replay.provenance().clone(),
+        });
+        return Some(reply);
+    }
     if let Some(replay) = &step.replay {
         return Some(Reply {
+            origin: Some(ReplayOrigin {
+                derived: false,
+                provenance: replay.provenance().clone(),
+            }),
             status: replay.provenance().status?,
             content_type: replay.provenance().content_type.clone(),
             chunks: replay.chunks().to_vec(),
@@ -188,6 +214,7 @@ pub fn reply(path: &str, step: &Step, input_tokens: u64) -> Option<Reply> {
         )
     };
     Some(Reply {
+        origin: None,
         status: step.status.unwrap_or(200),
         content_type: Some(content_type.into()),
         chunks,

@@ -69,8 +69,8 @@
 //! keeps request-derived selectors and adversarial mutations in the one binder.
 mod bindings;
 mod wire;
-pub use bindings::{bind_result, load_script};
-pub use wire::{Reply, reply as reply_with_usage};
+pub use bindings::{CapturedBinding, JsonSelection, RecordingProjection, bind_result, load_script};
+pub use wire::{ReplayOrigin, Reply, reply as reply_with_usage};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -125,6 +125,15 @@ pub struct Step {
     /// Verified raw reply; never accepted as inline scripted data.
     #[serde(skip)]
     pub replay: Option<acyclic_harness_core::http::recording::Exchange>,
+    /// Explicit semantic derivation from a verified capture. Absence retains
+    /// the raw transport chunks byte-for-byte.
+    pub recording_projection: Option<RecordingProjection>,
+    /// Decoded once at admission through the live provider decoder.
+    #[serde(skip)]
+    pub decoded_replay: Option<Box<Step>>,
+    /// Request-bound derivation; raw exchange/provenance remains untouched.
+    #[serde(skip)]
+    pub derived_replay: Option<Box<Step>>,
     /// Request guards.
     pub when: Match,
     /// Text chunks, encoded as separate SSE events.

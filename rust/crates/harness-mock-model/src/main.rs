@@ -71,6 +71,7 @@ fn answer(
             .ok()
             .and_then(|step| reply_with_usage(endpoint, step, tokens))
         {
+            let origin = reply.origin;
             let chunks = stream::iter(
                 reply
                     .chunks
@@ -85,6 +86,9 @@ fn answer(
                 Ok::<_, Infallible>(Bytes::new())
             });
             let mut response = Response::new(Body::from_stream(chunks.chain(tail)));
+            if let Some(origin) = origin {
+                response.extensions_mut().insert(origin);
+            }
             *response.status_mut() =
                 StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             if let Some(kind) = reply.content_type {
@@ -135,7 +139,8 @@ fn record(
         .unwrap_or(("", ""));
     let endpoint = endpoint.strip_prefix("v1/").unwrap_or(endpoint);
     host.sequence += 1;
-    let record = json!({"sequence":host.sequence,"case":namespace,"method":method,"path":endpoint,"body":body,"step":step,"status":reply.status().as_u16()});
+    let origin = reply.extensions().get::<harness_mock_model::ReplayOrigin>();
+    let record = json!({"sequence":host.sequence,"case":namespace,"method":method,"path":endpoint,"body":body,"step":step,"status":reply.status().as_u16(),"replay":origin});
     // Consumption and enqueue share one executor turn. The ordered writer
     // owns append -> flush -> event; the HTTP reply waits for that boundary.
     let event = json!({"event":"request","sequence":host.sequence,"case":namespace,"path":endpoint,"step":step});

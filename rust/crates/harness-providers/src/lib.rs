@@ -48,12 +48,16 @@ mod prepared;
 mod projection;
 mod protocol;
 mod reasoning;
+#[cfg(not(target_arch = "wasm32"))]
+mod recording_replay;
 mod registry;
 mod resolved;
 mod retry;
 mod spec;
 mod sse;
 mod stream;
+#[cfg(not(target_arch = "wasm32"))]
+pub use recording_replay::decode_recording;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
