@@ -12,9 +12,14 @@ use std::{
 
 type Follow = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
 
-enum Subscription {
+enum SubscriptionState {
     Opening(BoxProviderFuture<'static, Result<Follow, StreamError>>),
     Open(Follow),
+}
+
+struct Subscription {
+    request: wire::SessionSubscription,
+    state: SubscriptionState,
 }
 
 /// Admission failures are distinct from authenticated provider refusals.
@@ -146,6 +151,65 @@ impl WireSession {
         self.views.get(stream)
     }
 
+    /// Replace a complete bounded set of stream subscriptions atomically.
+    /// Existing selected follows keep their fold and cursor. New cursors apply
+    /// only to newly selected streams. Validation finishes before any old
+    /// interest is released, and removals precede new pool admission.
+    pub fn replace_streams(
+        &mut self,
+        subscriptions: impl IntoIterator<Item = (StreamPath, wire::SessionSubscription)>,
+    ) -> Result<(), WireSessionError> {
+        let mut requested = BTreeMap::new();
+        for (index, (path, subscription)) in subscriptions.into_iter().enumerate() {
+            if index == self.policy.selected_capacity() {
+                return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
+            }
+            validate_subscription(&path, &subscription)?;
+            if let Some(existing) = self.follows.get(&path)
+                && (existing.request.credential != subscription.credential
+                    || existing.request.kind != subscription.kind)
+            {
+                // Keeping a cursor must never silently retain another principal
+                // or downgrade a checked follow's immutable history anchor.
+                return Err(WireSessionError::InvalidSubscription);
+            }
+            if requested.insert(path, subscription).is_some() {
+                return Err(WireSessionError::AlreadyOpen);
+            }
+        }
+        let demand = ViewDemand::new(
+            self.policy,
+            requested.keys().cloned(),
+            std::iter::empty(),
+            self.demand.expanded().cloned(),
+        ).map_err(WireSessionError::Demand)?;
+        let opening = requested.keys().filter(|path| !self.follows.contains_key(*path)).count();
+        // A replacement can change composition (for example focus) while its
+        // stream membership is unchanged. Fence renderer caches in that case too.
+        let last_revision = self.revision.checked_add(1 + opening as u64)
+            .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+        // These futures are lazy: staging them cannot admit a pool request.
+        let mut staged = Vec::with_capacity(opening);
+        let mut revision = self.revision + 1;
+        for (path, subscription) in requested {
+            if self.follows.contains_key(&path) { continue; }
+            revision += 1;
+            let from = subscription.resume.as_ref()
+                .ok_or(WireSessionError::InvalidSubscription)?.next;
+            let (view, subscription) = self.stage_stream(subscription, from, revision);
+            staged.push((path, view, subscription));
+        }
+        self.follows.retain(|path, _| demand.contains_full(path));
+        self.views.retain(|path, _| demand.contains_full(path));
+        for (path, view, subscription) in staged {
+            self.views.insert(path.clone(), view);
+            self.follows.insert(path, subscription);
+        }
+        self.demand = demand;
+        self.revision = last_revision;
+        Ok(())
+    }
+
     /// Delegate bounded credential registration to the canonical pool.
     ///
     /// # Errors
@@ -194,36 +258,29 @@ impl WireSession {
         if self.follows.contains_key(&agent) {
             return Err(WireSessionError::AlreadyOpen);
         }
-        let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
-            return Err(WireSessionError::InvalidSubscription);
-        };
-        if follow.delivery != wire::SessionDelivery::All as i32 || subscription.filter.is_some() {
-            return Err(WireSessionError::InvalidSubscription);
-        }
-        let resume = subscription
-            .resume
-            .as_ref()
-            .ok_or(WireSessionError::InvalidSubscription)?;
-        if subscription.channel.is_some() {
-            return Err(WireSessionError::InvalidSubscription);
-        }
-        // Validate before the lazy future takes custody of caller-owned bytes.
-        wire_codec::session::validate_follow(follow, resume)
-            .map_err(WireSessionError::Stream)?;
-        let path = wire_codec::session::stream_path(&follow.resource)
-            .map_err(WireSessionError::Stream)?;
-        if path != agent {
-            return Err(WireSessionError::NotRequested);
-        }
+        let from = validate_subscription(&agent, &subscription)?;
         let revision = self.revision.checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-        let view = StreamView::new(self.view_policy, resume.next, revision);
-        let client = self.client.clone();
-        let opening = Box::pin(async move { client.subscribe(subscription).await });
+        let (view, subscription) = self.stage_stream(subscription, from, revision);
         self.views.insert(agent.clone(), view);
-        self.follows.insert(agent, Subscription::Opening(opening));
+        self.follows.insert(agent, subscription);
         self.revision = revision;
         Ok(())
+    }
+
+    fn stage_stream(
+        &self,
+        subscription: wire::SessionSubscription,
+        from: u64,
+        revision: u64,
+    ) -> (StreamView, Subscription) {
+        let request = subscription.clone();
+        let client = self.client.clone();
+        let opening = Box::pin(async move { client.subscribe(subscription).await });
+        (
+            StreamView::new(self.view_policy, from, revision),
+            Subscription { request, state: SubscriptionState::Opening(opening) },
+        )
     }
 
     fn poll_open(
@@ -234,13 +291,13 @@ impl WireSession {
         let Some(subscription) = self.follows.get_mut(agent) else {
             return Poll::Ready(Err(WireSessionError::NotOpen));
         };
-        let Subscription::Opening(opening) = subscription else {
+        let SubscriptionState::Opening(opening) = &mut subscription.state else {
             return Poll::Ready(Ok(()));
         };
         match opening.as_mut().poll(context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(stream)) => {
-                *subscription = Subscription::Open(stream);
+                subscription.state = SubscriptionState::Open(stream);
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(error)) => {
@@ -263,7 +320,7 @@ impl WireSession {
             Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
             Poll::Ready(Ok(())) => {}
         }
-        let Some(Subscription::Open(stream)) = self.follows.get_mut(agent) else {
+        let Some(Subscription { state: SubscriptionState::Open(stream), .. }) = self.follows.get_mut(agent) else {
             return Poll::Ready(Err(WireSessionError::NotOpen));
         };
         match stream.poll_next_unpin(context) {
@@ -305,4 +362,24 @@ impl WireSession {
     pub fn followed_agents(&self) -> usize {
         self.follows.len()
     }
+}
+
+fn validate_subscription(
+    path: &StreamPath,
+    subscription: &wire::SessionSubscription,
+) -> Result<u64, WireSessionError> {
+    let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
+        return Err(WireSessionError::InvalidSubscription);
+    };
+    if follow.delivery != wire::SessionDelivery::All as i32
+        || subscription.filter.is_some() || subscription.channel.is_some()
+    {
+        return Err(WireSessionError::InvalidSubscription);
+    }
+    let resume = subscription.resume.as_ref().ok_or(WireSessionError::InvalidSubscription)?;
+    wire_codec::session::validate_follow(follow, resume).map_err(WireSessionError::Stream)?;
+    if wire_codec::session::stream_path(&follow.resource).map_err(WireSessionError::Stream)? != *path {
+        return Err(WireSessionError::NotRequested);
+    }
+    Ok(resume.next)
 }

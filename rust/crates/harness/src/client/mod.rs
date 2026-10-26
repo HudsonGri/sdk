@@ -82,7 +82,7 @@ mod agents;
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub use agents::{AgentClient, AgentClientError, AgentEvent};
+pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod agent_local;
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
