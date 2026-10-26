@@ -7,6 +7,7 @@ pub struct NativeMountSession {
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
     pub(super) terminal_source_failure: Option<NativeMountError>,
+    pub(super) terminal_failures: retirement::TerminalFailures,
     pub(super) request: NativeMountRequest,
     pub(super) destination_guard: Option<MountDestinationGuard>,
     pub(super) measured_cleanup_failed: bool,
@@ -58,6 +59,7 @@ impl NativeMountSession {
             destination_guard: None,
             retained_source,
             terminal_source_failure: None,
+            terminal_failures: retirement::TerminalFailures::default(),
             startup_source_watch: None,
             measured_cleanup_failed: false,
             namespace_detach_confirmed: false,
@@ -148,6 +150,12 @@ impl NativeMountSession {
             return None;
         }
         self.namespace_outcome.take()
+    }
+
+    pub(super) fn take_retired_failures(&mut self) -> Option<retirement::TerminalFailures> {
+        self.cleanup_state()
+            .cleanup_complete()
+            .then(|| std::mem::take(&mut self.terminal_failures))
     }
 
     /// Moves the first retained fatal SDK callback failure and its actual completed request work.
@@ -297,7 +305,7 @@ impl NativeMountSession {
 
     /// Detaches the kernel namespace and ends the driver session; returns whether a live session was actually stopped.
     pub fn stop(&mut self) -> Result<bool, NativeMountError> {
-        if self.cleanup_state().cleanup_complete() {
+        if self.cleanup_state().cleanup_complete() && self.terminal_failures.is_empty() {
             return Ok(false);
         }
         #[cfg(target_os = "macos")]
@@ -337,11 +345,22 @@ impl NativeMountSession {
         work: &NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
         let result = (|| {
-            let changed = self.stop_namespace_with_context(work)?;
-            Ok(self.release_destination_with_context(work)? || changed)
+            let changed = self.retire_with_context(work)?;
+            match self.terminal_failures.take() {
+                Some(error) => Err(error),
+                None => Ok(changed),
+            }
         })();
         self.measured_cleanup_failed = result.is_err();
         result
+    }
+
+    pub(super) fn retire_with_context(
+        &mut self,
+        work: &NativeSessionStopWork<'_>,
+    ) -> Result<bool, NativeMountError> {
+        let changed = self.stop_namespace_with_context(work)?;
+        Ok(self.release_destination_with_context(work)? || changed)
     }
 
     // The destination fence remains owned after physical namespace retirement.
@@ -353,7 +372,7 @@ impl NativeMountSession {
         let result = (|| {
             let mut changed = false;
             if let Some(driver) = self.driver.as_mut() {
-                with_driver!(
+                self.terminal_failures = with_driver!(
                     &mut *driver,
                     session,
                     session.stop(work),
@@ -381,6 +400,9 @@ impl NativeMountSession {
                 #[cfg(windows)]
                 {
                     self.namespace_outcome = driver.take_namespace_outcome();
+                    if let Some(outcome) = self.namespace_outcome.as_mut() {
+                        self.terminal_failures = std::mem::take(&mut outcome.failures);
+                    }
                 }
                 drop(self.driver.take());
                 changed = true;

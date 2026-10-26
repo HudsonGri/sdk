@@ -301,7 +301,7 @@ impl FuseSession {
     pub(in crate::native_mount) fn stop(
         &mut self,
         work: &NativeSessionStopWork<'_>,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
         let meter = match work {
             NativeSessionStopWork::Meter(work) => {
                 work.admit(WorkCounters::UNCHARGED)?;
@@ -327,10 +327,7 @@ impl FuseSession {
                 })?;
         }
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        match state.failure.take() {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        Ok(std::mem::take(&mut state.failure))
     }
 }
 

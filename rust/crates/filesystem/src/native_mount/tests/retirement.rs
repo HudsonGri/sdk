@@ -25,6 +25,37 @@ fn taking_a_terminal_cause_preserves_the_distinct_cleanup_cause()
     Ok(())
 }
 
+#[test]
+fn stopped_session_reports_each_cause_after_releasing_its_fence()
+-> Result<(), Box<dyn std::error::Error>> {
+    for mode in 0..3 {
+        let Fixture { root, mut session, work, fence } = Fixture::new()?;
+        let producer = std::fs::read(root.path().join("absent-worker"))
+            .expect_err("worker input must be absent");
+        let cleanup = std::fs::read(root.path())
+            .expect_err("a directory cannot be read as cleanup bytes");
+        let producer_code = producer.raw_os_error();
+        let cleanup_code = cleanup.raw_os_error();
+        session.terminal_failures = crate::native_mount::retirement::TerminalFailures {
+            producer: Some(producer.into()),
+            cleanup: Some(cleanup.into()),
+        };
+        let wait = CancellationToken::new();
+        let stop = match mode {
+            0 => NativeSessionStopWork::Meter(&work),
+            1 => NativeSessionStopWork::AcceptedWait(&wait),
+            _ => NativeSessionStopWork::AcceptedDrop,
+        };
+        let before = work.receipt();
+        assert!(matches!(session.stop_with_context(&stop), Err(NativeMountError::Io(cause)) if cause.raw_os_error() == producer_code));
+        retired(root.path(), &fence, before, &work)?;
+        assert!(session.cleanup_state().cleanup_complete());
+        assert!(matches!(session.stop_with_context(&stop), Err(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code));
+        assert!(!session.stop_with_context(&stop)?);
+    }
+    Ok(())
+}
+
 pub(in crate::native_mount) struct Fixture {
     pub(in crate::native_mount) root: tempfile::TempDir,
     pub(in crate::native_mount) session: NativeMountSession,

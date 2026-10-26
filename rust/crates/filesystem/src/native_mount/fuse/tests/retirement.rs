@@ -101,7 +101,8 @@ fn terminal_worker_retires_destination(
     } else {
         NativeSessionStopWork::AcceptedWait(&wait)
     };
-    let first = facade.stop(&stop).expect_err("worker error must survive cleanup");
+    let mut outcomes = facade.stop(&stop)?;
+    let first = outcomes.take().ok_or("worker error was lost during cleanup")?;
     if panicked {
         let NativeMountError::DriverPanicked { panic, .. } = first else {
             panic!("worker panic changed to {first:?}");
@@ -111,9 +112,10 @@ fn terminal_worker_retires_destination(
     } else {
         assert!(matches!(first, NativeMountError::Io(ref cause) if cause.kind() == std::io::ErrorKind::NotFound));
     }
-    let second = facade.stop(&stop).expect_err("source error must remain owned");
+    let second = outcomes.take().ok_or("source error was lost during cleanup")?;
     assert!(matches!(second, NativeMountError::Io(ref cause) if cause.raw_os_error() == cleanup_code));
-    facade.stop(&stop)?;
+    assert!(outcomes.is_empty());
+    assert!(facade.stop(&stop)?.is_empty());
     assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
     assert_eq!(work.receipt().peak_allocation_bytes, before.peak_allocation_bytes);
     Ok(())
@@ -284,10 +286,14 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
     let caller = original.clone();
     let worker = std::thread::spawn(move || {
         let result = match mode {
-            Retirement::Meter => facade.stop(&NativeSessionStopWork::Meter(&caller)),
+            Retirement::Meter => facade
+                .stop(&NativeSessionStopWork::Meter(&caller))
+                .map(|outcome| assert!(outcome.is_empty())),
             Retirement::AcceptedWait => {
                 let wait = crate::CancellationToken::new();
-                facade.stop(&NativeSessionStopWork::AcceptedWait(&wait))
+                facade
+                    .stop(&NativeSessionStopWork::AcceptedWait(&wait))
+                    .map(|outcome| assert!(outcome.is_empty()))
             }
             Retirement::LastOwner => {
                 let mut owner = crate::NativeMountSession::new(

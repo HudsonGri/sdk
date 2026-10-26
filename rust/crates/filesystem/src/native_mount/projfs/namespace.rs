@@ -11,15 +11,3 @@ pub(in crate::native_mount) struct ProjFsNamespaceOutcome {
     pub(super) _state: ProjectorState,
     pub(super) callbacks: Arc<Mutex<PostOperationFailures>>,
 }
-
-impl ProjFsNamespaceOutcome {
-    pub(in crate::native_mount) fn take_capture_failures(
-        &mut self,
-    ) -> Option<(NativeMountError, Option<NativeMountError>)> {
-        self.failures.take_pair()
-    }
-
-    pub(in crate::native_mount) fn take_capture_failure(&mut self) -> Option<NativeMountError> {
-        self.failures.take()
-    }
-}

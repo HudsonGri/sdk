@@ -13,12 +13,10 @@ impl TerminalFailures {
         self.producer.take().or_else(|| self.cleanup.take())
     }
 
-    #[cfg(any(windows, test))]
     pub(super) fn take_pair(&mut self) -> Option<(NativeMountError, Option<NativeMountError>)> {
         self.take().map(|first| (first, self.take()))
     }
 
-    #[cfg(any(target_os = "linux", windows, test))]
     pub(super) fn is_empty(&self) -> bool {
         self.producer.is_none() && self.cleanup.is_none()
     }

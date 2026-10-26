@@ -205,7 +205,7 @@ impl DarwinMountSession {
     pub(in crate::native_mount) fn stop(
         &mut self,
         work: &crate::native_mount::NativeSessionStopWork<'_>,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
         work.check_wait()?;
         let wait = work.wait();
         let events = Arc::clone(&self.unmount);
@@ -213,11 +213,13 @@ impl DarwinMountSession {
         let was_mounted = {
             let mut state = events.state();
             if state.resources.is_none() && self.thread.is_none() {
-                events.retire(&mut state, wait, SourceRetirementWait::Caller)?;
                 drop(state);
-                return self.classify_detached_loop(false);
+                return self.retired_outcome(&events, wait, false);
             }
-            if let Some(error) = state.failure.take() {
+            if (state.resources.is_some()
+                || state.retirement.as_ref().is_some_and(|packet| !packet.is_retired()))
+                && let Some(error) = state.failure.take()
+            {
                 return Err(error);
             }
             events.requested.store(true, Ordering::Release);
@@ -251,8 +253,14 @@ impl DarwinMountSession {
             if thread.is_finished() {
                 break;
             }
-            if let Some(error) = events.state().failure.take() {
-                return Err(error);
+            {
+                let mut state = events.state();
+                if (state.resources.is_some()
+                    || state.retirement.as_ref().is_some_and(|packet| !packet.is_retired()))
+                    && let Some(error) = state.failure.take()
+                {
+                    return Err(error);
+                }
             }
             if Instant::now() >= deadline {
                 return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
@@ -273,28 +281,47 @@ impl DarwinMountSession {
                     }),
             );
         }
-        let mut state = events.state();
-        events.retire(&mut state, wait, SourceRetirementWait::Caller)?;
-        drop(state);
-        self.classify_detached_loop(was_mounted)
+        self.retired_outcome(&events, wait, was_mounted)
     }
 
-    fn classify_detached_loop(&mut self, was_mounted: bool) -> Result<(), NativeMountError> {
-        let Some(result) = self.loop_result.as_mut() else {
-            return Ok(());
-        };
+    fn retired_outcome(
+        &mut self,
+        events: &DriverSessionResources,
+        wait: Option<&crate::CancellationToken>,
+        was_mounted: bool,
+    ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
+        let mut state = events.state();
+        if let Err(error) = events.retire(&mut state, wait, SourceRetirementWait::Caller) {
+            if state.resources.is_some()
+                || state.retirement.as_ref().is_some_and(|packet| !packet.is_retired())
+            {
+                return Err(error);
+            }
+            state.failure.cleanup = Some(error);
+        }
+        if let Some(error) = self.classify_detached_loop(was_mounted)? {
+            state.failure.producer = Some(error);
+        }
+        Ok(std::mem::take(&mut state.failure))
+    }
+
+    fn classify_detached_loop(
+        &mut self,
+        was_mounted: bool,
+    ) -> Result<Option<NativeMountError>, NativeMountError> {
+        if self.loop_result.is_none() {
+            return Ok(None);
+        }
         let before = self
             .loop_finished_before_teardown
             .ok_or(NativeMountError::ControlPending)?;
+        let result = self.loop_result.take().ok_or(NativeMountError::ControlPending)?;
         match result {
-            Ok(0) if !before || !was_mounted => Ok(()),
-            Ok(status) => Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure(
-                *status,
-            ))),
-            Err(error) => Err(std::mem::replace(
-                error,
-                NativeMountError::Lifecycle("Darwin mount loop panicked"),
-            )),
+            Ok(0) if !before || !was_mounted => Ok(None),
+            Ok(status) => Ok(Some(NativeMountError::DarwinTeardown(DarwinTeardownFailure(
+                status,
+            )))),
+            Err(error) => Ok(Some(error)),
         }
     }
 }

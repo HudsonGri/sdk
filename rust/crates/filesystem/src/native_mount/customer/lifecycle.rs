@@ -71,23 +71,17 @@ impl From<crate::FsError> for MountLifecycleError {
 /// SDK source retained after its view-dependent physical work has retired.
 pub struct NativeMountDrainProof {
     pub(super) _source: Arc<dyn MountFilesystem>,
+    pub(super) failures: super::super::retirement::TerminalFailures,
     #[cfg(windows)]
-    pub(super) namespace_outcome: Option<super::super::projfs::ProjFsNamespaceOutcome>,
+    pub(super) _namespace_outcome: Option<super::super::projfs::ProjFsNamespaceOutcome>,
 }
 
 impl NativeMountDrainProof {
-    /// Takes the preserved authored failure and any distinct namespace failure.
+    /// Takes the preserved producer failure and any distinct cleanup failure.
     pub fn take_retained_capture_failure(
         &mut self,
     ) -> Option<(NativeMountError, Option<NativeMountError>)> {
-        #[cfg(windows)]
-        {
-            self.namespace_outcome.as_mut()?.take_capture_failures()
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
+        self.failures.take_pair()
     }
 }
 
