@@ -1637,7 +1637,7 @@ async fn staged_durable_inputs_are_canonical_json() {
 
 #[tokio::test]
 async fn created_source_checks_reprove_only_live_state_after_one_full_observation() {
-    let fixture = Fixture::new(project()).await;
+    let mut fixture = Fixture::new(project()).await;
     assert!(matches!(
         fixture.execute().await.unwrap().0,
         EffectStatus::Succeeded { .. }
@@ -1651,7 +1651,8 @@ async fn created_source_checks_reprove_only_live_state_after_one_full_observatio
         .next()
         .unwrap()
         .clone();
-    let examined = || fixture.startup.receipt().items_examined;
+    let original_work = fixture.startup.clone();
+    let examined = || original_work.receipt().items_examined;
     let before = examined();
     let observed = fixture
         .provider
@@ -1672,6 +1673,11 @@ async fn created_source_checks_reprove_only_live_state_after_one_full_observatio
         "a check after one full observation re-proves only live state ({verifying} of {observing} items)"
     );
     // Negative control: a provider that never observed the allocation pays in full.
+    // A cold service invocation has the original limit on the same ledger;
+    // setup and the previous process's observations remain in its receipt.
+    fixture.startup = fixture.startup.invocation_window().unwrap();
+    assert!(fixture.startup.shares_invocation_context(&original_work));
+    assert_eq!(fixture.startup.budget(), original_work.budget());
     let reopened = fixture.reopen().await;
     let before = examined();
     reopened
@@ -1682,23 +1688,25 @@ async fn created_source_checks_reprove_only_live_state_after_one_full_observatio
     // The memo serves only the allocation it observed.
     let mut substituted = observed.0.1.clone();
     substituted.roots.get_mut(&key).unwrap().source_epoch += 1;
+    let substitution_work = fixture.startup.invocation_window().unwrap();
     assert!(
-        fixture
+        matches!(fixture
             .provider
-            .verify_created_source(&key, &substituted, &fixture.startup)
-            .await
-            .is_err()
+            .verify_created_source(&key, &substituted, &substitution_work)
+            .await,
+            Err(Error::NativeBoundary { code: ErrorCode::Unauthorized, .. }))
     );
     // And it never skips the live proof: a replaced native root is refused.
     let retained = fixture.directory.path().join("retained-project");
     std::fs::rename(&fixture.native, &retained).unwrap();
     std::fs::create_dir(&fixture.native).unwrap();
+    let replacement_work = fixture.startup.invocation_window().unwrap();
     assert!(
-        fixture
+        matches!(fixture
             .provider
-            .verify_created_source(&key, &observed.0.1, &fixture.startup)
-            .await
-            .is_err()
+            .verify_created_source(&key, &observed.0.1, &replacement_work)
+            .await,
+            Err(Error::NativeWork { cause: NativeTreeMaterializationError::AllocationChanged { .. }, .. }))
     );
 }
 
