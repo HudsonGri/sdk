@@ -1099,7 +1099,12 @@ async function build(options) {
         if (entry.name.startsWith(".")) await rm(resolve(buildOutput, entry.name), { recursive: true, force: true });
       }
     };
-    let rustcCapture = await createRustcInvocationCapture();
+    // Dependency cache entries remain warm. The root binding must link once
+    // under this capture to supply actual compiler provenance, even when its
+    // old artifact was already cached. Admit that work before the sole build;
+    // discovering missing provenance afterwards must never trigger a retry.
+    execFileSync("cargo", ["clean", "--package", family.rustPackageName, "--profile", policy.profile, "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
+    const rustcCapture = await createRustcInvocationCapture();
     try {
       // Remove only the two provenance files this command owns. Any other
       // pre-existing entry is rejected by bundleArtifacts rather than hidden.
@@ -1109,16 +1114,7 @@ async function build(options) {
       // clean publication assembly directory, which has no workspace dev
       // dependencies. Load NAPI-RS only for the build command.
       await runNapiBuild();
-      try {
-        attestedInputs.linker.actual = await rustcCapture.read(options.target);
-      } catch (error) {
-        if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message))) throw error;
-        await rustcCapture.close();
-        execFileSync("cargo", ["clean", "--package", family.rustPackageName, "--profile", policy.profile, "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
-        rustcCapture = await createRustcInvocationCapture();
-        await runNapiBuild();
-        attestedInputs.linker.actual = await rustcCapture.read(options.target);
-      }
+      attestedInputs.linker.actual = await rustcCapture.read(options.target);
     } finally {
       await rustcCapture.close();
       await rm(temporary, { recursive: true, force: true });
