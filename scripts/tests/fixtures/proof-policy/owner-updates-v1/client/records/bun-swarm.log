@@ -1,0 +1,16 @@
+bun test v1.4.2 (744846f84)
+
+typescript/packages/harness/test/swarm-client.test.ts:
+(pass) memory volumes use the production swarm pool and file fold through WASM [436.74ms]
+(pass) Rust rejects invalid swarm admission before following: agents [0.38ms]
+(pass) Rust rejects invalid swarm admission before following: selected [0.09ms]
+(pass) Rust rejects invalid swarm admission before following: snapshot_files [0.09ms]
+(pass) Rust rejects invalid swarm admission before following: config_files [0.06ms]
+(pass) Rust rejects invalid swarm admission before following: layout_bytes [0.06ms]
+(pass) Rust rejects invalid swarm admission before following: extra [0.07ms]
+(pass) shared status keys preserve opaque bytes and separate agent namespaces [0.85ms]
+
+ 8 pass
+ 0 fail
+ 14 expect() calls
+Ran 8 tests across 1 file. [476.00ms]

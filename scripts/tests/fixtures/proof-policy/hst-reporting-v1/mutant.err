@@ -1,0 +1,4 @@
+
+thread 'qualification_request_refuses_all_unexported_histories' (6700) panicked at rust/crates/stream/tests/wave1_coverage.rs:45:5:
+complete HST qualification must refuse unexported histories
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

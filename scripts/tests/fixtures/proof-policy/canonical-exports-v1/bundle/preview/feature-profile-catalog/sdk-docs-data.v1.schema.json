@@ -1,0 +1,699 @@
+{
+  "$defs": {
+    "ApiItem": {
+      "properties": {
+        "docs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "links": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": "Public same-crate Rustdoc links keyed by their rendered label.",
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parentId": {
+          "description": "Rustdoc parent identity retained when public-api reports one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "reexport": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reexportTarget": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signature": {
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceSpan"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "path",
+        "signature"
+      ],
+      "type": "object"
+    },
+    "ArchiveSource": {
+      "additionalProperties": false,
+      "description": "An immutable registry input and the lock actually used for its Cargo run.",
+      "properties": {
+        "package": {
+          "type": "string"
+        },
+        "publisherVcs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PublisherVcs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registryChecksum": {
+          "type": "string"
+        },
+        "resolutionLock": {
+          "$ref": "#/$defs/ResolutionLock"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "package",
+        "version",
+        "registryChecksum",
+        "resolutionLock"
+      ],
+      "type": "object"
+    },
+    "CapturedSource": {
+      "description": "Authority of the captured source; archive identities never impersonate Git.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "git",
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "revision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "archives": {
+              "items": {
+                "$ref": "#/$defs/ArchiveSource"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "registryArchives",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "archives"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Channel": {
+      "enum": [
+        "preview",
+        "release"
+      ],
+      "type": "string"
+    },
+    "Family": {
+      "properties": {
+        "crateName": {
+          "type": "string"
+        },
+        "guides": {
+          "items": {
+            "$ref": "#/$defs/Guide"
+          },
+          "type": "array"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ApiItem"
+          },
+          "type": "array"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "title",
+        "crateName",
+        "items",
+        "guides"
+      ],
+      "type": "object"
+    },
+    "Guide": {
+      "properties": {
+        "links": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "description": "Public same-crate Rustdoc links keyed by their rendered label.",
+          "type": "object"
+        },
+        "markdown": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "title",
+        "markdown"
+      ],
+      "type": "object"
+    },
+    "Navigation": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/NavigationEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "NavigationEntry": {
+      "properties": {
+        "crateName": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "title",
+        "crateName"
+      ],
+      "type": "object"
+    },
+    "OriginalLock": {
+      "description": "Facts about the original archive, never the lock selected by a later producer.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "published",
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "absent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PackageEntry": {
+      "description": "The Rust crate identities represented by one documentation bundle.\n\nThis is derived from the typed Rustdoc families. It is deliberately a\nprojection of the Rustdoc crate graph, rather than a second package\nmanifest maintained by a website or language binding. Exact package names\nand install instructions require the later Rust-owned package metadata\nstage; this record does not guess them from crate spelling.",
+      "properties": {
+        "crateName": {
+          "type": "string"
+        },
+        "familySlug": {
+          "type": "string"
+        },
+        "packageName": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "packageName",
+        "crateName",
+        "familySlug",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ProducerDependencyArchive": {
+      "additionalProperties": false,
+      "description": "Exact released dependency source selected by an explicit docs producer patch.",
+      "properties": {
+        "package": {
+          "type": "string"
+        },
+        "publisherVcs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PublisherVcs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registryChecksum": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "package",
+        "version",
+        "registryChecksum",
+        "yanked"
+      ],
+      "type": "object"
+    },
+    "ProducerResolution": {
+      "additionalProperties": false,
+      "description": "An external maintained-Cargo resolution. Paths are relative to the captured\naggregate; config selects the lock and verified archived dependency sources.",
+      "properties": {
+        "configPath": {
+          "type": "string"
+        },
+        "configSha256": {
+          "type": "string"
+        },
+        "dependencyArchives": {
+          "items": {
+            "$ref": "#/$defs/ProducerDependencyArchive"
+          },
+          "type": "array"
+        },
+        "lockPath": {
+          "type": "string"
+        },
+        "lockSha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "lockPath",
+        "lockSha256",
+        "configPath",
+        "configSha256",
+        "dependencyArchives"
+      ],
+      "type": "object"
+    },
+    "PublicationStatus": {
+      "description": "Whether a qualified bundle is a candidate or an actual registry release.",
+      "enum": [
+        "candidate",
+        "registryReleased"
+      ],
+      "type": "string"
+    },
+    "PublisherVcs": {
+      "additionalProperties": false,
+      "description": "Publisher VCS facts embedded in the exact released archive, independent of\nthe imported source actually compiled by the documentation producer.",
+      "properties": {
+        "dirty": {
+          "type": "boolean"
+        },
+        "pathInVcs": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision",
+        "dirty",
+        "pathInVcs"
+      ],
+      "type": "object"
+    },
+    "ReleasedPackage": {
+      "additionalProperties": false,
+      "description": "Registry facts verified against an actual released source archive.",
+      "properties": {
+        "package": {
+          "type": "string"
+        },
+        "pathInVcs": {
+          "type": "string"
+        },
+        "registryChecksum": {
+          "type": "string"
+        },
+        "sourceRevision": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "package",
+        "version",
+        "yanked",
+        "registryChecksum",
+        "sourceRevision",
+        "pathInVcs"
+      ],
+      "type": "object"
+    },
+    "ResolutionLock": {
+      "description": "Published locks and newly generated documentation resolutions remain distinct.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "published",
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "docsProducer",
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "separateDocsProducer",
+              "type": "string"
+            },
+            "original_lock": {
+              "$ref": "#/$defs/OriginalLock"
+            },
+            "producer": {
+              "$ref": "#/$defs/ProducerResolution"
+            }
+          },
+          "required": [
+            "kind",
+            "original_lock",
+            "producer"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SearchEntry": {
+      "description": "One deterministic search document derived from the final Rust-owned data.\nConsumers can build an in-memory index without parsing website content.",
+      "properties": {
+        "familySlug": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "familySlug",
+        "title",
+        "path",
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "SourceInfo": {
+      "properties": {
+        "capturedSource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapturedSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generator": {
+          "type": "string"
+        },
+        "inputSha256": {
+          "type": "string"
+        },
+        "publicationStatus": {
+          "$ref": "#/$defs/PublicationStatus",
+          "default": "candidate"
+        },
+        "releasedPackages": {
+          "items": {
+            "$ref": "#/$defs/ReleasedPackage"
+          },
+          "type": "array"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "rustdocFormatVersions": {
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "sourceSha256": {
+          "description": "Digest of the trusted source manifest supplied by the generation launcher.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceState": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision",
+        "sourceState",
+        "inputSha256",
+        "rustdocFormatVersions",
+        "generator"
+      ],
+      "type": "object"
+    },
+    "SourceSpan": {
+      "properties": {
+        "beginColumn": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "beginLine": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "endColumn": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "endLine": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "beginLine",
+        "beginColumn",
+        "endLine",
+        "endColumn"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "channel": {
+      "$ref": "#/$defs/Channel"
+    },
+    "families": {
+      "items": {
+        "$ref": "#/$defs/Family"
+      },
+      "type": "array"
+    },
+    "navigation": {
+      "$ref": "#/$defs/Navigation"
+    },
+    "packages": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/PackageEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "schema": {
+      "const": "sdk-docs-data.v1",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": "sdk-docs-data.v1",
+      "type": "string"
+    },
+    "search": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/SearchEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceInfo"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "schemaVersion",
+    "version",
+    "channel",
+    "source",
+    "navigation",
+    "packages",
+    "search",
+    "families"
+  ],
+  "title": "DocsData",
+  "type": "object"
+}

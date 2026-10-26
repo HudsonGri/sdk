@@ -1,0 +1,56 @@
+{
+  "scope": {
+    "kind": "currentSdk"
+  },
+  "registryCorpus": null,
+  "schema": "sdk-generation-manifest.v1",
+  "generator": "sdk-generation/0.1.0",
+  "rustdocTool": "rustdoc-types/0.60.0",
+  "cargoMetadata": "cargo_metadata/0.23.1",
+  "toolchain": "cargo 1.98.1 (797e8a9bc 2026-08-05)\nrelease: 1.98.1\ncommit-hash: 797e8a9bca276c1c9f9f738d2a20f484fa4eea9d\ncommit-date: 2026-08-05\nhost: x86_64-pc-windows-msvc\nlibgit2: 1.9.4 (sys:0.21.0 vendored)\nlibcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:Schannel)\nos: Windows 10.0.26200 (Windows 11 Professional) [64-bit]",
+  "version": "feature-profile-catalog",
+  "channel": "preview",
+  "revision": "eb54c87d3ba7138a36ce5e99768a7b04e2ad1834",
+  "sourceState": "working-tree",
+  "sourceSha256": "sha256:1be3ae0570467b4cee8ae388df2928dcbd4711fe4a0fb14cf2c76f8a8bdf9be7",
+  "sourceFiles": {
+    "Cargo.lock": "sha256:67480ab98944fc87d01e80ff53db9f5e89baf937d4329b887d4f9e53009aeb0d",
+    "Cargo.toml": "sha256:8fa90a183129001c0374f7c17f0e702d367f5f3960950ceb0dcbba25173a188a",
+    "release/cargo-crates.json": "sha256:e68a7ba43d268e9f055255c5f4d180bd3be86bb9b2afb092ba77651fad373e3b",
+    "rust-toolchain.toml": "sha256:72da9f9e503464ba7393560f6f51a69fb06be72633d52ae7725fa0ba59dfda22",
+    "rust/crates/demo/Cargo.toml": "sha256:a598dd87c723e935757126a204060277f3da73364872d01165784e1a9e71300b",
+    "rust/crates/demo/src/lib.rs": "sha256:430e28f124b79bc5723fe2c2574527c240be7c6397d2bb12af6ccd40dfd2eb09"
+  },
+  "rustdocRoot": "rustdoc",
+  "rustdocFiles": {
+    "rustdoc/demo.json": "sha256:aa74835c20ae2a0048eff7c878b7f074536d3ce5a38b9723e79edf7bd0edb7c1",
+    "rustdoc/profiles/profile-1003d772898959a081259696ca59636cf0fca2c91ce60b3a5c5edafb4d7b2358.json": "sha256:aa74835c20ae2a0048eff7c878b7f074536d3ce5a38b9723e79edf7bd0edb7c1",
+    "rustdoc/profiles/profile-2ba5e95ef475fcebbafe091df92b9e747a89b320065a0f877e5ee5d498462547.json": "sha256:6a390266b5be952e5e0fa85e742e77a3a3ed0de95153266d480d2cfb757f783e",
+    "rustdoc/profiles/profile-a69993d7c3fbaf47a07fd22c3baa1e0432122933455393ed2d1ee89166775174.json": "sha256:6a390266b5be952e5e0fa85e742e77a3a3ed0de95153266d480d2cfb757f783e",
+    "rustdoc/profiles/profile-db6869f1c474266f278c3061937108511b40d966546fa9b09ed30c2f3e767c9a.json": "sha256:aa74835c20ae2a0048eff7c878b7f074536d3ce5a38b9723e79edf7bd0edb7c1"
+  },
+  "profileAvailability": "sdk-docs-profile-availability.v1.json",
+  "scenarios": "sdk-docs-scenarios.v1.json",
+  "releaseManifest": "preview/feature-profile-catalog/sdk-generation-release-manifest.v1.json",
+  "artifacts": {
+    ".rustdoc/demo.json": "sha256:cd4ad1fdef32395ae65f51ba013a699d59b82a81dab574b0a27dcb61ebbbfbfb",
+    ".rustdoc/demo.source.sha256": "sha256:a17382ecceb2514eda130942eed7d791808a99430f03e50d1d355d1380603af4",
+    ".rustdoc/profiles/profile-1003d772898959a081259696ca59636cf0fca2c91ce60b3a5c5edafb4d7b2358.json": "sha256:cd4ad1fdef32395ae65f51ba013a699d59b82a81dab574b0a27dcb61ebbbfbfb",
+    ".rustdoc/profiles/profile-1003d772898959a081259696ca59636cf0fca2c91ce60b3a5c5edafb4d7b2358.source.sha256": "sha256:a17382ecceb2514eda130942eed7d791808a99430f03e50d1d355d1380603af4",
+    ".rustdoc/profiles/profile-2ba5e95ef475fcebbafe091df92b9e747a89b320065a0f877e5ee5d498462547.json": "sha256:0232406a4960c613503eae6cace5cbe77df32b99f8a0eb3af584df0ffb86f210",
+    ".rustdoc/profiles/profile-2ba5e95ef475fcebbafe091df92b9e747a89b320065a0f877e5ee5d498462547.source.sha256": "sha256:a17382ecceb2514eda130942eed7d791808a99430f03e50d1d355d1380603af4",
+    ".rustdoc/profiles/profile-a69993d7c3fbaf47a07fd22c3baa1e0432122933455393ed2d1ee89166775174.json": "sha256:0232406a4960c613503eae6cace5cbe77df32b99f8a0eb3af584df0ffb86f210",
+    ".rustdoc/profiles/profile-a69993d7c3fbaf47a07fd22c3baa1e0432122933455393ed2d1ee89166775174.source.sha256": "sha256:a17382ecceb2514eda130942eed7d791808a99430f03e50d1d355d1380603af4",
+    ".rustdoc/profiles/profile-db6869f1c474266f278c3061937108511b40d966546fa9b09ed30c2f3e767c9a.json": "sha256:cd4ad1fdef32395ae65f51ba013a699d59b82a81dab574b0a27dcb61ebbbfbfb",
+    ".rustdoc/profiles/profile-db6869f1c474266f278c3061937108511b40d966546fa9b09ed30c2f3e767c9a.source.sha256": "sha256:a17382ecceb2514eda130942eed7d791808a99430f03e50d1d355d1380603af4",
+    ".sdk-docs-versions.v1.lock": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "preview/feature-profile-catalog/sdk-docs-data.v1.json": "sha256:244cdc40b9496d987fa9b25f86afd3e3a0f4e4b2708b335242f5a39938fd5770",
+    "preview/feature-profile-catalog/sdk-docs-data.v1.schema.json": "sha256:ca42508b1479f9b6d460a0f4f41787d0bb5cc03932f35337633359616c29c419",
+    "preview/feature-profile-catalog/sdk-generation-release-manifest.v1.json": "sha256:d8426fb7ceaffc410284adaaf722d2dd6deef30eb42de97fc22871877baccfdc",
+    "preview/feature-profile-catalog/sdk-generation-release-manifest.v1.sha256": "sha256:234eb7b982b28e07dc71df1113d388c6df6eec0a60c989d9595f5df0c623662f",
+    "sdk-docs-profile-availability.v1.json": "sha256:7a752ecde383e7ec21208acd5ea7b1662c67575ef950cf4bd03acf2b1ec0a5cb",
+    "sdk-docs-rustdoc-profiles.v1.json": "sha256:d9ecf6547debf6ceee4be9e2839ed7b8050bc4b931bc558f20098dbbd5c69cfd",
+    "sdk-docs-scenarios.v1.json": "sha256:0d5473667708e1cc634b7c1860f1b874980003a227994f04fd3e94ebd77ea9bc",
+    "sdk-docs-versions.v1.schema.json": "sha256:10eed170e544a2093dd4feaacb41f57bee3fe109d2bd3a8f36ae930ec9f17c58"
+  }
+}

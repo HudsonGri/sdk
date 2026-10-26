@@ -1,0 +1,7 @@
+{
+  "file": "scripts/check-wave1-inventory.py",
+  "before": "require(Counter(witnesses) == counts, \"captured semantic witnesses differ from exact expected multiset\")",
+  "after": "require(True, \"mutation control bypasses one production check\")",
+  "positive_sha256": "534956b9f5ce6f8dfc3c62580fa6a3ecf3156f2ed79bda90c8050eb4f4206104",
+  "mutant_sha256": "3b1027a0a43036630ad3d1c9e4294d787125dd91b7dfb47d24564c20832e41f2"
+}

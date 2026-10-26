@@ -1,0 +1,1010 @@
+{
+  "admitted_runtime": {
+    ".bb-client-current-wasm-runtime/typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm": {
+      "bytes": 15693627,
+      "sha256": "61f893d420abd5b3a27cec5249a827c1cff42e75e575c40e46045a0eeb6d85f4"
+    },
+    ".bb-client-current-wasm-runtime/typescript/packages/harness/test/node-swarm.mjs": {
+      "bytes": 297246,
+      "sha256": "4a161e50d15f057b097327f3906c756e8c315162eb6c7c0523ca3648d535fc19"
+    }
+  },
+  "archive_sha256": "dfbf85428f993d3e86a998aa96c1dd9cf42da27068f9c1244373628ebe62ae7f",
+  "bun_cases": 8,
+  "head": "cef1e415194397155569bee6b40d6b3dd48020c8",
+  "negative_control": "Existing production test rejects the old unscoped status key through the same namespace-separation oracle. New substrate mutation controls remain outstanding.",
+  "node": {
+    "cases": 1,
+    "name": "node-real-wasm-swarm",
+    "node": "v24.3.0",
+    "seconds": 0.06289243299999998
+  },
+  "results": [
+    {
+      "command": [
+        "node",
+        ".bb-client-current-wasm-runtime/typescript/packages/harness/test/node-swarm.mjs"
+      ],
+      "name": "node-swarm",
+      "rc": 0,
+      "seconds": 0.2534638079814613
+    },
+    {
+      "command": [
+        "bun",
+        "test",
+        "typescript/packages/harness/test/swarm-client.test.ts"
+      ],
+      "name": "bun-swarm",
+      "rc": 0,
+      "seconds": 0.5397755450103432
+    }
+  ],
+  "scope": "Linux Node and Bun execute the current generated WASM; local in-process swarm only. No current native Mac, Windows WASM, cloud or 100k proof is inferred.",
+  "source_differences": [],
+  "source_manifest_sha256": "1d0819ab5319300c2fbeea7fa0fe3e22c0de3bf62a55e5328791de388ef304b7",
+  "tracked_source_files": 8462,
+  "uploaded_extra_files": 192,
+  "uploaded_extras": {
+    ".bb-client-admission-before.sh": {
+      "origin": ".bb-client-admission-before.sh",
+      "sha256": "a6bd2a3d9390daa77175f32ab968cd4ecce6161eb0e7578da2cc2b0de08ee7fb",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-baseline.sh": {
+      "origin": ".bb-client-anchor-baseline.sh",
+      "sha256": "e06ac9351642a2b9ad6ce8e8790871b5dd30e94aa30936c0184aa58782999f55",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-clippy-final.sh": {
+      "origin": ".bb-client-anchor-clippy-final.sh",
+      "sha256": "7a5f4cb787c19e1cc2f96c1ebea927fd0a16e975aed1a03c32b9eaf9515e8e48",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-files.txt": {
+      "origin": ".bb-client-anchor-files.txt",
+      "sha256": "6b5c1dee9edb8b2403b0703712d79b86ece342a2069f5aa9b450693edde61c60",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-final.sh": {
+      "origin": ".bb-client-anchor-final.sh",
+      "sha256": "ef6d8270d9182ab5e1e8b70761e5563c1f484425f0c85af6a52a96ebdae87078",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-format-v6.sh": {
+      "origin": ".bb-client-anchor-format-v6.sh",
+      "sha256": "b3881f5458c121076e896f8c986237a077b18e02f0d92d54a0ea42383ce63832",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-format-v7.sh": {
+      "origin": ".bb-client-anchor-format-v7.sh",
+      "sha256": "a0c048157c35a20a87fd7bdda705a9d879ad8eabe6f9261b754bd56452ed4e9e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-format.sh": {
+      "origin": ".bb-client-anchor-format.sh",
+      "sha256": "7d18bcce830fe8854152ef9ae96a5ac47d8a2dd6612692a1f2e2151127160598",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-integration-final.sh": {
+      "origin": ".bb-client-anchor-integration-final.sh",
+      "sha256": "64ca9b9c12240b15bd0184a4621652e6d623bf2ff5d74f2f78080bc8c75c59e2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-integration.py": {
+      "origin": ".bb-client-anchor-integration.py",
+      "sha256": "d73bb438c1e0fec1b8eb1318cd72c12ddd131ad7b9834b84723d07300c0688d1",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-model.sh": {
+      "origin": ".bb-client-anchor-model.sh",
+      "sha256": "792dc9a0caeebe2bc976fd1541008222800dbe0f36475ab39de757dee0e5d4c4",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-oracle-final.sh": {
+      "origin": ".bb-client-anchor-oracle-final.sh",
+      "sha256": "ef22ad4fb839844811948dcbae07564467bbd60a68de8e84a436d2a8f25ec0d4",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-proof-v2.sh": {
+      "origin": ".bb-client-anchor-proof-v2.sh",
+      "sha256": "ced28b254bf89a61fc782482f4d735dc0f2d0a913e648e0835010d6422d11bac",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-proof-v3.sh": {
+      "origin": ".bb-client-anchor-proof-v3.sh",
+      "sha256": "e4b605e8877de4c52f6fe972cf26cafec0387bdf449436a2ccd4cf55bef21037",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-proof.sh": {
+      "origin": ".bb-client-anchor-proof.sh",
+      "sha256": "ced28b254bf89a61fc782482f4d735dc0f2d0a913e648e0835010d6422d11bac",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-qualified-v2.sh": {
+      "origin": ".bb-client-anchor-qualified-v2.sh",
+      "sha256": "c85022d8bf4e2f64ecd224bb5a4d0fe29d3f0d087c0d0adbec89337f6f097fd2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-qualified-v3.sh": {
+      "origin": ".bb-client-anchor-qualified-v3.sh",
+      "sha256": "114c0c735c880e26a730eb36dba350d94ac219b8051af6c371eba7ef57c19d84",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-qualified-v5.sh": {
+      "origin": ".bb-client-anchor-qualified-v5.sh",
+      "sha256": "5f956ae371696987d5dd9e4405c77d911144d020aa17f76fa9c03f3e6d059c43",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-qualified-v6.sh": {
+      "origin": ".bb-client-anchor-qualified-v6.sh",
+      "sha256": "2bf59a29e656ecb08a3649bdf392c7b72aa0c88afde362f49b1430f15ce81f97",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-qualified.sh": {
+      "origin": ".bb-client-anchor-qualified.sh",
+      "sha256": "3003e59e4633c2466a1ab4de1b0a052ffd97a71bbe1233f6d34a5c13c273c17a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-wasm-v2.sh": {
+      "origin": ".bb-client-anchor-wasm-v2.sh",
+      "sha256": "e3d30f844c637f73c14fa08b25f030ca0ad39fbe55a61a28251512363a0c5620",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-anchor-wasm.sh": {
+      "origin": ".bb-client-anchor-wasm.sh",
+      "sha256": "0d4c675a6df67538afab10f5eaa6d3c4e308f11e67a4e66cc115e9c1701a48c2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-arbitration-check.sh": {
+      "origin": ".bb-client-arbitration-check.sh",
+      "sha256": "64e07201f2bbeffd817370af5533a1d9ce3093f2582568c8d7ae668c4322a790",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-b733-main-overlay.json": {
+      "origin": ".bb-client-b733-main-overlay.json",
+      "sha256": "8aefe74675009964fec1b1648d84f72be46619f20b011865b32a2ce27ef768bb",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-b733-main-overlay.tar": {
+      "origin": ".bb-client-b733-main-overlay.tar",
+      "sha256": "2a677f775bcbd408ef2051a5cd6f336d5af3a123b858bb95385ed036bb94a41e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-b733-main.sh": {
+      "origin": ".bb-client-b733-main.sh",
+      "sha256": "8aab17176b3734a1f1e1667c2aa0de454e6e925cda668dcc115cbbdf34712c71",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-b733-proof.py": {
+      "origin": ".bb-client-b733-proof.py",
+      "sha256": "0455cc7da90982a6cf1dd25b7cdf98303ceb33d0cbb5c7a584226749dd6188aa",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-b733-proof.sh": {
+      "origin": ".bb-client-b733-proof.sh",
+      "sha256": "b696012c61c5681d3f256c2affdaf3749c2faaf5962828e58114f191710068da",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-baseline.sh": {
+      "origin": ".bb-client-baseline.sh",
+      "sha256": "89ec1ee4124379038dfd58dfe535c3f660671fce94fc50cf2115e0724e4b6793",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-bounded-before.sh": {
+      "origin": ".bb-client-bounded-before.sh",
+      "sha256": "d87d4057fe4a0bd434f69ad380d020d12b2a97400646cb13fb9bcbbfccf00ea3",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-bounded-before.test.ts": {
+      "origin": ".bb-client-bounded-before.test.ts",
+      "sha256": "64a9840e8d698a57bfa1aa80c9c116807805ff1f589cada851ccacf7fb1988b4",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-bounded-before.ts": {
+      "origin": ".bb-client-bounded-before.ts",
+      "sha256": "d8d77894ab828f1ad7df09baa781878e67cce4da3abfba4c04c9d5becfd5d61f",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-capture-files.txt": {
+      "origin": ".bb-client-capture-files.txt",
+      "sha256": "402ff16126332b8cf0c9572f4d6dbf72ee7cdeb763074069a25204473af916e7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-capture-format.sh": {
+      "origin": ".bb-client-capture-format.sh",
+      "sha256": "59a530587b9ff0e9f43e3e7744441aabf8e0aabeea3c685cd888379c46ee1c84",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-capture-spine-before.sh": {
+      "origin": ".bb-client-capture-spine-before.sh",
+      "sha256": "6d241ca085b7d928dab06749c9bd1c2ca15a20b20e12ccc8a166a65afaf582f0",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-checkpoint-proof.sh": {
+      "origin": ".bb-client-checkpoint-proof.sh",
+      "sha256": "87812324fcc02082e69d445c105d319442fdd02372f33bf2372bb36f5ef2afe3",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-children-files.txt": {
+      "origin": ".bb-client-children-files.txt",
+      "sha256": "10e58c5c1d343cbefb9170e67e50706374b21d4466f2b14964011a6dc275cead",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-children-proof.sh": {
+      "origin": ".bb-client-children-proof.sh",
+      "sha256": "b2c6d1eec6cfbf0505275d1135ec3136130b7f9ecb186de41adf7ce642aac810",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-clean-final.sh": {
+      "origin": ".bb-client-clean-final.sh",
+      "sha256": "c2fb16824546f1fd31ffb1801c82e940a5336d123b6c6b206c5cfa27eedb5262",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-context-files.txt": {
+      "origin": ".bb-client-context-files.txt",
+      "sha256": "688c4386c03b1969c59780a019e0f9d1ec43c847ada336cb2f9520ff7153d167",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-context-format.sh": {
+      "origin": ".bb-client-context-format.sh",
+      "sha256": "9add33bcaa965019daf67ddc1982a035b3b18dac382f5432c3ac81dca179a12c",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-context-lint-format.sh": {
+      "origin": ".bb-client-context-lint-format.sh",
+      "sha256": "3a3c46bf68cb0146b17ef9e68cd12d6d67c60fd6eee279fe78e26a8c87cca291",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-current-wasm.sh": {
+      "origin": ".bb-client-current-wasm.sh",
+      "sha256": "fb0c6c1d55158f3f69175b9d1db4c14f53cb3a6da22bb4c94b66ebc4c6b7d8b9",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-delta-files.txt": {
+      "origin": ".bb-client-delta-files.txt",
+      "sha256": "d911d88f8d5728945ecb0f58ae8397866778e23efb3ec53c81c9169729103067",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-delta-lint.sh": {
+      "origin": ".bb-client-delta-lint.sh",
+      "sha256": "e9fb2b769e102e3d658b4377f69cc3401cbb7888523897ea6a0f0d70fa8ca9a9",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-delta-proof.sh": {
+      "origin": ".bb-client-delta-proof.sh",
+      "sha256": "52f5e0cc04faf7e91c0603cc5e294efd62f69301bf4f82bc81af8920e1f63ba6",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-denied-lint.sh": {
+      "origin": ".bb-client-denied-lint.sh",
+      "sha256": "d4eae30c88fe5a384c3e2c34612a01c2e08dce358b939dff4556c384531c1343",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-final-main.sh": {
+      "origin": ".bb-client-final-main.sh",
+      "sha256": "99d78c71b147a907a85ef2ed2c02a72dc8233f1e4787a9b47643bd3e580b1ba7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-final-qualification.sh": {
+      "origin": ".bb-client-final-qualification.sh",
+      "sha256": "20c6883c5a159a15ec5faa59ed6af77aad393750cb0e85288ab18ed6f1d2cdd2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-final-renderer.sh": {
+      "origin": ".bb-client-final-renderer.sh",
+      "sha256": "3aaaa20de0fbea67cf6c25e7571929a5f19cc3dfeed7e09cec2bc044f3a188ce",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-final-runtime.py": {
+      "origin": ".bb-client-final-runtime.py",
+      "sha256": "a852ef61ea111156e8caeccb263a96eaa13db88efc3a16489a6718a06d8a903c",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-final-source.sha256": {
+      "origin": ".bb-client-final-source.sha256",
+      "sha256": "c9cf46f6cae9f7847645ad1673097506265e8dc8ac460092a7f591b7359fa04b",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-final-wasm.sh": {
+      "origin": ".bb-client-final-wasm.sh",
+      "sha256": "d82ef4e238f2734a3ed0b01b8d566e36f2a6759d4049060f246fa79190449c11",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-final.sh": {
+      "origin": ".bb-client-final.sh",
+      "sha256": "b1d18153113e20372878b05d1b133194c92a244498580f2d0c2c2e1b73b6d611",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-finish.py": {
+      "origin": ".bb-client-finish.py",
+      "sha256": "15efe232d69fdca0d5e328cf8b4ef700866d28f683b29e730e6754f27e6f1c19",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-finish.sh": {
+      "origin": ".bb-client-finish.sh",
+      "sha256": "63693769ec3e66d545cbdfd95e148b0874d15a7e41429d08a19fb52ea0d7a548",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-format.sh": {
+      "origin": ".bb-client-format.sh",
+      "sha256": "a47d49787dd4140ebfb08fafb2879eb5014fc4b97cd61c8298392366e3c2c72b",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-frame-baseline.rs": {
+      "origin": ".bb-client-frame-baseline.rs",
+      "sha256": "c57b7b22860a915c6e07a86755498ffda38231e196c57b009c5fba3d811e36dd",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-frame-baseline.sh": {
+      "origin": ".bb-client-frame-baseline.sh",
+      "sha256": "b581a44704ae071f3bcd6f25172d7820f5817d8038abcdad4401f059a4dea81d",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-frame-proof.sh": {
+      "origin": ".bb-client-frame-proof.sh",
+      "sha256": "88bbbd08fcd4b4fe564b382bd3407396100321b5b25f8d6eac8900a20840db87",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-fuzz-main-overlay.json": {
+      "origin": ".bb-client-fuzz-main-overlay.json",
+      "sha256": "df4ff33b92cf8f887efeaacb9c1f4bc32f47bcf0d5c51f45828fad86d6f21664",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-fuzz-main-overlay.tar": {
+      "origin": ".bb-client-fuzz-main-overlay.tar",
+      "sha256": "a8009391692b7d513f87ec81b77458a6ad1c2c3c11607518d6196d508674d67f",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-fuzz-main.sh": {
+      "origin": ".bb-client-fuzz-main.sh",
+      "sha256": "c1e81f4497f2ed8ad91eb846b52b036bab453e7279cb036d1da2187d99254ee1",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-fuzz.sh": {
+      "origin": ".bb-client-fuzz.sh",
+      "sha256": "1b84124993422d0dfe54cd7da6734004f6ad961501a11f4038a722d9f0bcaf04",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated-20261024.sh": {
+      "origin": ".bb-client-integrated-20261024.sh",
+      "sha256": "f2c8a0755914f1f49f778e10e494c2b9f4a93af6bc2ec54a55864b24b0e87bc0",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated-format.txt": {
+      "origin": ".bb-client-integrated-format.txt",
+      "sha256": "f7d927bf68118199d3f24f2c72700dffa218b7b77a41cc9c4d368b8569bf3e58",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated-mac-proof.sh": {
+      "origin": ".bb-client-integrated-mac-proof.sh",
+      "sha256": "f72aece13f80f4592a27a16115f79f8780265b3b7b8e7a74f4446aa92591b29a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated-remaining.sh": {
+      "origin": ".bb-client-integrated-remaining.sh",
+      "sha256": "f7ee082a43bfe96278891e1606c5a930c8cb0f60d3af8db46bcb52a7d642a17b",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated-wasm-mac-run.sh": {
+      "origin": ".bb-client-integrated-wasm-mac-run.sh",
+      "sha256": "f9cb0d9b752d47783fa6c8abb1ff686a5705aa00b82b0ae93f3afb3890762b93",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated-wasm-retry.sh": {
+      "origin": ".bb-client-integrated-wasm-retry.sh",
+      "sha256": "f056078c671bc47f1a529bd0650295a414285af950f6597f4fa80946f4c04b14",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated-web.sh": {
+      "origin": ".bb-client-integrated-web.sh",
+      "sha256": "5a0826e9c066d07f7a682ea8932a3b5a6ec375ee5ac0f7bb5ff0b31e2ff9cba8",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-integrated.sh": {
+      "origin": ".bb-client-integrated.sh",
+      "sha256": "43a4f65daf801e6f29105ab0b1f23ccfd377e3de6e3e45ecfdcc8dbae7a7d028",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-isolate.sh": {
+      "origin": ".bb-client-isolate.sh",
+      "sha256": "0bade305a624b36f6565b86f54bb5f9bce911705e314a5dc6b7d11226db79547",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-last-check.sh": {
+      "origin": ".bb-client-last-check.sh",
+      "sha256": "42ca8290eb49e8d5d46e45fbdc6da34c2dd152f7a5980aaeba45467b6fcba7ca",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-lint-fuzz.sh": {
+      "origin": ".bb-client-lint-fuzz.sh",
+      "sha256": "26ae1caa6e3e78f0929082825b0b4bf7e871e5c6bf7e0e71ed0fa8b6b45787bc",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-lock-proof.py": {
+      "origin": ".bb-client-lock-proof.py",
+      "sha256": "582ed93e1ee015e7d3fe56b9b1816279abb257b03a4cea2eb045c68989731e23",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-lock-proof.sh": {
+      "origin": ".bb-client-lock-proof.sh",
+      "sha256": "bc920a14203327a10a9d3f467574429c68187f7e1575139f7d114688c8cec3d1",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-baseline.sh": {
+      "origin": ".bb-client-mac-baseline.sh",
+      "sha256": "de5824c0c4aa0ebb2e94fe37cea934d5678b28e8f7d666ef24bbf3ca2218b399",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-bun-check.sh": {
+      "origin": ".bb-client-mac-bun-check.sh",
+      "sha256": "9cf545dc10e9af1bf044272ae0bdaccf104ded651bec9e4fda9ff267dad0ffb3",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-current-proof.sh": {
+      "origin": ".bb-client-mac-current-proof.sh",
+      "sha256": "619838c5130253797dd8eafed07a41a081b7e3343a0b1017006982ade7f99e10",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-current.sh": {
+      "origin": ".bb-client-mac-current.sh",
+      "sha256": "30148cc58ee37d9d21c46dc31378f250be2afc73392e30e4cec9255c5b640022",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-diagnostic-check.sh": {
+      "origin": ".bb-client-mac-diagnostic-check.sh",
+      "sha256": "ae60609d5342e5aef1ccd75e6048e5626abc718c8c358b1e71bd2bf31b868def",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-final-proof.sh": {
+      "origin": ".bb-client-mac-final-proof.sh",
+      "sha256": "83124b214329b62b5d0889aee95247b341c23a7d7b03fa1e1ac0f7344ee9a0f7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-final.sh": {
+      "origin": ".bb-client-mac-final.sh",
+      "sha256": "36e958899b4009b7627af609df123da1414fb34feecea6863906c165950c4925",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-leaf-instrument.py": {
+      "origin": ".bb-client-mac-leaf-instrument.py",
+      "sha256": "1c855d3c276133c05f04363dae4fd58264c5aa47b029ebd6ed3f867c7a4bf452",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-leaf-trace.sh": {
+      "origin": ".bb-client-mac-leaf-trace.sh",
+      "sha256": "dcb6c3a84d0ab713cf390e82f9912c95c5f9cec8d7e7b009849c9aa49225f0af",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-observer.sh": {
+      "origin": ".bb-client-mac-observer.sh",
+      "sha256": "82aeaddaa0da58f4c4bcff812798f27e9cbcaba56da02078c9477e30f35a857f",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-overlay.txt": {
+      "origin": ".bb-client-mac-overlay.txt",
+      "sha256": "30af1cec179558dd0363f934e6f520667e6eeebe4bdf07eadfb1a565c4942bba",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-phase.sh": {
+      "origin": ".bb-client-mac-phase.sh",
+      "sha256": "aea402fcf7be7a05e94c066498b14728db7f510bb8ae29ca06d6f0314e19ac2a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-recovery-proof.sh": {
+      "origin": ".bb-client-mac-recovery-proof.sh",
+      "sha256": "2e55f2c32c2da5e1b26537ca5a291148e8389de252230ed0a529f2142a298c11",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-render.sh": {
+      "origin": ".bb-client-mac-render.sh",
+      "sha256": "bccde8e1fac150737950c19c3acd723987bff8027349788dc8825d7949d9f449",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-swarm.sh": {
+      "origin": ".bb-client-mac-swarm.sh",
+      "sha256": "92b2baf378ea67a99de2b01c9932d4d8868f75e6a4519e24a0b5f3d77ae10948",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mac-tui.sh": {
+      "origin": ".bb-client-mac-tui.sh",
+      "sha256": "250140e9955d94d34be3533f85091148f98027b88d10a57fa033afd03491d64a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-main-final.sh": {
+      "origin": ".bb-client-main-final.sh",
+      "sha256": "ef9b25a39d7ae08e1beb7f6fce9787f1594e3d2f1e238ebc0b259571713915a2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-main-format.sh": {
+      "origin": ".bb-client-main-format.sh",
+      "sha256": "e3cfa1e72d6bfc737e977bb6a69360efa8c03dd64090f2bd3a0b713b6b8ff2a0",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-main-integrated.sh": {
+      "origin": ".bb-client-main-integrated.sh",
+      "sha256": "4bc504fbb4ffd2a67e89b573e0aa091bead5c5645a85a3b0b415df6b5d59333c",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-main-measure.sh": {
+      "origin": ".bb-client-main-measure.sh",
+      "sha256": "1870985ede809fcfd1ae26affad2957213537242d5ea5075e012b485470075b7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-main-motion-format.sh": {
+      "origin": ".bb-client-main-motion-format.sh",
+      "sha256": "5f40eabbc3c4ce2bf1fc1a7b060a576c0e32d57525d9c507896a8c3a861d8dbd",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-main-overlay.json": {
+      "origin": ".bb-client-main-overlay.json",
+      "sha256": "1325c9822d08faa2a19a6edd090236f75ac26b53f898057068032c1b69ad5ef5",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-main-overlay.tar": {
+      "origin": ".bb-client-main-overlay.tar",
+      "sha256": "32c8e176afa5a40497822cd4bc0e2a9baeed6faaa485c2e3b02b68cc42d22bf6",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-md-baseline-final.sh": {
+      "origin": ".bb-client-md-baseline-final.sh",
+      "sha256": "d2192af4a40f13a8b3cc089ca8b82e44ae7c0e406092840fee9aa874989fc74a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-md-final-proof.sh": {
+      "origin": ".bb-client-md-final-proof.sh",
+      "sha256": "4a127cfa159b563c935559a8917881a81fb2a2638ef762b6515239154e29ab1c",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-md-lint-polish.sh": {
+      "origin": ".bb-client-md-lint-polish.sh",
+      "sha256": "e146ad2e61d6c9cdb79fc5e63c365da77d4a9ffc23efae8b30e0c3a1d1659ec0",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mount-fix-check.sh": {
+      "origin": ".bb-client-mount-fix-check.sh",
+      "sha256": "e73e54724499fa8e247526916e16469bdda69e7ef91176132b780aa315e93fcf",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mount-format.sh": {
+      "origin": ".bb-client-mount-format.sh",
+      "sha256": "39acc473f3cb8ca923d2c1bf8c3f5f30cb0333673bd1114a756f770e53fe3ad3",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-mount-lint-final.sh": {
+      "origin": ".bb-client-mount-lint-final.sh",
+      "sha256": "5804797fc2859eefafe6e74df9c11ef8e1eff3782b2def275862f3f5a0575c04",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-next-proof.sh": {
+      "origin": ".bb-client-next-proof.sh",
+      "sha256": "904cc1f9391df19a7f65c2782e4387211c6bdcdecb9fc032b1e9a529dea33e6c",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-node-swarm.ts": {
+      "origin": ".bb-client-node-swarm.ts",
+      "sha256": "95642909f5b488f68b61abe828649ab36220d9d9d250743d676895b2e7ecaf80",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-observer-baseline.sh": {
+      "origin": ".bb-client-observer-baseline.sh",
+      "sha256": "b4ad79381b1c3e6decbff6e2d28c3afb7eb2536a95374667c85f913dbc391156",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-observer-proof.sh": {
+      "origin": ".bb-client-observer-proof.sh",
+      "sha256": "8cd04dbbf88bbc0cf60cf453f248cf69b1701d0190cd5c76dc09f437c52a7169",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-open-line-baseline.sh": {
+      "origin": ".bb-client-open-line-baseline.sh",
+      "sha256": "2493ac709a01ec8b80452efb773bed45b92e9d79e56e6ed82e823e3f1d7c4c7a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-open-proof.sh": {
+      "origin": ".bb-client-open-proof.sh",
+      "sha256": "da052ab3c4fe64ee362daf4dec705f2a3bd460ee633efda5ac5da4657d01cad2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-other-baselines.sh": {
+      "origin": ".bb-client-other-baselines.sh",
+      "sha256": "beadaf20b9ea78587352cc795332f9f1cfff383f5100d17f3a26e002624480b4",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-owner-mac.sh": {
+      "origin": ".bb-client-owner-mac.sh",
+      "sha256": "498087a90d07858e4996456a19cda7a6ffc5a75c4f0a9561cd1b63049bf3e087",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-owner-proof.sh": {
+      "origin": ".bb-client-owner-proof.sh",
+      "sha256": "69a0c14a1d6b9e2069bd485810b75637bc09096ea0d8cf0da4d9a6f78424ace7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-phase-files.txt": {
+      "origin": ".bb-client-phase-files.txt",
+      "sha256": "eae8f6aa092693d03a6d9472b8d6ab8a85fbec196ab7f72472b34bca823fb256",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-phase-proof.sh": {
+      "origin": ".bb-client-phase-proof.sh",
+      "sha256": "57bc2a542089e2abeb444423bd10eb4247bfd26f0b9a070d7fa2b261bf6b9d84",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polish-files.txt": {
+      "origin": ".bb-client-polish-files.txt",
+      "sha256": "ec0622a72b9ad244b0432096b3bf298fe6eecc9adddaa0cb6493a0077db7b94c",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polish-final.sh": {
+      "origin": ".bb-client-polish-final.sh",
+      "sha256": "969f5634c2039b886173b1149845e62d4638fac41877cdffb399b6194316be0a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polish.sh": {
+      "origin": ".bb-client-polish.sh",
+      "sha256": "9bd88e407fc313764767e22591d493dc47ade8040d433066394188a551b834ab",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-clippy.sh": {
+      "origin": ".bb-client-polling-clippy.sh",
+      "sha256": "5e9b6d6df87834d1f39b58c0059329d342da639d2e457a28e964dea6bb6d0def",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-core-runtime.py": {
+      "origin": ".bb-client-polling-core-runtime.py",
+      "sha256": "c55773ba1cf3a2550cbeb0989e260b81aa3076adaaba3c404104e4709f133f3b",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-files.txt": {
+      "origin": ".bb-client-polling-files.txt",
+      "sha256": "51f54195d4facf0fe1871301b89d6d2d85ecee1e1fc68ef1ba504e8a0cc815a3",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-finish-files.txt": {
+      "origin": ".bb-client-polling-finish-files.txt",
+      "sha256": "85c82496565e689311230dcb5e182dd7b51a5c69f5aaeaefd4acb99c0d359aaa",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-finish-format-v2.sh": {
+      "origin": ".bb-client-polling-finish-format-v2.sh",
+      "sha256": "ccc9c21af3fa94e5a671467965c2d126626269a3fee82ad450506850c8c5f806",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-finish-format.sh": {
+      "origin": ".bb-client-polling-finish-format.sh",
+      "sha256": "346c63a5271d5f5867d0df72daf07b99b94eee05d0de711555c8bd96df1eb68b",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-format.sh": {
+      "origin": ".bb-client-polling-format.sh",
+      "sha256": "904173632b9a7587f878421ad5f73e1c5da1ec0ee9d13b834014e756ea0d8e0e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-graph-before.sh": {
+      "origin": ".bb-client-polling-graph-before.sh",
+      "sha256": "346d010fffa62f0228d1dd95d8c399138eb9113a552b27b882031ca517efeea8",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-native-runtime.py": {
+      "origin": ".bb-client-polling-native-runtime.py",
+      "sha256": "af1b1f32ec075ffbb92a4464bc44148f7831b8ebe26eba8e0c039c5581f8dceb",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-product-source.sha256": {
+      "origin": ".bb-client-polling-product-source.sha256",
+      "sha256": "7b9560529ac5d7bcd99b2156e09169388f4f3c76cfdb1a37006be6b45471233a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-polling-proof.sh": {
+      "origin": ".bb-client-polling-proof.sh",
+      "sha256": "7c2077a249331702aadcde4f0c1f7caa968e5e3fda499b2fe1268a1bbbd2ac09",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-prefix-turn-baseline.rs": {
+      "origin": ".bb-client-prefix-turn-baseline.rs",
+      "sha256": "a0df1b5c2d245dbb4551dcc6ec47c56f115561a775e2cd549c390ad1181789da",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-prefix-turn-baseline.sh": {
+      "origin": ".bb-client-prefix-turn-baseline.sh",
+      "sha256": "1d6efb943e69a79a728c70b206910f07a71bd4b90410ff123c6f87d298bde5aa",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-queue-before.sh": {
+      "origin": "retained pre-generation driver",
+      "sha256": "0ee2cf927cbaf17deb897c00770c16813601df9ba1d89cbad813f49e6352b414",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-queue-before.test.ts": {
+      "origin": ".bb-client-queue-before.test.ts",
+      "sha256": "cc0a2fe7e4bab8911a6a187d5ae304067923852d09c3eb772f4c31b78b72f839",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-queue-before.ts": {
+      "origin": ".bb-client-queue-before.ts",
+      "sha256": "6e42d3409428cad674c65f941d34b9c474b8d3c6b5725e19f99b8bd3125e2feb",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rebase-before-wait.rs": {
+      "origin": ".bb-client-rebase-before-wait.rs",
+      "sha256": "58cc2b87ee2930bc2315dd30f6d6ec40568c9b2ce16e807b9e335d96950b7262",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rebase-complete.py": {
+      "origin": ".bb-client-rebase-complete.py",
+      "sha256": "66ea08ce7a69bac77140ac6cbe3802a49c26199f93d769e2afb97f184784a2ca",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rebase-complete.sh": {
+      "origin": ".bb-client-rebase-complete.sh",
+      "sha256": "2bf425e43239ce5cac1e8b25f27e9c1c2fb8d1c1e1d00a3659477546d4589136",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rebase-final.py": {
+      "origin": ".bb-client-rebase-final.py",
+      "sha256": "770775020df996df7be3a54d951c1e401b6139d8a59a39076f19c33a37389da0",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rebase-final.sh": {
+      "origin": ".bb-client-rebase-final.sh",
+      "sha256": "0c13258358420acf2ad07172a4a38375de2da3314ec827c4d47eea348ee89660",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rebase-proof.py": {
+      "origin": ".bb-client-rebase-proof.py",
+      "sha256": "2b2d3643ef7c4b9c9a5f56129beed1900f2cef9a7c9aa489932ffdb2280e9a0e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rebase-proof.sh": {
+      "origin": ".bb-client-rebase-proof.sh",
+      "sha256": "b386b0202b5e5526a40188954a4fa53fd749ffef8cecc6e0f8a6328425fd4f6f",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-release-format.sh": {
+      "origin": ".bb-client-release-format.sh",
+      "sha256": "36c9fddffd06cd514768467d54a2b260e45ea9c0d3cafb46a4cc6cb027252c5e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-remaining-baseline.sh": {
+      "origin": ".bb-client-remaining-baseline.sh",
+      "sha256": "a3310615674ec28cf8a96a33972d329f5df12346734b8252645511ca3ae267f1",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-render.sh": {
+      "origin": ".bb-client-render.sh",
+      "sha256": "ffc57378d781ff141e70591fed3b7e34184974d99f9e902ccd04b78ee850ec6a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-replay-format-files.txt": {
+      "origin": ".bb-client-replay-format-files.txt",
+      "sha256": "e87b4fba81d5d87d39b9e415c1e460800e7e2c9a206b97cc724683b523114d67",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-resume-files.txt": {
+      "origin": ".bb-client-resume-files.txt",
+      "sha256": "f78d294ecae20eeb3dcd4658955dc8452269fb94d37d7ccd6d4e7ef9d0c46fd6",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-resume-proof.sh": {
+      "origin": ".bb-client-resume-proof.sh",
+      "sha256": "ddc2c771ae7f6fa37b5c96ffcaf20950d4f29931aa1db505539cbdf989369647",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-retirement-check.sh": {
+      "origin": ".bb-client-retirement-check.sh",
+      "sha256": "daa4e559cafd7dfd55c4fa30148ff8c99c6632b59870bf56849b5a053e83bd48",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-retirement-files.txt": {
+      "origin": ".bb-client-retirement-files.txt",
+      "sha256": "a2596b98660373d01172a02ef2e2fb21d555bbebca095458e458476aef21b38e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-retirement-format-check.sh": {
+      "origin": ".bb-client-retirement-format-check.sh",
+      "sha256": "1d693fe3e686b621b897b41769475efbff208aa95cd1049be909e7cc95d228ec",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-retirement-lint.sh": {
+      "origin": ".bb-client-retirement-lint.sh",
+      "sha256": "8b80363794c7f813a9771506aeb66f1ee1598ba0755bb765321bf6aa83a1def8",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-review-after.py": {
+      "origin": ".bb-client-review-after.py",
+      "sha256": "d3a913c22040429d6df65e856b5845ce0f093a1c96507babe6b2e2e8eca5fa56",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-review-after.sh": {
+      "origin": ".bb-client-review-after.sh",
+      "sha256": "ac344d4601456a65fbfbd783d1c732c7bec76466f98a43f5e551bfcf63e06ed2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-review-before.sh": {
+      "origin": ".bb-client-review-before.sh",
+      "sha256": "292b92a028579537f3738e235609de8556508a1e790ebcceee5f6dd1392e70bf",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-review-doc-check.sh": {
+      "origin": ".bb-client-review-doc-check.sh",
+      "sha256": "83a6b8ffcece343a624c58d7cf685232919b7019a55dde154a9611f5a384608c",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-review-files.txt": {
+      "origin": ".bb-client-review-files.txt",
+      "sha256": "83e9f2f43103d8f0d47b406d76a132bbe90967bcfe6102b866a22c134e966db2",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-review-wake-before.rs": {
+      "origin": ".bb-client-review-wake-before.rs",
+      "sha256": "cdc01159fc19c4f3c0087fc226c68d4598c5e92d4bc3bb7a6d0b165997e0cbb0",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-rewrite-proof.sh": {
+      "origin": ".bb-client-rewrite-proof.sh",
+      "sha256": "940dfaafaecd38079f29afbe213d8a2f09e706ac7744a17c8fc03ed97eca42be",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-scroll-cuts-final.sh": {
+      "origin": ".bb-client-scroll-cuts-final.sh",
+      "sha256": "9085bb80188abb594b3f2b2a560c8d4315b494148672fa4984289a983b458d0e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-scroll-factory-final.sh": {
+      "origin": ".bb-client-scroll-factory-final.sh",
+      "sha256": "8536d31cfb3088fab08e00d92a6aa584088bfb6cd06420225fba96881308d17e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-scroll-gate-admission.sh": {
+      "origin": ".bb-client-scroll-gate-admission.sh",
+      "sha256": "09cc28f26a602f2b00bb6df785625aa9efa401ffdbd212328dfb6c259d3bb738",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-scroll-gate-complete.sh": {
+      "origin": ".bb-client-scroll-gate-complete.sh",
+      "sha256": "3ed916094476a2718c660c8c337987359e2133f27af254a4a4420abc4bdb455a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-scroll-model-final.sh": {
+      "origin": ".bb-client-scroll-model-final.sh",
+      "sha256": "e0caf7c78485ec2e35dcaff316eccd1857303966ffb7ec9bdb24ea31866c6c61",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-scroll-storage-diagnostic.sh": {
+      "origin": ".bb-client-scroll-storage-diagnostic.sh",
+      "sha256": "bdf5403ac135034abd2e3b13c2abf02c7da3b581cf2dc888d6ba9de20fa837be",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-files.txt": {
+      "origin": ".bb-client-spine-files.txt",
+      "sha256": "a05edab378cad09c94c4190de8e8d2d9e3899193396db71bf28da5d4e780d5c8",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-fixed-native-runtime.py": {
+      "origin": ".bb-client-spine-fixed-native-runtime.py",
+      "sha256": "75f0f505e7e46c1cafa2fceb5bca1cc619e553ba68407156365670a53c9e6fae",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-fixed-product-source.sha256": {
+      "origin": ".bb-client-spine-fixed-product-source.sha256",
+      "sha256": "109477e02f0405268197e041c1837838bfdec73154859eb462308ef954f719e7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-fixed.sh": {
+      "origin": ".bb-client-spine-fixed.sh",
+      "sha256": "64e400038ac4670d65cb3e2a493709e6f63e0a7a47009c8ceb436b45511ca2d1",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-native-runtime.py": {
+      "origin": ".bb-client-spine-native-runtime.py",
+      "sha256": "a4bffe1da435bfe08aae9f31fbbb7030dcbe46234169042de82da95c293f6e16",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-p4-app-runtime.py": {
+      "origin": ".bb-client-spine-p4-app-runtime.py",
+      "sha256": "062a7d7f180bb4baaed43e860b6962b9a9d97a67c0ad270aaddcd96ff0a314a5",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-p4-runtime.py": {
+      "origin": ".bb-client-spine-p4-runtime.py",
+      "sha256": "5b9bb5e9baf3def096a8f9d9c202df85c70178d18d3a0a1e20d4cae1eff34f26",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-p4.sh": {
+      "origin": ".bb-client-spine-p4.sh",
+      "sha256": "c026917cd703ce67dbadb0403024e42a8c6aba311c0575903e6e6898e5081b4d",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-product-source.sha256": {
+      "origin": ".bb-client-spine-product-source.sha256",
+      "sha256": "cd5c029ffcd224bb8dd003242faec27b6c85d53ebcd66e5498e149587870d0c4",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-production-files.txt": {
+      "origin": ".bb-client-spine-production-files.txt",
+      "sha256": "80640e37ba5a092ca351ea678aaccec35676bc52624c6face91fb2ca7a5bc45e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-spine-proof.sh": {
+      "origin": ".bb-client-spine-proof.sh",
+      "sha256": "c077b59b8939a67e003e4fb3da297def328ddf8385c879573ace9c609d148207",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-swarm-files.txt": {
+      "origin": ".bb-client-swarm-files.txt",
+      "sha256": "2bf0acedde13a3f27065c0999fffbc95027e3e772c1e113b3b060a3ab7595b76",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-swarm-proof.sh": {
+      "origin": ".bb-client-swarm-proof.sh",
+      "sha256": "755392924ff16acf0344e7f61df6e5445d36c4c3f7cde859f2494f0137aaa5ea",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-tool-baseline.rs": {
+      "origin": ".bb-client-tool-baseline.rs",
+      "sha256": "995ea4d8f5ae473ef24869b9140265ebf83b3f977494c5b103177dfd4378811f",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-tool-baseline.sh": {
+      "origin": ".bb-client-tool-baseline.sh",
+      "sha256": "66a6cac6d361a6347dbd08f8226e280315eb1e3011fa7d3adbd2fa141140e1f6",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-tool-proof.sh": {
+      "origin": ".bb-client-tool-proof.sh",
+      "sha256": "580667fe185e4d3711dba8527d0867da58dc151d4a535826b85068e78d568040",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-transaction-files.txt": {
+      "origin": ".bb-client-transaction-files.txt",
+      "sha256": "35a2856e85c598c4c291e3dec4ff94d61e3fe421d034abb09ce39b24ec1ee94e",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-transaction-format.sh": {
+      "origin": ".bb-client-transaction-format.sh",
+      "sha256": "fe6d902d54b9949c4a4fef6cae8313fc680b58e6e1fe76f524e10aa0037813c7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-tui.sh": {
+      "origin": ".bb-client-tui.sh",
+      "sha256": "b120a80e4bac922ffdca672894935019a3a140072d936604ef1852ae5de36ef7",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-verifier.py": {
+      "origin": ".bb-client-verifier.py",
+      "sha256": "89fbabd5ed0a3587879b9063fa2e33593b0ae6c64f3bfc8051455fbc0bd91277",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-verifier.sh": {
+      "origin": ".bb-client-verifier.sh",
+      "sha256": "8dad3ec0d8edfa79cb55f77c1b04c2fad878bde075aa8e114314c662af65518a",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-verify.sh": {
+      "origin": ".bb-client-verify.sh",
+      "sha256": "5d2cbb349e9790094657c984ca95d092ccd5238923c2b3ecec44404c01c646e4",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-wasm-export.sh": {
+      "origin": ".bb-client-wasm-export.sh",
+      "sha256": "db00433c947a042445df1db6ad7128640a80d57304a77cbd10ab6dbfbaad7579",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-win-helper-snapshot.sh": {
+      "origin": ".bb-client-win-helper-snapshot.sh",
+      "sha256": "9986c6540b2c4cb30263846a3c1f537d973a78d46e1de3e1d3e388f1355c8fb3",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-worker-after.sh": {
+      "origin": ".bb-client-worker-after.sh",
+      "sha256": "2077a2521f9205979e96ec833075d9bfea1518fbf5a8a98bfcf068fdc1815b4f",
+      "upload_text_normalization": "CRLF to LF"
+    },
+    ".bb-client-worker-width.sh": {
+      "origin": ".bb-client-worker-width.sh",
+      "sha256": "051e30ed5a929564d3500cb30d45be79d85135c5c97567f83e76c9f1115393fd",
+      "upload_text_normalization": "CRLF to LF"
+    }
+  }
+}

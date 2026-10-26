@@ -1,0 +1,16 @@
+
+running 10 tests
+test workspace::tests::append_segments::append_segments_empty_parts_and_repeated_appends_have_explicit_ranges ... ok
+test workspace::tests::append_segments::append_segments_conflict_on_the_same_eof_even_through_an_alias ... ok
+test workspace::tests::append_segments::append_segments_create_and_extend_without_reading_the_existing_body ... ok
+test workspace::tests::append_segments::append_segments_fence_same_length_alias_edits_and_delete_recreate ... ok
+test workspace::tests::append_segments::append_segments_budget_cuts_leave_the_candidate_and_identity_unpublished ... ok
+test workspace::tests::append_segments::append_segments_preserve_prefix_and_share_one_publication ... ok
+test workspace::tests::append_segments::append_segments_reject_symlinks_and_denied_work_without_partial_edits ... ok
+test workspace::tests::append_segments::append_segments_retain_the_original_native_work ... ok
+test workspace::tests::append_segments::append_segments_equal_serial_concatenation ... ok
+test workspace::tests::append_segments::append_segments_lost_reply_reopens_with_the_original_range_and_identity ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 1521 filtered out; finished in 0.32s
+
+proptest: FileFailurePersistence::SourceParallel set, but no source file known

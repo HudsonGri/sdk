@@ -1,0 +1,113 @@
+bun test v1.4.2 (744846f84)
+
+.bb-client-queue-before.test.ts:
+1 | import { expect, test } from "bun:test";
+2 | import { SessionQueue } from "./typescript/packages/stream/src/session-queue.ts";
+3 | 
+4 | for (const capacity of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+5 |   test(`queue rejects invalid capacity ${capacity} before admission`, () => {
+6 |     expect(() => new SessionQueue(capacity)).toThrow();
+                                                 ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: SessionQueue {
+  available: [Getter],
+  push: [Function: push],
+  send: [AsyncFunction: send],
+  end: [Function: end],
+  discard: [Function: discard],
+  [Symbol(Symbol.asyncIterator)]: [AsyncGeneratorFunction],
+}
+
+      at <anonymous> (/work/src/.bb-client-queue-before.test.ts:6:46)
+(fail) queue rejects invalid capacity 0 before admission [0.47ms]
+1 | import { expect, test } from "bun:test";
+2 | import { SessionQueue } from "./typescript/packages/stream/src/session-queue.ts";
+3 | 
+4 | for (const capacity of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+5 |   test(`queue rejects invalid capacity ${capacity} before admission`, () => {
+6 |     expect(() => new SessionQueue(capacity)).toThrow();
+                                                 ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: SessionQueue {
+  available: [Getter],
+  push: [Function: push],
+  send: [AsyncFunction: send],
+  end: [Function: end],
+  discard: [Function: discard],
+  [Symbol(Symbol.asyncIterator)]: [AsyncGeneratorFunction],
+}
+
+      at <anonymous> (/work/src/.bb-client-queue-before.test.ts:6:46)
+(fail) queue rejects invalid capacity -1 before admission [0.04ms]
+1 | import { expect, test } from "bun:test";
+2 | import { SessionQueue } from "./typescript/packages/stream/src/session-queue.ts";
+3 | 
+4 | for (const capacity of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+5 |   test(`queue rejects invalid capacity ${capacity} before admission`, () => {
+6 |     expect(() => new SessionQueue(capacity)).toThrow();
+                                                 ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: SessionQueue {
+  available: [Getter],
+  push: [Function: push],
+  send: [AsyncFunction: send],
+  end: [Function: end],
+  discard: [Function: discard],
+  [Symbol(Symbol.asyncIterator)]: [AsyncGeneratorFunction],
+}
+
+      at <anonymous> (/work/src/.bb-client-queue-before.test.ts:6:46)
+(fail) queue rejects invalid capacity NaN before admission [0.02ms]
+1 | import { expect, test } from "bun:test";
+2 | import { SessionQueue } from "./typescript/packages/stream/src/session-queue.ts";
+3 | 
+4 | for (const capacity of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+5 |   test(`queue rejects invalid capacity ${capacity} before admission`, () => {
+6 |     expect(() => new SessionQueue(capacity)).toThrow();
+                                                 ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: SessionQueue {
+  available: [Getter],
+  push: [Function: push],
+  send: [AsyncFunction: send],
+  end: [Function: end],
+  discard: [Function: discard],
+  [Symbol(Symbol.asyncIterator)]: [AsyncGeneratorFunction],
+}
+
+      at <anonymous> (/work/src/.bb-client-queue-before.test.ts:6:46)
+(fail) queue rejects invalid capacity Infinity before admission [0.01ms]
+1 | import { expect, test } from "bun:test";
+2 | import { SessionQueue } from "./typescript/packages/stream/src/session-queue.ts";
+3 | 
+4 | for (const capacity of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+5 |   test(`queue rejects invalid capacity ${capacity} before admission`, () => {
+6 |     expect(() => new SessionQueue(capacity)).toThrow();
+                                                 ^
+error: expect(received).toThrow()
+
+Received function did not throw
+Received value: SessionQueue {
+  available: [Getter],
+  push: [Function: push],
+  send: [AsyncFunction: send],
+  end: [Function: end],
+  discard: [Function: discard],
+  [Symbol(Symbol.asyncIterator)]: [AsyncGeneratorFunction],
+}
+
+      at <anonymous> (/work/src/.bb-client-queue-before.test.ts:6:46)
+(fail) queue rejects invalid capacity 1.5 before admission [0.01ms]
+
+ 0 pass
+ 5 fail
+ 5 expect() calls
+Ran 5 tests across 1 file. [23.00ms]

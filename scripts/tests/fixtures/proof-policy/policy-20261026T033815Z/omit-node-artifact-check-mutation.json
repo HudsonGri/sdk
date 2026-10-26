@@ -1,0 +1,7 @@
+{
+  "file": "scripts/check-wave1-inventory.py",
+  "before": "require(client[\"same_artifacts\"] == mac[\"artifacts\"] == artifacts, \"Node same-artifact identity differs\")",
+  "after": "require(True, \"mutation control bypasses one production check\")",
+  "positive_sha256": "71cc5a6d84b0b37ad05d705d7be3f312abedf0dfe4fed90af99f3082132c806e",
+  "mutant_sha256": "0ccc68eeceb40ab9b8bc2c0feda4e782c8ca2cfd1eaa9faa9f5e60c0cb9fd4bf"
+}

@@ -1,0 +1,10 @@
+{
+  "mode": "negative-fence",
+  "suites": [
+    [
+      "negative-fence",
+      "append_segments_fence_same_length_alias_edits_and_delete_recreate"
+    ]
+  ],
+  "source_manifest_sha256": "9528e8f40757f9359733b4d6aafe1b1b977b250d4fbf63232a97a77c9a600e37"
+}

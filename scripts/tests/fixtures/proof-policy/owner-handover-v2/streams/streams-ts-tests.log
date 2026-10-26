@@ -1,0 +1,329 @@
+bun test v1.4.2 (744846f84)
+
+typescript/packages/stream/test/addressing.test.ts:
+(pass) @acyclic-labs/stream/addressing > Worker route grammar, query matching, specificity and exclusions share vectors [10.49ms]
+(pass) @acyclic-labs/stream/addressing > shared actor triples are disjoint and preserve the legacy default [5.74ms]
+(pass) @acyclic-labs/stream/addressing > Host parsing uses an exact multi-label suffix and exactly two labels [0.45ms]
+(pass) @acyclic-labs/stream/addressing > shared golden pairs use the literal Rust WASM encoding [7.78ms]
+(pass) @acyclic-labs/stream/addressing > shared host vectors use account id directly for URL, SNI and signed Host [7.96ms]
+(pass) @acyclic-labs/stream/addressing > pair values retain bytes and reject alternate encodings [0.25ms]
+(pass) @acyclic-labs/stream/addressing > wrapping existing RPC fields leaves their representation unchanged [1.21ms]
+(pass) @acyclic-labs/stream/addressing > host aliases cannot change signing or TLS spelling [0.13ms]
+(pass) @acyclic-labs/stream/addressing > plain JS callers cannot coerce text or numeric arrays into identity bytes [0.93ms]
+
+typescript/packages/stream/test/credential.test.ts:
+(pass) every browser session attempt resolves a fresh credential before dialing [13.48ms]
+(pass) cancellation while renewing prevents the browser dial [1.67ms]
+
+typescript/packages/stream/test/grpc-follow-options.test.ts:
+(pass) raw follow declarations accept deadlines and reject connection metadata [101.16ms]
+
+typescript/packages/stream/test/native-credential.test.ts:
+
+# Unhandled error between tests
+-------------------------------
+error: Cannot find module '../generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/native-credential.test.ts'
+-------------------------------
+
+
+typescript/packages/stream/test/native-credentials.test.ts:
+(pass) native shared credential interleavings: correct [20.13ms]
+(pass) native shared credential interleavings: any-release [25.87ms]
+(pass) native shared credential interleavings: no-release [23.65ms]
+(pass) native shared credential interleavings: live-abort-set [25.80ms]
+(pass) native shared credential interleavings: no-abandon [22.51ms]
+(pass) credential admission equals the live request set after arbitrary duplicate cleanup [3.59ms]
+
+typescript/packages/stream/test/native-record-filter.test.ts:
+(pass) native record filtering boundary production [114.52ms]
+(pass) native record filtering boundary dropped-filter [67.42ms]
+(pass) native record filtering boundary consecutive [56.61ms]
+(pass) native record filtering boundary dropped-headers [70.79ms]
+
+typescript/packages/stream/test/read-frames.test.ts:
+(pass) read frames > a compressed frame decodes to the same records [12.25ms]
+(pass) read frames > mixed compressed and plain frames reassemble in order [0.91ms]
+(pass) read frames > oversized, mismatched, corrupt and unknown-codec frames are refused [1.58ms]
+
+typescript/packages/stream/test/session-errors.test.ts:
+(pass) every Rust error code round-trips through TLS gRPC and WASM Session I/O [433.27ms]
+(pass) negative control rejects public aliases entering Rust Session I/O [293.17ms]
+
+typescript/packages/stream/test/session-latest.test.ts:
+(pass) LATEST keeps jumps, attention and watermarks while a full follow progresses [10.08ms]
+(pass) LATEST fences buffered generations and resumes the consumed cut after moved and disconnect [3.57ms]
+(pass) raw ALL data retains metadata and invalid modes fail before opening a session [2.62ms]
+(pass) checked ALL confirms its anchor and reconnects with the last yielded commit [2.02ms]
+(pass) missing or mismatched checked confirmation removes only its channel without data credit [2.76ms]
+
+typescript/packages/stream/test/session-queue.test.ts:
+(pass) ring wraps and releases consumed slots while preserving undefined values [0.16ms]
+(pass) discard admits waiting producers before disposing the detached old values [0.34ms]
+(pass) terminal errors follow buffered records and settle blocked producers [0.11ms]
+
+typescript/packages/stream/test/session.test.ts:
+(pass) session slots, filters and record headers survive the TypeScript bridge [2.65ms]
+(pass) concurrent follows share a node connection and remove every interest [10.54ms]
+(pass) returning unread buffered deliveries never loses aggregate credit [131.22ms]
+(pass) moved resumes the yielded cursor while another channel stays live [1.56ms]
+(pass) transport recovery fences queued records and reuses one live node session [0.91ms]
+(pass) aborting a suspended iterator releases its channel reservation immediately [1325.06ms]
+(pass) concurrent first follows share a bounded silent-peer handshake [3025.54ms]
+(pass) Welcome followed by EOF cannot strand the first subscription [11.81ms]
+
+typescript/packages/stream/test/wire-records.test.ts:
+13 |     mutations: [{ fork: { source: "source", destination: "destination", atTail: 1n, values: [payload] } }] };
+14 |   const options = { idempotencyKey: idempotencyKey(new Uint8Array([4])) };
+15 |   const normalized = fromBinary(CommitRequestSchema, await normalizeWireCommitBytes(commit, options));
+16 |   const mutation = normalized.mutations[0]!.mutation;
+17 |   expect(mutation.case === "fork" && mutation.value.records[0]?.value).toEqual(payload);
+18 |   expect(await normalizeWireCommit(commit, options)).toEqual(commit);
+                                                          ^
+error: expect(received).toEqual(expected)
+
+  {
+    "conditions": [
+      {
+        "ifAbsent": true,
+        "path": "destination",
+      },
+    ],
+    "mutations": [
+      {
+        "fork": {
+          "atTail": 1n,
+          "destination": "destination",
++         "exclude": [],
+          "source": "source",
+          "values": [
+            Uint8Array [
+              0,
+              1,
+              127,
+              255,
+            ],
+          ],
+        },
+      },
+    ],
+  }
+
+- Expected  - 0
++ Received  + 1
+
+      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/wire-records.test.ts:18:54)
+(fail) append and atomic commit encode record messages without losing opaque bytes [2.89ms]
+
+typescript/packages/stream/test/session-transports.test.ts:
+(pass) public gRPC follows and unaries share one physical HTTP/2 session [68.32ms]
+(pass) raw gRPC follow deadlines remove only their logical channel [111.80ms]
+(pass) public browser follows use one authenticated binary WebSocket without fetch polling [32.11ms]
+
+typescript/packages/stream/test/head-condition.test.ts:
+(pass) head conditions retain commit identity through the client, WASM provider and retries [5.93ms]
+(pass) head normalization keeps the hash fence and rejects an empty-history anchor [0.35ms]
+(pass) HTTP rejects head conditions until the hosted capability is negotiated [0.42ms]
+
+typescript/packages/stream/test/native-session-pool.test.ts:
+error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+(fail) native concurrent follows and follows share one Session per node with local cancellation [75.21ms]
+error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+(fail) cancelling a follows during shared initialization preserves its sibling [0.97ms]
+error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+(fail) a cancelled waiter cannot cancel a shared Session paused before Welcome [0.90ms]
+error: Cannot find module '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/generated/native/binding.cjs' from '/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/src/native.ts'
+(fail) new follows abandons a cancelled home reconnect before its credential settles [0.95ms]
+
+typescript/packages/stream/test/stream.test.ts:
+(pass) absent retry observations project undefined through memory and HTTP [6.05ms]
+(pass) website Stream contract > opens the local provider without exposing provider setup [1.98ms]
+(pass) website Stream contract > local streams do not issue unused hosted access tokens [0.14ms]
+(pass) website Stream contract > JSON streams reject values that cannot satisfy their declared recursive type [0.23ms]
+(pass) website Stream contract > enforces the Rust Stream path, batch, and read bounds before mutation [2.81ms]
+(pass) website Stream contract > rejects oversized commands and invalid cursors before they can change state [10.25ms]
+(pass) website Stream contract > allows a follow cursor exactly at the Rust tail and resumes after the next append [1.28ms]
+(pass) website Stream contract > Rust rejects oversized encoded requests before decoding or dispatch [0.39ms]
+(pass) website Stream contract > requires matching conditions and canonicalizes coordinated retry identity [2.34ms]
+(pass) website Stream contract > rejects forged absence conditions before provider dispatch [0.21ms]
+(pass) website Stream contract > distinguishes a missing tail from zero and materializes ancestor paths [0.96ms]
+274 |     const controller = new AbortController();
+275 |     const followed: StreamRecord<RunEvent>[] = [];
+276 |     for await (const record of experiment.follow({ from: observed, signal: controller.signal })) {
+277 |       followed.push(record); controller.abort();
+278 |     }
+279 |     expect(followed).toEqual([{ sequence: 1n, value: { type: "strategy.changed" }, commitId: expect.any(Uint8Array), committedAtMicros: expect.any(BigInt) }]);
+                           ^
+error: expect(received).toEqual(expected)
+
+  [
+    {
+-     "commitId": Any<Uint8Array>,
+-     "committedAtMicros": Any<BigInt>,
++     "attributes": [],
++     "commitId": Uint8Array [
++       227,
++       110,
++       150,
++       235,
++       20,
++       26,
++       184,
++       11,
++       139,
++       138,
++       86,
++       208,
++       35,
++       71,
++       158,
++       134,
++       137,
++       19,
++       43,
++       248,
++       116,
++       63,
++       112,
++       220,
++       89,
++       113,
++       112,
++       129,
++       2,
++       234,
++       14,
++       34,
++     ],
++     "committedAtMicros": 1792979275481000n,
++     "keys": [],
+      "sequence": 1n,
+      "value": {
+        "type": "strategy.changed",
+      },
+    },
+  ]
+
+- Expected  - 2
++ Received  + 37
+
+      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:279:22)
+(fail) website Stream contract > appends, forks an exact prefix, and follows typed JSON [2.98ms]
+(pass) website Stream contract > keeps the complete committed prefix readable after later appends and a fork [1.82ms]
+(pass) website Stream contract > uses exact uint64 positions, opaque identities, flattened receipts, and typed commit inputs [1.85ms]
+(pass) website Stream contract > projects every Rust memory response oneof with isolated exact values [1.98ms]
+(pass) website Stream contract > Rust memory response projector owns widths, copies, and missing oneofs [0.54ms]
+(pass) website Stream contract > Rust memory response projector owns children page validation and projection [0.32ms]
+(pass) website Stream contract > projects commit responses larger than the bounded request size [18.92ms]
+(pass) website Stream contract > binds commit identities to request content [0.67ms]
+(pass) website Stream contract > enforces Rust commit deadlines at the WASM boundary [0.38ms]
+(pass) website Stream contract > serializes concurrent mutations and replays a shared idempotency key once [0.79ms]
+(pass) website Stream contract > returns CAS conflicts without mutating [0.37ms]
+(pass) website Stream contract > does not create a path when its first conditional append conflicts [0.81ms]
+(pass) website Stream contract > removes cancelled memory followers without waiting for a later append [0.69ms]
+(pass) website Stream contract > closed Rust follow handles end before or during a pending read [0.37ms]
+(pass) website Stream contract > rejects a failed multi-stream commit atomically [0.72ms]
+(pass) website Stream contract > retains a valid prototype-named tail in memory and hosted commit results [0.95ms]
+558 |     const retryKey = key("snap");
+559 |     const pending = provider.append("events", [value], { idempotencyKey: retryKey });
+560 |     value[0] = 9;
+561 |     retryKey[0] = 9;
+562 |     await pending;
+563 |     expect(sent?.values).toEqual(["AQ=="]);
+                               ^
+error: expect(received).toEqual(expected)
+
+- [
+-   "AQ==",
+- ]
++ undefined
+
+- Expected  - 3
++ Received  + 1
+
+      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:563:26)
+(fail) website Stream contract > hosted append sends the bytes and key validated at call time [0.74ms]
+580 |       value[0] = 9;
+581 |       retryKey[0] = 9;
+582 |       release();
+583 |       await pending;
+584 |     });
+585 |     expect(sent).toEqual({ path: "events", values: ["AQ=="], options: { idempotencyKey: btoa("default-append") } });
+                       ^
+error: expect(received).toEqual(expected)
+
+  {
+    "options": {
+      "idempotencyKey": "ZGVmYXVsdC1hcHBlbmQ=",
+    },
+    "path": "events",
+-   "values": [
+-     "AQ==",
++   "records": [
++     {
++       "attributes": [],
++       "keys": [],
++       "value": "AQ==",
++     },
+    ],
+  }
+
+- Expected  - 2
++ Received  + 6
+
+      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:585:18)
+(fail) website Stream contract > default transport snapshots append inputs before delayed provider selection [1.30ms]
+(pass) website Stream contract > default transport snapshots token grants before delayed provider selection [0.83ms]
+(pass) website Stream contract > default transport snapshots lazy read cursors when the iterator is created [0.87ms]
+634 |     const retry = new Uint8Array([0, 255, 128, 1]);
+635 |     const retryWire = btoa(String.fromCharCode(...retry));
+636 |     const encoded = (route: Parameters<typeof encodeHttpRequest>[0], input: Uint8Array) => JSON.parse(encodeHttpRequest(route, input));
+637 |     expect(encoded("idempotency/inspect", toBinary(InspectIdempotencyRequestSchema, create(InspectIdempotencyRequestSchema, { idempotencyKey: retry })))).toEqual({ idempotencyKey: retryWire });
+638 |     expect(encoded("tail", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "events" })))).toEqual({ path: "events" });
+639 |     expect(encoded("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1, 2])], ifTail: 0xffff_ffff_ffff_ffffn, idempotencyKey: retry })))).toEqual({ path: "events", values: ["AQI="], options: { ifTail: "18446744073709551615", idempotencyKey: retryWire } });
+                                                                                                                                                                                                              ^
+error: expect(received).toEqual(expected)
+
+  {
+    "options": {
+      "idempotencyKey": "AP+AAQ==",
+      "ifTail": "18446744073709551615",
+    },
+    "path": "events",
+-   "values": [
+-     "AQI=",
++   "records": [
++     {
++       "attributes": [],
++       "keys": [],
++       "value": "",
++     },
+    ],
+  }
+
+- Expected  - 2
++ Received  + 6
+
+      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:639:201)
+(fail) website Stream contract > Rust encodes every protobuf-backed hosted request shape [0.53ms]
+(pass) website Stream contract > hosted children pages use the Rust response contract [1.11ms]
+(pass) website Stream contract > public stream handles snapshot commit and iterator inputs at call time [0.89ms]
+(pass) website Stream contract > default selection keeps concurrent follow waiters independent [0.44ms]
+(pass) website Stream contract > default selection cancels abandoned native connect and retries for a newcomer [0.26ms]
+(pass) website Stream contract > default selection caches a successfully selected provider [0.12ms]
+(pass) website Stream contract > default childrenPage snapshots hierarchy version and request fields [0.15ms]
+(pass) website Stream contract > read captures one cursor before asynchronous validation [0.63ms]
+(pass) website Stream contract > managed transport validates responses and propagates follow cancellation [3.04ms]
+872 |       socket.node.append("events");
+873 |       await expect(first).resolves.toMatchObject({ done: false, value: { sequence: 0n } });
+874 |       const next = iterator.next();
+875 |       await checkpoint();
+876 |       expect(timers.size).toBe(0);
+877 |       expect(created).toBe(1); // Only the cleared Welcome deadline.
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 2
+
+      at <anonymous> (/mnt/bb/cx/wt/cx-streams/typescript/packages/stream/test/stream.test.ts:877:23)
+(fail) website Stream contract > hosted follow has no idle timers and clears cancellation resources [2.15ms]

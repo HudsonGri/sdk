@@ -1,0 +1,29 @@
+test_captured_old_source_controls_are_valid (__main__.EvidencePolicy.test_captured_old_source_controls_are_valid) ... ok
+test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused (__main__.EvidencePolicy.test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused) ... ok
+test_mismatched_executed_oracle_is_refused (__main__.EvidencePolicy.test_mismatched_executed_oracle_is_refused) ... ok
+test_owner_observations_cannot_be_relabelled_as_proofs (__main__.EvidencePolicy.test_owner_observations_cannot_be_relabelled_as_proofs) ... ok
+test_partial_eof_control_cannot_claim_complete_a5 (__main__.EvidencePolicy.test_partial_eof_control_cannot_claim_complete_a5) ... ok
+test_qualification_gate_refuses_the_real_open_inventory (__main__.EvidencePolicy.test_qualification_gate_refuses_the_real_open_inventory) ... ok
+test_real_handover_preserves_snapshot_and_final_failure_scope (__main__.EvidencePolicy.test_real_handover_preserves_snapshot_and_final_failure_scope) ... ok
+test_real_rejected_append_run_is_source_review_only (__main__.EvidencePolicy.test_real_rejected_append_run_is_source_review_only) ... ok
+test_rehashed_handover_cannot_promote_older_pass_or_signed_wip (__main__.EvidencePolicy.test_rehashed_handover_cannot_promote_older_pass_or_signed_wip) ... 
+  test_rehashed_handover_cannot_promote_older_pass_or_signed_wip (__main__.EvidencePolicy.test_rehashed_handover_cannot_promote_older_pass_or_signed_wip) (field='streams.latest_tested_outcome') ... FAIL
+test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks (__main__.EvidencePolicy.test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks) ... ok
+test_rehashed_mac_receipt_must_still_use_linux_artifact (__main__.EvidencePolicy.test_rehashed_mac_receipt_must_still_use_linux_artifact) ... ok
+test_rehashed_source_review_cannot_claim_runtime_or_mutant_credit (__main__.EvidencePolicy.test_rehashed_source_review_cannot_claim_runtime_or_mutant_credit) ... ok
+test_rejected_append_run_cannot_be_relabelled_as_executed_mutant (__main__.EvidencePolicy.test_rejected_append_run_cannot_be_relabelled_as_executed_mutant) ... ok
+
+======================================================================
+FAIL: test_rehashed_handover_cannot_promote_older_pass_or_signed_wip (__main__.EvidencePolicy.test_rehashed_handover_cannot_promote_older_pass_or_signed_wip) (field='streams.latest_tested_outcome')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\varun\AppData\Local\Temp\verify-policy-yxtniub3\scripts\test-wave1-inventory.py", line 146, in test_rehashed_handover_cannot_promote_older_pass_or_signed_wip
+    with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, reason):
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.964s
+
+FAILED (failures=1)
+VERIFY_POLICY_FAILURE step=test_wave1_inventory error=evidence-policy tests failed; inspect named cases above; recovery: python scripts/test-wave1-inventory.py

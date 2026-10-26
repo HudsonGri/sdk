@@ -1,0 +1,10 @@
+{
+  "mode": "positive",
+  "suites": [
+    [
+      "append-segments",
+      "workspace::tests::append_segments::"
+    ]
+  ],
+  "source_manifest_sha256": "ce594c6ab1eaf3023f7c05f5af5a2c40bc76e6da5d31b10da055865c490a2878"
+}

@@ -1,0 +1,7 @@
+{
+  "file": "scripts/check-wave1-inventory.py",
+  "before": "require(all(row[\"outcome\"] == \"Unqualified\" and row[\"reason\"] == \"CanonicalHistoryNotExported\" for row in rows), \"HST reporting cannot promote a missing history\")",
+  "after": "require(True, \"mutation control bypasses one production check\")",
+  "positive_sha256": "37794de0fcac004728e4c5a27d816022d1ad2808edc5b3944849c1aff01157a4",
+  "mutant_sha256": "667afb243e0c60e1adf7af7f4f9514144ce2bb5bb3a4f30970d516a7756d788f"
+}

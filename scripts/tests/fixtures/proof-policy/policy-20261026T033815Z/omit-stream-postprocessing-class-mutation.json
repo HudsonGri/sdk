@@ -1,0 +1,7 @@
+{
+  "file": "scripts/check-wave1-inventory.py",
+  "before": "require(receipt['controls'] == dict(root_only='production_fault', exclusions='production_fault', page_bytes='production_fault', independent_reads='model_postprocessing'), 'Streams postprocessed page cannot become a production negative control')",
+  "after": "require(True, \"mutation control bypasses one production check\")",
+  "positive_sha256": "71cc5a6d84b0b37ad05d705d7be3f312abedf0dfe4fed90af99f3082132c806e",
+  "mutant_sha256": "b360be129d6dc25aeb85b577738fc27f2ad082fc5268758775659965d76e963f"
+}

@@ -1,0 +1,1 @@
+{"command": ["cargo", "metadata", "--no-deps", "--locked", "--format-version=1"], "exit": 0, "expected": 0, "seconds": 0.06642628001281992}

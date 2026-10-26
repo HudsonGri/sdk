@@ -1,0 +1,7 @@
+{
+  "path": "scripts/proof_inventory_scan.py",
+  "before": "r'\\bunsafe\\s*(?:\\{|fn\\b|impl\\b|extern\\b|trait\\b)'",
+  "after": "r'(?!)'",
+  "positive_sha256": "857567198158f5b2337403dfbc1579fbd6a817c32c5e281cb3cf0e62d037b8e3",
+  "mutant_sha256": "53d7ec4e9382e8d583cffde7dda2ac493780fcec8880f9c68ea1425f629a4adb"
+}

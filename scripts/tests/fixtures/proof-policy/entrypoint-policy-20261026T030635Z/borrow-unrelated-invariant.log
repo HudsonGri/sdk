@@ -1,0 +1,28 @@
+test_actual_captured_unsafe_sites_and_wildcard_are_discovered (__main__.ProofCoverage.test_actual_captured_unsafe_sites_and_wildcard_are_discovered) ... ok
+test_cli_missing_base_is_typed (__main__.ProofCoverage.test_cli_missing_base_is_typed) ... ok
+test_comments_and_raw_strings_do_not_create_entries (__main__.ProofCoverage.test_comments_and_raw_strings_do_not_create_entries) ... ok
+test_dependency_input_cannot_borrow_reporting_proof (__main__.ProofCoverage.test_dependency_input_cannot_borrow_reporting_proof) ... ok
+test_empty_invariant_is_refused (__main__.ProofCoverage.test_empty_invariant_is_refused) ... ok
+test_missing_file_proof_entry_is_refused (__main__.ProofCoverage.test_missing_file_proof_entry_is_refused) ... ok
+test_missing_or_unsupported_receipt_is_refused (__main__.ProofCoverage.test_missing_or_unsupported_receipt_is_refused) ... ok
+test_omitted_duplicate_and_retyped_entries_are_refused (__main__.ProofCoverage.test_omitted_duplicate_and_retyped_entries_are_refused) ... ok
+test_real_git_new_source_requires_proof_entry_and_dirty_tree_refuses (__main__.ProofCoverage.test_real_git_new_source_requires_proof_entry_and_dirty_tree_refuses) ... ok
+test_real_git_rename_requires_new_entry_and_deletion_needs_none (__main__.ProofCoverage.test_real_git_rename_requires_new_entry_and_deletion_needs_none) ... ok
+test_real_reporting_source_has_eleven_receipt_backed_entries (__main__.ProofCoverage.test_real_reporting_source_has_eleven_receipt_backed_entries) ... ok
+test_stale_file_digest_is_refused (__main__.ProofCoverage.test_stale_file_digest_is_refused) ... ok
+test_unrelated_invariant_cannot_borrow_reporting_proof (__main__.ProofCoverage.test_unrelated_invariant_cannot_borrow_reporting_proof) ... FAIL
+
+======================================================================
+FAIL: test_unrelated_invariant_cannot_borrow_reporting_proof (__main__.ProofCoverage.test_unrelated_invariant_cannot_borrow_reporting_proof)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\varun\AppData\Local\Temp\verify-entrypoint-p69hz4za\scripts\test-proof-coverage.py", line 60, in test_unrelated_invariant_cannot_borrow_reporting_proof
+    with self.assertRaisesRegex(ValueError, 'receipt does not prove the registered invariant'):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 13 tests in 2.171s
+
+FAILED (failures=1)
+VERIFY_COVERAGE_TEST_FAILURE step=test_proof_coverage error=proof coverage assertions failed; inspect named cases above; recovery: python scripts/test-proof-coverage.py

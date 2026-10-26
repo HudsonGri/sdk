@@ -1,0 +1,5 @@
+{
+  "build_slot_tree": "919e4dd4e5888c806a8c8f9b6643438a95a7583c 058ec24753d7bf9db66487e068e5ddcd36193ca4 3ac2f09fa75e0ef929c25dc93eebd0e61e99610b37c859db17df04b20fed9aeb",
+  "affected_crate": "acyclic-stream",
+  "job_budget_seconds": 570
+}

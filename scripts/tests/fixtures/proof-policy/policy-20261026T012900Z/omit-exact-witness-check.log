@@ -1,0 +1,44 @@
+test_captured_old_source_controls_are_valid (__main__.EvidencePolicy.test_captured_old_source_controls_are_valid) ... ok
+test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused (__main__.EvidencePolicy.test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused) ... 
+  test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused (__main__.EvidencePolicy.test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused) (label='incomplete') ... FAIL
+  test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused (__main__.EvidencePolicy.test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused) (label='wrong step') ... FAIL
+test_mismatched_executed_oracle_is_refused (__main__.EvidencePolicy.test_mismatched_executed_oracle_is_refused) ... ok
+test_qualification_gate_refuses_the_real_open_inventory (__main__.EvidencePolicy.test_qualification_gate_refuses_the_real_open_inventory) ... ok
+test_real_rejected_append_run_is_source_review_only (__main__.EvidencePolicy.test_real_rejected_append_run_is_source_review_only) ... ok
+test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks (__main__.EvidencePolicy.test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks) ... 
+  test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks (__main__.EvidencePolicy.test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks) (mutation='invariant=SubtreeMembership') ... FAIL
+test_rehashed_source_review_cannot_claim_runtime_or_mutant_credit (__main__.EvidencePolicy.test_rehashed_source_review_cannot_claim_runtime_or_mutant_credit) ... ok
+test_rejected_append_run_cannot_be_relabelled_as_executed_mutant (__main__.EvidencePolicy.test_rejected_append_run_cannot_be_relabelled_as_executed_mutant) ... ok
+
+======================================================================
+FAIL: test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused (__main__.EvidencePolicy.test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused) (label='incomplete')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\varun\AppData\Local\Temp\verify-policy-m_2foee3\scripts\test-wave1-inventory.py", line 41, in test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused
+    with self.subTest(label=label), self.assertRaisesRegex(ValueError, "witness"):
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused (__main__.EvidencePolicy.test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused) (label='wrong step')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\varun\AppData\Local\Temp\verify-policy-m_2foee3\scripts\test-wave1-inventory.py", line 41, in test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused
+    with self.subTest(label=label), self.assertRaisesRegex(ValueError, "witness"):
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks (__main__.EvidencePolicy.test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks) (mutation='invariant=SubtreeMembership')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\varun\AppData\Local\Temp\verify-policy-m_2foee3\scripts\test-wave1-inventory.py", line 60, in test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks
+    with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, reason):
+                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.207s
+
+FAILED (failures=3)
+VERIFY_POLICY_FAILURE step=test_wave1_inventory error=evidence-policy tests failed; inspect named cases above; recovery: python scripts/test-wave1-inventory.py

@@ -1,0 +1,12 @@
+   Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
+    Finished `test` profile [optimized + debuginfo] target(s) in 11.83s
+     Running tests/wave1_loom.rs (/home/var/targets/cx-streams/debug/deps/wave1_loom-d47ba9246edaac38)
+
+running 4 tests
+test negative_control_old_fork_without_exclusions - should panic ... ok
+test negative_control_old_root_only_fork - should panic ... ok
+test nested_fork_excludes_existing_siblings ... ok
+test subtree_fork_races_coordinated_descendant_writes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
