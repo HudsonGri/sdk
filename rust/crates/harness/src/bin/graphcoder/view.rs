@@ -1,199 +1,172 @@
+//! Terminal input and painting over the same agent session as headless/WASM.
 use acyclic_harness::{
     OperationId, client,
+    agent::{Delivered, IntentId, Sender, TurnInput},
     local::LocalHarness,
     tui::{
-        self, PromptInput, Viewport,
+        self, AgentRenderer, InputEffect, PromptInput, Viewport,
         ratatui::layout::{Position, Rect, Size},
         term::{Environment, FrameTerminal, RegionScroll, ScreenMode, Tty},
     },
 };
 use futures::StreamExt as _;
 use std::{sync::Arc, time::Instant};
+
+#[cfg(test)]
 #[path = "view/diff.rs"]
 mod diff;
-use diff::DiffState;
 
 pub async fn run(
     local: Arc<LocalHarness>,
-    operation: OperationId,
     inline: bool,
+    resume: bool,
 ) -> Result<client::HeadlessOutcome, Box<dyn std::error::Error>> {
-    let authority = local.client_owner();
-    let mut client = observe(&local, &authority).await?;
-    let reader = local.client_reader()?;
-    let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
+    let mut client = client::LocalAgentClient::connect_window(
+        local, if resume { 16 } else { 0 }, 4 * 1024 * 1024,
+    ).await?;
     let tty = open_tty(inline)?;
     let terminal_size = tty.size_reader();
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
-    // Events of the current read not yet handled; the read presents one frame.
-    let mut batch = client::InputBatch::new();
-    let mut effects = Vec::new();
     let mut input = PromptInput::default();
-    let mut prompt_files = client::PromptFiles::default();
-    prompt_files.refresh(&commands, &mut input)?;
-    let mut completions = client::local_completions(&local, &mut input).await?;
     let mut viewport = Viewport::default();
-    let mut renderer = tui::ClientRenderer::default();
-    // The transcript band and its top line in the frame on the device.
+    let mut renderer = AgentRenderer::new(client.client().agent().clone());
     let mut shown = None;
     let start = Instant::now();
-    client.follow_commands(&commands).await?;
-    let mut documents = client::local_documents(&local, client.views_mut()).await?;
-    let mut diff = DiffState::new();
+    let mut batch = client::InputBatch::new();
+    let mut effects = Vec::new();
+    // Only one locally submitted receipt is retained. The input is refused
+    // before staging when occupied; it remains an editable draft.
+    let mut pending: Option<(IntentId, u64)> = None;
+    renderer.request_frame();
     loop {
-        if client::frame_due(&batch) {
-            renderer.wait_frame().await;
-        }
-        follow_selected_task(local.as_ref(), &mut client, &commands, &authority).await?;
-        renderer.update_files(&client, &authority);
-        let diff_open = diff_is_open(&commands)?;
-        refresh_diff(
-            &mut diff,
-            client.presentation_revision(),
-            diff_open,
-            &mut renderer,
-            local.project_selection(),
-            || follow_diff(local.clone()),
-        )
-        .await;
-        if commands.exit_requested()? {
-            return Ok(commands.exit_outcome()?);
-        }
-        prompt_files.refresh(&commands, &mut input)?;
-        input.refresh_completions();
-        let (areas, maximum_scroll) = render_view(
-            &mut renderer,
-            (&commands, &client, &authority),
-            (&mut input, &mut viewport),
-            (&mut terminal, terminal_size()?, &mut shown),
-            (&batch, inline, &start),
-        )?;
         if batch.is_empty() {
-            let next = client::next_file_tui_event(
-                &mut client,
-                &mut events,
-                &mut completions,
-                &mut input,
-                &mut commands,
-                areas.animation,
-                &mut renderer,
-                &mut documents,
-            );
-            let Some(read) = (tokio::select! {
-                read = next => read?,
-                rows = async { match diff.stream() { Some(stream) => stream.next().await, None => std::future::pending().await } } => {
-                    match rows {
-                        Some(Ok(rows)) => renderer.update_diff(Ok(rows)),
-                        failed => {
-                            renderer.update_diff(failed.unwrap_or_else(|| {
-                                Err(acyclic_harness::Error::Conflict("project diff follow ended".into()))
-                            }));
-                            diff.failed();
+            let deadline = renderer.frame_deadline();
+            tokio::select! {
+                read = events.next() => {
+                    batch = read.ok_or("terminal input closed")??;
+                },
+                event = client.next() => {
+                    match event? {
+                        client::AgentEvent::Conversation { sequence, entry } => {
+                            if let TurnInput::Message { from: Sender::User { principal }, id, inbox, .. } = &entry.input
+                                && principal == "local"
+                                && pending.as_ref().is_some_and(|(expected, at)| expected == id && at == inbox)
+                            {
+                                pending = None;
+                            }
+                            let turn = client.read_turn(sequence, entry).await?;
+                            renderer.discard_before(client.client().conversation().first_sequence());
+                            renderer.append(sequence, &turn.output.text)?;
                         }
+                        client::AgentEvent::Status { status } => renderer.status(&status),
+                        client::AgentEvent::Progress => {}
                     }
-                    continue;
+                },
+                _ = async {
+                    match deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    input.busy = pending.is_some() || client.client().current_status()?
+                        .is_some_and(|status| matches!(status.phase, acyclic_harness::agent::Phase::Running));
+                    let size = terminal_size()?;
+                    paint(&mut renderer, (&mut input, &mut viewport),
+                        (&mut terminal, size, &mut shown), &start)?;
                 }
-            }) else {
-                continue;
-            };
-            batch = read;
+            }
         }
-        let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if batch.is_empty() { continue; }
+        let size = terminal_size()?;
+        renderer.layout(&input, size);
+        let areas = renderer.screen().areas(Rect::from((Position::ORIGIN, size)), &input);
         let page_rows = usize::from(areas.transcript.height);
-        // A flick or held PageUp is one input batch: one scroll, one frame.
+        let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         client::input_burst(&mut batch, page_rows, &mut effects, |event| {
-            areas.event(&mut input, event, &mut viewport, now, &mut |byte| {
-                renderer.anchor_at(byte)
-            })
+            areas.event(&mut input, event, &mut viewport, now, &mut |_| None)
         });
-        client::file_tui_inputs(
-            &mut commands,
-            reader.as_ref(),
-            effects.iter().cloned(),
-            page_rows,
-            maximum_scroll,
-            |from, rows| renderer.move_view(from, rows),
-        )
-        .await?;
-        prompt_files.save(&mut commands, &mut input).await?;
+        for effect in effects.drain(..) {
+            if let Some(rows) = client::transcript_motion(&effect, page_rows) {
+                renderer.scroll(rows.saturating_neg());
+                continue;
+            }
+            match effect {
+                InputEffect::Submit { text, edit: None, .. } => {
+                    if pending.is_some() {
+                        input.set_chat_draft(&text);
+                        renderer.notice("The submitted turn is still pending. Your next prompt remains in the editor.");
+                        continue;
+                    }
+                    if text.is_empty() || text.len() > client::MAXIMUM_AGENT_PROMPT_BYTES {
+                        input.set_chat_draft(&text);
+                        renderer.notice("Prompt must contain 1..=65536 bytes.");
+                        continue;
+                    }
+                    let id = IntentId::try_from(OperationId::new().to_string())?;
+                    match client.prompt(&id, &text).await? {
+                        Delivered::Committed { inbox } => pending = Some((id, inbox)),
+                        Delivered::Closed => renderer.notice("The selected agent is closed."),
+                    }
+                }
+                InputEffect::Quit => return Ok(client::HeadlessOutcome::Completed),
+                InputEffect::Interrupt | InputEffect::Host(tui::Action::Escape) => {
+                    let id = IntentId::try_from(OperationId::new().to_string())?;
+                    client.cancel(&id).await?;
+                }
+                InputEffect::Submit { text, edit: Some(_), .. } => {
+                    input.set_chat_draft(&text);
+                    renderer.notice("Message editing is not available yet. Your text remains in the editor.");
+                }
+                // Port these effects to the actor-native command/file binding.
+                // There is no retired TaskVolume workflow fallback.
+                _ => renderer.notice("This action is not available yet."),
+            }
+        }
+        input.busy = pending.is_some() || client.client().current_status()?
+            .is_some_and(|status| matches!(status.phase, acyclic_harness::agent::Phase::Running));
+        renderer.request_frame();
+        // Pointer hit-testing sees the preceding frame even inside a single
+        // terminal read. Other input is folded until that read's final frame.
+        if !batch.is_empty() && client::frame_due(&batch) {
+            if let Some(deadline) = renderer.frame_deadline() {
+                tokio::time::sleep_until(deadline).await;
+            }
+            paint(&mut renderer, (&mut input, &mut viewport),
+                (&mut terminal, terminal_size()?, &mut shown), &start)?;
+        }
     }
+}
+
+fn paint<P: tui::term::Present>(
+    renderer: &mut AgentRenderer,
+    (input, viewport): (&mut PromptInput, &mut Viewport),
+    (terminal, size, shown): (&mut FrameTerminal<P>, Size, &mut Option<(Rect, tui::TranscriptAnchor)>),
+    start: &Instant,
+) -> std::io::Result<()> {
+    input.refresh_completions();
+    renderer.layout(input, size);
+    let screen = renderer.screen();
+    let area = Rect::from((Position::ORIGIN, size));
+    let scroll = screen.tail_scroll(area, input);
+    let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    present(terminal, size, shown, false,
+        (screen.areas(area, input).transcript, None, None), |frame| {
+            screen.render(frame, input, viewport, scroll, now);
+        })?;
+    renderer.frame_presented();
+    Ok(())
 }
 
 fn open_tty(inline: bool) -> std::io::Result<Tty> {
     let mut tty = Tty::open()?;
-    // Synchronized output follows the probed modes in the session journal.
     tty.negotiate(&Environment::capture())?;
-    tty.setup(if inline {
-        ScreenMode::Inline
-    } else {
-        ScreenMode::Alternate
-    })?;
+    tty.setup(if inline { ScreenMode::Inline } else { ScreenMode::Alternate })?;
     Ok(tty)
 }
 
-async fn observe(
-    local: &Arc<LocalHarness>,
-    authority: &acyclic_harness::wire::Authority,
-) -> acyclic_harness::Result<client::TaskFileClient> {
-    client::TaskFileClient::observe_task(
-        local.task_files().as_ref(),
-        authority,
-        acyclic_harness::TaskId::parse(&authority.id)?,
-        1024,
-        4 * 1024 * 1024,
-    )
-    .await
-}
-
-async fn refresh_diff<W: PartialEq, S>(
-    diff: &mut DiffState<W, S>,
-    revision: u64,
-    open: bool,
-    renderer: &mut tui::ClientRenderer,
-    selection: impl std::future::Future<Output = acyclic_harness::Result<W>>,
-    follow: impl FnOnce() -> S,
-) {
-    if open {
-        if diff.needs_refresh(revision) {
-            match selection.await {
-                Ok(selected) => {
-                    if diff.select(revision, selected, follow) {
-                        renderer.update_diff(Ok(Vec::new()));
-                    }
-                }
-                Err(error) => {
-                    renderer.update_diff(Err(error));
-                    diff.selection_failed(revision);
-                }
-            }
-        }
-    } else {
-        diff.close();
-    }
-}
-
-fn follow_diff(
-    local: Arc<LocalHarness>,
-) -> acyclic_stream::BoxProviderStream<
-    'static,
-    acyclic_harness::Result<Vec<tui::ratatui::text::Line<'static>>>,
-> {
-    client::local_diff(
-        local,
-        client::DiffLimits {
-            files: 4096,
-            changes: 4096,
-            file_bytes: 65_536,
-            render_bytes: 4 * 1024 * 1024,
-            work: 16 * 1024 * 1024,
-        },
-    )
-}
-
-/// The presentation boundary shared by the executable and its file-backed Rig.
-/// Only successful device output advances the remembered transcript position.
+/// Shared device boundary. Remember position only after successful output.
 pub(super) fn present<P: tui::term::Present>(
     terminal: &mut FrameTerminal<P>,
     size: Size,
@@ -208,83 +181,4 @@ pub(super) fn present<P: tui::term::Present>(
     terminal.draw_scrolled(size, moved, render)?;
     *shown = top.map(|top| (band, top));
     Ok(())
-}
-
-fn render_view<P: tui::term::Present, S: acyclic_stream::StreamProvider + ?Sized>(
-    renderer: &mut tui::ClientRenderer,
-    files: (
-        &client::CommandSession<S>,
-        &client::TaskFileClient,
-        &acyclic_harness::wire::Authority,
-    ),
-    prompt: (&mut PromptInput, &mut Viewport),
-    device: (
-        &mut FrameTerminal<P>,
-        Size,
-        &mut Option<(Rect, tui::TranscriptAnchor)>,
-    ),
-    frame: (&client::InputBatch, bool, &Instant),
-) -> Result<(tui::ScreenAreas, usize), Box<dyn std::error::Error>> {
-    let (commands, client, authority) = files;
-    let (input, viewport) = prompt;
-    let (terminal, size, shown) = device;
-    let (batch, inline, start) = frame;
-    let mut areas = tui::ScreenAreas::default();
-    let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let back = client::tui_modal_scroll(commands)?;
-    renderer.configure(client.views(), authority, commands)?;
-    input.busy = renderer.is_busy();
-    renderer.layout(commands, input, size.width, size.height)?;
-    let (source_top, moved) = renderer.presented_position(shown.map(|(_, top)| top));
-    let screen = renderer.screen_for(commands)?;
-    let area = Rect::from((Position::ORIGIN, size));
-    let maximum_scroll = screen.tail_scroll(area, input);
-    if client::frame_due(batch) {
-        let scroll = maximum_scroll.saturating_sub(back);
-        let layout = screen.areas(area, input);
-        let mut transcript = layout.transcript;
-        transcript.width += layout.scrollbar.width;
-        present(
-            terminal,
-            size,
-            shown,
-            !inline,
-            (transcript, source_top, moved),
-            |frame| {
-                areas = screen.render(frame, input, viewport, scroll, now);
-            },
-        )?;
-        renderer.frame_presented();
-    } else {
-        // More of this read is queued: route it against the same layout
-        // and present once, after the read.
-        areas = screen.areas(area, input);
-    }
-    Ok((areas, maximum_scroll))
-}
-
-async fn follow_selected_task<S: acyclic_stream::StreamProvider + ?Sized>(
-    local: &LocalHarness,
-    client: &mut client::TaskFileClient,
-    commands: &client::CommandSession<S>,
-    authority: &acyclic_harness::wire::Authority,
-) -> acyclic_harness::Result<()> {
-    client
-        .follow_task(
-            local.task_files().as_ref(),
-            commands
-                .presentation_task()?
-                .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
-        )
-        .await
-}
-
-fn diff_is_open<S: acyclic_stream::StreamProvider + ?Sized>(
-    commands: &client::CommandSession<S>,
-) -> acyclic_harness::Result<bool> {
-    Ok(commands
-        .state_ref(client::CommandFileRoot::Session, "layout.json")?
-        .is_some_and(|layout| {
-            layout.get("open_view").and_then(|value| value.as_str()) == Some("diff")
-        }))
 }
