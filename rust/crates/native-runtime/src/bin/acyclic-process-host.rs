@@ -8,7 +8,7 @@ fn main() {
     let code = match result {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("native process host failed: {error}");
+            eprintln!("step=process-host-admission-or-drain failed: {error}; recovery=acyclic-process-host [--completion ABSOLUTE_FILE] ABSOLUTE_EXECUTABLE ARGS");
             125
         }
     };

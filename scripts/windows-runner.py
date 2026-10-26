@@ -6,6 +6,7 @@ belongs to the admitted external process host; this module never owns a Job or
 uses PID-based tree killing. OpenAI Codex <noreply@openai.com>.
 """
 
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import json
@@ -120,6 +121,8 @@ class Commands:
         self.acquired = False
         self.lease_wait_seconds = 0
         self.results = []
+        self.selections = []
+        self._selection = None
         self.cancellation = cancellation
 
     def __enter__(self):
@@ -187,6 +190,30 @@ class Commands:
             env.pop("ACYCLIC_TEST_BINARY", None)
         return identity, env
 
+    @contextmanager
+    def _libtest_selection(self):
+        """The libtest adapter owns nonvacuity across its whole selection."""
+        if self._selection is not None:
+            raise RuntimeError("a libtest selection already owns this runner")
+        selected = []
+        self._selection = selected
+        try:
+            yield
+        except BaseException:
+            raise
+        else:
+            result = dict(commands=len(selected), passed=sum(row["passed_tests"] for row in selected),
+                          exits=[row["exit"] for row in selected],
+                          listing=bool(selected) and all(row["listing"] for row in selected))
+            self.selections.append(result)
+            (self.records / "libtest-selections.json").write_text(
+                json.dumps(self.selections, indent=2), encoding="utf-8")
+            if not selected or (all(row["exit"] == 0 for row in selected)
+                                and result["passed"] == 0 and not result["listing"]):
+                raise RuntimeError("libtest selection reported ZERO passing tests")
+        finally:
+            self._selection = None
+
     def run(self, argv, *, cwd, name, sha256, libtest=False):
         """Run admitted argv. Only the libtest adapter adds libtest arguments."""
         if not self.acquired:
@@ -206,6 +233,9 @@ class Commands:
                 raise ValueError("the runner owns --test-threads=4")
             argv.append("--test-threads=4")
         identity, env = self._environment()
+        completions = self.records / "native-completions"
+        completions.mkdir(exist_ok=True)
+        completion_path = completions / (identity + ".json")
         start = time.monotonic()
         summaries = []
         log_path = self.records / (identity + ".log")
@@ -215,7 +245,7 @@ class Commands:
         try:
             with log_path.open("x", encoding="utf-8") as log:
                 proc = subprocess.Popen(
-                    [str(self.host), *argv], cwd=cwd, env=env,
+                    [str(self.host), "--completion", str(completion_path), *argv], cwd=cwd, env=env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                 )
@@ -242,17 +272,38 @@ class Commands:
         cancelled = control.cancelled
         outcome = 130 if cancelled else rc
         verification_error = None
+        native_completion = None
+        try:
+            native_completion = json.loads(completion_path.read_text(encoding="utf-8"))
+            if (not isinstance(native_completion, dict)
+                    or set(native_completion) != {"schema", "process_tree_retired", "exit_code", "cancelled"}
+                    or native_completion["schema"] != "acyclic.process-custody-completion.v1"
+                    or native_completion["process_tree_retired"] is not True
+                    or type(native_completion["exit_code"]) is not int
+                    or native_completion["exit_code"] != rc
+                    or type(native_completion["cancelled"]) is not bool):
+                raise ValueError("native completion schema or exit differs")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            verification_error = ("Windows command step=native-custody-completion: " + str(error)
+                                  + "; recovery=build the source-matched acyclic-process-host through scripts/windows-test.sh")
+        passed = sum(int(match.group(1)) for value in summaries
+                     if (match := re.search(r"\b([0-9]+) passed\b", value)))
         if libtest and outcome == 0 and "--list" not in argv:
-            if not summaries or not any(re.search(r"\b[1-9][0-9]* passed\b", value) for value in summaries):
-                verification_error = "libtest selected ZERO passing tests: " + repr(argv)
+            empty = bool(summaries) and all(re.match(
+                r"^test result: ok\. 0 passed; 0 failed; 0 ignored;", value) for value in summaries)
+            if not summaries or (passed == 0 and (self._selection is None or not empty)):
+                verification_error = verification_error or "libtest selected ZERO passing tests: " + repr(argv)
         result = dict(
             target=name, executable=str(executable), argv=argv,
-            exit=1 if verification_error else outcome, process_exit=rc, cancelled=cancelled,
+            exit=outcome if outcome else (1 if verification_error else 0), process_exit=rc, cancelled=cancelled,
             seconds=round(elapsed, 6), under_10s=elapsed < 10,
             lease_wait_seconds=self.lease_wait_seconds,
             summaries=summaries, sha256=sha256, fixture=identity,
             log=str(log_path), process_host_sha256=digest(self.host),
             verification_error=verification_error,
+            native_completion=native_completion, native_completion_path=str(completion_path),
+            passed_tests=passed,
+            listing=libtest and "--list" in argv,
         )
         # Each completed command owns one immutable structured receipt. The
         # invocation summary below is only a view: reusing a producer/records
@@ -262,6 +313,8 @@ class Commands:
         with (receipts / (identity + ".json")).open("x", encoding="utf-8") as receipt:
             json.dump(result, receipt, indent=2)
         self.results.append(result)
+        if libtest and self._selection is not None:
+            self._selection.append(result)
         (self.records / "results.json").write_text(json.dumps(self.results, indent=2), encoding="utf-8")
         print("WIN_TEST_RESULT", json.dumps(result), flush=True)
         if verification_error:
@@ -269,28 +322,39 @@ class Commands:
         return outcome if 0 <= outcome < 256 else 1
 
 
+def fixture_binary(records, manifest):
+    """Select the single admitted normal binary independently of its target name."""
+    fixtures = [row for row in manifest["artifacts"] if not row["test"]]
+    if len(fixtures) > 1:
+        raise RuntimeError("Ambiguous normal executable fixture")
+    if not fixtures:
+        return None
+    binary = (Path(records) / "bin" / fixtures[0]["name"]).resolve()
+    if not binary.is_file():
+        raise RuntimeError("Missing admitted normal executable fixture")
+    return binary
+
+
 def run_tests(records, manifest, runtime, *, cancellation=None):
     """The libtest adapter over the same generic command custody API."""
     source = records / "source"
-    fixtures = [row for row in manifest["artifacts"] if not row["test"]]
-    if len(fixtures) > 1:
-        raise ValueError("ambiguous normal executable fixture")
-    binary = records / "bin" / fixtures[0]["name"] if fixtures else None
+    binary = fixture_binary(records, manifest)
     if "process_host" in manifest:
         host = admitted_host(source, records / "bin" / manifest["process_host"]["name"],
                              records / "host-receipt.json")
     else:
         host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
     with Commands(records, source, host, binary, cancellation=cancellation) as commands:
-        for row in manifest["artifacts"]:
-            if row["test"]:
-                rc = commands.run(
-                    [str((records / "bin" / row["name"]).resolve()), *runtime],
-                    cwd=source / manifest["crate_dir"], name=row["target"],
-                    sha256=row["sha256"], libtest=True,
-                )
-                if rc:
-                    return rc
+        with commands._libtest_selection():
+            for row in manifest["artifacts"]:
+                if row["test"]:
+                    rc = commands.run(
+                        [str((records / "bin" / row["name"]).resolve()), *runtime],
+                        cwd=source / manifest["crate_dir"], name=row["target"],
+                        sha256=row["sha256"], libtest=True,
+                    )
+                    if rc:
+                        return rc
     if not commands.results:
         raise RuntimeError("no admitted test executables")
     print("WIN_TEST_COMPLETE", len(commands.results), "suites;", records / "results.json", flush=True)

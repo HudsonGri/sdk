@@ -5,9 +5,9 @@
 
 use super::{ProcessCustody, ProcessTree};
 use std::ffi::OsString;
-use std::io::{self, Read as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 
 struct State {
@@ -17,6 +17,78 @@ struct State {
 }
 
 struct Directory(PathBuf);
+
+#[derive(Debug)]
+struct Invocation {
+    executable: OsString,
+    arguments: Vec<OsString>,
+    inherit_input: bool,
+    custody: Option<PathBuf>,
+    completion: Option<PathBuf>,
+}
+
+impl Invocation {
+    fn parse(arguments: impl IntoIterator<Item = OsString>) -> io::Result<Self> {
+        let mut arguments = arguments.into_iter();
+        let mut inherit_input = false;
+        let mut custody = None;
+        let mut completion = None;
+        while let Some(argument) = arguments.next() {
+            if argument == "--inherit-input" && !inherit_input {
+                inherit_input = true;
+            } else if argument == "--custody" || argument == "--completion" {
+                let path = arguments.next().ok_or_else(invalid_arguments)?;
+                if !Path::new(&path).is_absolute() {
+                    return Err(invalid_arguments());
+                }
+                let destination = if argument == "--custody" {
+                    &mut custody
+                } else {
+                    &mut completion
+                };
+                if destination.replace(PathBuf::from(path)).is_some() {
+                    return Err(invalid_arguments());
+                }
+            } else if Path::new(&argument).is_absolute() {
+                return Ok(Self {
+                    executable: argument,
+                    arguments: arguments.collect(),
+                    inherit_input,
+                    custody,
+                    completion,
+                });
+            } else {
+                return Err(invalid_arguments());
+            }
+        }
+        Err(invalid_arguments())
+    }
+}
+
+fn invalid_arguments() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "step=process-host-arguments; recovery=acyclic-process-host [--custody ABSOLUTE_DIRECTORY] [--completion ABSOLUTE_FILE] [--inherit-input] ABSOLUTE_EXECUTABLE ARGS",
+    )
+}
+
+struct Completion(Option<std::fs::File>);
+
+impl Completion {
+    fn open(path: Option<&Path>) -> io::Result<Self> {
+        path.map(|path| std::fs::OpenOptions::new().write(true).create_new(true).open(path))
+            .transpose()
+            .map(Self)
+    }
+
+    fn retired(&mut self, code: i32, cancelled: bool) -> io::Result<()> {
+        if let Some(file) = &mut self.0 {
+            writeln!(file, "{{\"schema\":\"acyclic.process-custody-completion.v1\",\"process_tree_retired\":true,\"exit_code\":{code},\"cancelled\":{cancelled}}}")?;
+            file.sync_all()?;
+        }
+        Ok(())
+    }
+}
 
 impl Directory {
     fn create() -> io::Result<Self> {
@@ -52,30 +124,28 @@ impl Drop for Directory {
 /// this host is killed outright. Terminal adapters admit their suspended root
 /// through the same custodian before resuming it.
 ///
+/// `--completion ABSOLUTE_FILE` exclusively reserves a receipt before launch
+/// and writes its v1 completion only after physical process-tree retirement.
+/// Failed admission or drain never produces a completed receipt. It confers
+/// no mount-retirement capability. `--custody ABSOLUTE_DIRECTORY` reuses the
+/// shared custody fence before admission; the caller must already serialize
+/// this directory's owners. Without it the invocation has private custody.
+///
 /// This is an executable entry point: the caller must exit after it returns.
 /// The control reader can still be blocked on stdin after a normal command
 /// exit, and belongs to that process rather than a reusable runtime service.
 pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) -> io::Result<i32> {
-    let mut arguments = arguments.into_iter();
-    let first = arguments.next().ok_or(io::ErrorKind::InvalidInput)?;
-    let inherit_input = first == "--inherit-input";
-    let executable = if inherit_input {
-        arguments.next().ok_or(io::ErrorKind::InvalidInput)?
-    } else {
-        first
-    };
-    if !Path::new(&executable).is_absolute() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "process host requires an absolute executable",
-        ));
-    }
-    let directory = Directory::create()?;
-    let custody = ProcessCustody::open(&directory.0)?;
-    let mut command = Command::new(executable);
+    let invocation = Invocation::parse(arguments)?;
+    let mut completion = Completion::open(invocation.completion.as_deref())?;
+    let directory = invocation.custody.is_none().then(Directory::create).transpose()?;
+    let custody_path = invocation.custody.as_deref()
+        .or_else(|| directory.as_ref().map(|directory| directory.0.as_path()))
+        .ok_or_else(invalid_arguments)?;
+    let custody = ProcessCustody::acquire(custody_path)?;
+    let mut command = Command::new(invocation.executable);
     command
-        .args(arguments)
-        .stdin(if inherit_input {
+        .args(invocation.arguments)
+        .stdin(if invocation.inherit_input {
             Stdio::inherit()
         } else {
             Stdio::null()
@@ -92,7 +162,7 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
         cancelled: false,
         failure: None,
     }));
-    if !inherit_input {
+    if !invocation.inherit_input {
         let control = Arc::clone(&state);
         std::thread::Builder::new()
             .name("process-host-control".into())
@@ -134,17 +204,70 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     if let Some(failure) = state.failure.take() {
         return Err(failure);
     }
-    if state.cancelled {
-        return Ok(124);
-    }
     let status = status?;
+    let code = if state.cancelled { 124 } else { exit_code(status) };
+    completion.retired(code, state.cancelled)?;
+    Ok(code)
+}
+
+fn exit_code(status: ExitStatus) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt as _;
-        Ok(status
+        status
             .code()
-            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)))
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(1))
     }
     #[cfg(windows)]
-    Ok(status.code().unwrap_or(125))
+    status.code().unwrap_or(125)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_host_options_stop_at_the_literal_executable() {
+        let executable = std::env::current_exe().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("completion.json");
+        let parsed = Invocation::parse([
+            "--completion".into(), receipt.clone().into_os_string(),
+            "--custody".into(), directory.path().as_os_str().to_owned(),
+            "--inherit-input".into(), executable.clone().into_os_string(),
+            "--completion".into(), "literal & % child argument".into(),
+        ]).unwrap();
+        assert_eq!(parsed.executable, executable.as_os_str());
+        assert_eq!(parsed.completion.as_deref(), Some(receipt.as_path()));
+        assert_eq!(parsed.custody.as_deref(), Some(directory.path()));
+        assert!(parsed.inherit_input);
+        assert_eq!(parsed.arguments, ["--completion", "literal & % child argument"]);
+    }
+
+    #[test]
+    fn process_host_rejects_relative_and_duplicate_receipt_admission() {
+        let executable = std::env::current_exe().unwrap().into_os_string();
+        let receipt = std::env::temp_dir().join("receipt.json").into_os_string();
+        for arguments in [
+            vec!["--completion".into(), "relative".into(), executable.clone()],
+            vec!["--custody".into(), "relative".into(), executable.clone()],
+            vec!["--completion".into(), receipt.clone(), "--completion".into(), receipt, executable],
+        ] {
+            assert_eq!(Invocation::parse(arguments).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn process_completion_is_exclusive_and_never_publishes_before_retirement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("completion.json");
+        let mut completion = Completion::open(Some(&path)).unwrap();
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        assert_eq!(Completion::open(Some(&path)).err().unwrap().kind(), io::ErrorKind::AlreadyExists);
+        completion.retired(17, false).unwrap();
+        let receipt = std::fs::read_to_string(path).unwrap();
+        assert!(receipt.contains("\"exit_code\":17"));
+        assert!(receipt.contains("\"process_tree_retired\":true"));
+        assert!(!receipt.contains("mount"));
+    }
 }

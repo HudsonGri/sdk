@@ -6,6 +6,7 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +19,56 @@ def load(path, helper):
     namespace = {}
     exec(compile(ast.Module(body=[loader], type_ignores=[]), str(helper), "exec"), namespace)
     return namespace["runner_module"](path)
+
+
+def selection_probes(module, records, source, python, checksum):
+    """Run the actual manifest adapter with two admitted Python fixture entries."""
+    for label, counts, exits in (
+        ("empty-first", [0, 1], [0, 0]),
+        ("empty-last", [1, 0], [0, 0]),
+        ("all-empty", [0, 0], [0, 0]),
+        ("failure", [0, 1], [17, 0]),
+        ("listing", [0, 0], [0, 0]),
+        ("malformed-empty", [0, 1], [0, 0]),
+    ):
+        directory = records / label
+        # Copy the actual admitted host source closure, rather than pairing the
+        # new native host with the former C# fixture source.
+        receipt = json.loads(Path(os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"]).read_text(encoding="utf-8"))
+        for name in receipt["source"]:
+            destination = directory / "source" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / name, destination)
+        counter = directory / "invocations"
+        # These are protocol fixtures, not product tests. Both manifest entries
+        # invoke the same hash-admitted installed executable with different
+        # deterministic outputs. The production adapter owns every invocation.
+        probe = (
+            "from pathlib import Path; import sys; "
+            f"p=Path({str(counter)!r}); n=int(p.read_text()) if p.exists() else 0; "
+            "p.write_text(str(n+1)); "
+            f"print('test result: ok. '+str({counts!r}[n])+' passed; 0 failed; 0 ignored;'); "
+            f"sys.exit({exits!r}[n])"
+        )
+        if label == "malformed-empty":
+            probe = probe.replace("0 failed; 0 ignored;", "0 failed;")
+        manifest = dict(crate_dir=".", artifacts=[
+            dict(name=python, target=f"{label}-{index}", test=True, sha256=checksum)
+            for index in range(2)
+        ])
+        try:
+            runtime = ["-c", probe, *(["--list"] if label == "listing" else [])]
+            rc = module.run_tests(directory, manifest, runtime)
+        except RuntimeError as error:
+            assert label in ("all-empty", "malformed-empty") and "ZERO" in str(error), (label, error)
+        else:
+            assert label not in ("all-empty", "malformed-empty"), "accepted an empty or malformed selection"
+            assert rc == (17 if label == "failure" else 0), (label, rc)
+        actual = json.loads((directory / "results.json").read_text(encoding="utf-8"))
+        expected = 1 if label in ("failure", "malformed-empty") else 2
+        assert int(counter.read_text()) == expected
+        assert [row["target"] for row in actual] == [f"{label}-{index}" for index in range(expected)]
+        assert [row["passed_tests"] for row in actual] == counts[:expected]
 
 
 def main():
@@ -180,6 +231,10 @@ def main():
             assert json.loads(path.read_text(encoding="utf-8")) == result
         lease_wait_seconds = (commands.lease_wait_seconds + successor.lease_wait_seconds
                               + cli_results[0]["lease_wait_seconds"])
+        selection_probes(module, records, source, python, checksum)
+        for label in ("empty-first", "empty-last", "all-empty", "failure", "listing", "malformed-empty"):
+            rows = json.loads((records / label / "results.json").read_text(encoding="utf-8"))
+            lease_wait_seconds += rows[0]["lease_wait_seconds"]
     finally:
         if old_key is None:
             os.environ.pop("RUNNER_PROBE_API_KEY", None)
