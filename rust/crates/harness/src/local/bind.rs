@@ -220,6 +220,7 @@ impl BoundComposition {
             agent: AgentId::from_bytes([1; 16]),
             agent_authority: None,
             agents: tokio::sync::OnceCell::new(),
+            session: tokio::sync::OnceCell::new(),
             task_files,
             project: volume.clone(),
             scratch: volume.clone(),

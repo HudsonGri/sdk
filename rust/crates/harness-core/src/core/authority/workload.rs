@@ -112,6 +112,16 @@ fn signer(
     name: &str,
     parent: Option<&VerifiedCapability>,
 ) -> Result<CertifiedSigner> {
+    signer_with_grants(id, keys, timestamp, grant(name), parent)
+}
+
+pub(super) fn signer_with_grants(
+    id: &str,
+    keys: &RuntimeKeys,
+    timestamp: u64,
+    grants: GrantSet,
+    parent: Option<&VerifiedCapability>,
+) -> Result<CertifiedSigner> {
     let environment = &keys.environment;
     let account = &keys.account;
     let leaf = &keys.runtime;
@@ -136,7 +146,7 @@ fn signer(
                 })),
         },
         grants: {
-            let mut grants = grant(name);
+            let mut grants = grants;
             grants.grants.push(Grant {
                 kind: GrantKind::Resource(ResourceGrant {
                     resource: ResourcePattern {

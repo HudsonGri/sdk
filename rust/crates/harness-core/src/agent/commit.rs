@@ -56,7 +56,9 @@ pub fn send(
     record: &InboxRecord,
 ) -> Result<CommitRequest, Error> {
     let kind = match record {
-        InboxRecord::ForkAdopted(_) => return Err(Error::Record("ForkAdopted is written by spawn")),
+        InboxRecord::ForkAdopted(_) => {
+            return Err(Error::Record("ForkAdopted is written by spawn"));
+        }
         InboxRecord::Archive(_) => return Err(Error::Record("archive has its own commit")),
         InboxRecord::Message(_) => "message",
         InboxRecord::ChildDone(_) => "child-done",
@@ -67,12 +69,6 @@ pub fn send(
     };
     let intent = intent_of(record);
     existing(inbox_tail)?;
-    let encoded = record.encode()?;
-    // The key binds the exact record: a key naming another request then
-    // differs only in the tail, so the same record is already delivered. A
-    // reused intent with another record is a distinct commit, never an
-    // acknowledgement of one that was not written.
-    let digest = blake3::hash(&encoded).to_hex();
     Ok(CommitRequest {
         conditions: vec![
             CommitCondition::Absent { path: to.closed()? },
@@ -83,12 +79,9 @@ pub fn send(
         ],
         mutations: vec![CommitMutation::Append {
             path: to.inbox()?,
-            records: vec![encoded.into()],
+            records: vec![record.encode()?.into()],
         }],
-        idempotency_key: intent_key(
-            kind,
-            &[to.as_str(), &sender_text(sender), &intent, digest.as_str()],
-        )?,
+        idempotency_key: intent_key(kind, &[to.as_str(), &sender_text(sender), &intent])?,
     })
 }
 
@@ -309,7 +302,9 @@ fn classify(conflicts: Vec<CommitConflict>) -> Submitted {
     for conflict in &conflicts {
         match conflict {
             CommitConflict::Exists { path } if is_closed_marker(path) => closed.push(path.clone()),
-            CommitConflict::Tail { path, .. } if AgentPath::try_from(path.as_str().to_owned()).is_ok() => {
+            CommitConflict::Tail { path, .. }
+                if AgentPath::try_from(path.as_str().to_owned()).is_ok() =>
+            {
                 moved.push(path.clone());
             }
             _ => return Submitted::Conflict(conflicts),
