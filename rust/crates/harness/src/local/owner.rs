@@ -333,9 +333,11 @@ impl Owner {
                         &mut None,
                     )?,
                 };
-                let mut key = acyclic_native_runtime::owner_record::new_key().map_err(storage)?;
+                let key_ref = acyclic_native_runtime::signing_key::SigningKeyReference::create()
+                    .map_err(storage)?;
                 let owner = Self {
-                    key,
+                    key: None,
+                    key_ref: Some(key_ref.reference()),
                     agent: AgentId::new(),
                     task: TaskId::new(),
                     project,
@@ -343,8 +345,12 @@ impl Owner {
                     workspace_identity,
                     workspace_incarnation,
                 };
-                acyclic_native_runtime::owner_record::clear_secret(&mut key);
-                if owner.publish(directory, &path)? {
+                if owner.publish_as(
+                    directory,
+                    &path,
+                    acyclic_native_runtime::RenameMode::NoReplace,
+                    Some(&key_ref),
+                )? {
                     owner
                 } else {
                     Self::load(&path)?
@@ -353,7 +359,8 @@ impl Owner {
             Err(error) => return Err(error),
         };
         owner.project.validate(&mut None)?;
-        if owner.key == [0; 32]
+        if owner.key_ref.is_none()
+            || owner.key.is_some()
             || owner.agent.into_bytes() == [0; 16]
             || owner.task.into_bytes() == [0; 16]
             || owner.project.class() != VolumeClass::Project
@@ -394,30 +401,62 @@ impl Owner {
             }
             _ => storage(error),
         })?;
-        if record.0.first() == Some(&b'{') {
-            // Migrate only a complete old payload from an already authenticated
-            // private descriptor. Preserve the original identity and key; never
-            // recover credentials by generating a replacement.
-            let owner: Self = serde_json::from_slice(&record.0)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+        let legacy = record.0.first() == Some(&b'{');
+        let plain = if legacy {
+            record
+        } else {
+            owner_record::decode_with(&record.0, 65_536, None, |bytes| {
+                Ok::<_, std::io::Error>(owner_record::SecretBytes(bytes.to_vec()))
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?
+        };
+        let mut owner: Self = serde_json::from_slice(&plain.0)
+            .map_err(|_| Error::Invalid("invalid local owner record".into()))?;
+        let migrated = owner.retain_signing_custody()?;
+        if legacy || migrated {
             let directory = path
                 .parent()
                 .ok_or_else(|| Error::Invalid("owner has no parent".into()))?;
-            owner.publish_as(directory, path, acyclic_native_runtime::RenameMode::Replace)?;
-            return Ok(owner);
+            owner.publish_as(
+                directory,
+                path,
+                acyclic_native_runtime::RenameMode::Replace,
+                None,
+            )?;
         }
-        let plain = owner_record::decode_with(&record.0, 65_536, None, |bytes| {
-            Ok::<_, std::io::Error>(owner_record::SecretBytes(bytes.to_vec()))
-        })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        serde_json::from_slice(&plain.0).map_err(|error| Error::Invalid(error.to_string()))
+        Ok(owner)
     }
 
+    /// One migration for both former JSON files and framed private records.
+    /// This is reachable only after `private_file` authenticated the source descriptor.
+    fn retain_signing_custody(&mut self) -> Result<bool> {
+        match (self.key_ref, self.key.as_mut()) {
+            (Some(reference), None) => {
+                reference.with_seed(|_| ()).map_err(storage)?;
+                Ok(false)
+            }
+            (None, Some(seed)) => {
+                self.key_ref = Some(
+                    acyclic_native_runtime::signing_key::SigningKeyReference::retain(seed)
+                        .map_err(storage)?,
+                );
+                acyclic_native_runtime::owner_record::clear_secret(seed);
+                self.key = None;
+                Ok(true)
+            }
+            _ => Err(Error::Unauthorized(
+                "local owner signing custody is ambiguous or absent".into(),
+            )),
+        }
+    }
+
+    #[cfg(test)]
     fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
         self.publish_as(
             directory,
             path,
             acyclic_native_runtime::RenameMode::NoReplace,
+            None,
         )
     }
 
@@ -426,6 +465,7 @@ impl Owner {
         directory: &Path,
         path: &Path,
         mode: acyclic_native_runtime::RenameMode,
+        signing_key: Option<&acyclic_native_runtime::signing_key::ProvisionalSigningKey>,
     ) -> Result<bool> {
         use acyclic_native_runtime::{owner_record, private_file};
         let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
@@ -456,11 +496,15 @@ impl Owner {
             return Ok(true);
         }
         let observe = |stage| {
+            if let Some(key) = signing_key {
+                key.observe_publication(stage);
+            }
             #[cfg(test)]
             publication::step(match stage {
                 private_file::PublicationStage::Created => 0,
                 private_file::PublicationStage::Synced => 2,
                 private_file::PublicationStage::Published => 3,
+                private_file::PublicationStage::Installed => return Ok(()),
             })?;
             #[cfg(not(test))]
             let _ = stage;

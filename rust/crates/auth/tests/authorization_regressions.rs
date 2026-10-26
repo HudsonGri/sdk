@@ -32,10 +32,17 @@ fn socket_grants(host: String, ports: Vec<SocketPortRange>) -> GrantSet {
         }],
     }
 }
-fn socket_root(grants: GrantSet) -> Vec<Block> {
+fn socket_root(grants: GrantSet) -> Result<Vec<Block>, TestCaseError> {
     let mut root = root();
-    root.certificates.as_mut().unwrap().keys[0].key.grants = grants;
-    vec![root]
+    root.certificates
+        .as_mut()
+        .ok_or_else(|| TestCaseError::fail("root certificates missing"))?
+        .keys
+        .first_mut()
+        .ok_or_else(|| TestCaseError::fail("root certificate key missing"))?
+        .key
+        .grants = grants;
+    Ok(vec![root])
 }
 fn record_bytes(attributes: Vec<Attribute>) -> Vec<u8> {
     RecordAttributesProto {
@@ -68,7 +75,7 @@ proptest! {
     #[test]
     fn record_admission_round_trip_iff_names_are_unique(attrs in prop::collection::vec((prop_oneof![Just(String::new()),"[a-c]{1,2}",".{0,16}"],prop::collection::vec(any::<u8>(),0..16)),0..16)) {
         let attrs=attrs.into_iter().map(|(name,value)|Attribute {name,value}).collect::<Vec<_>>();
-        let unique=attrs.iter().enumerate().all(|(i,a)|attrs[..i].iter().all(|b|a.name!=b.name));
+        let unique=attrs.iter().enumerate().all(|(i,a)|attrs.iter().take(i).all(|b|a.name!=b.name));
         let bytes=record_bytes(attrs.clone());let admitted=RecordAttributes::decode(&bytes);
         prop_assert_eq!(admitted.is_ok(),unique);
         if let Ok(admitted)=admitted {
@@ -87,18 +94,18 @@ proptest! {
         let encode=|parts:&Vec<Vec<u8>>|format!("fs:/{}",parts.iter().map(|p|encode_component(p)).collect::<Vec<_>>().join("/"));
         let mut prefix_name=encode(&prefix);if trailing && !prefix.is_empty() {prefix_name.push('/');}
         let resource_name=encode(&resource);
-        let mut root=root();root.certificates.as_mut().unwrap().keys[0].key.grants=grants(&prefix_name,true,"fs/read");
+        let mut root=root();root.certificates.as_mut().unwrap().keys.first_mut().unwrap().key.grants=grants(&prefix_name,true,"fs/read");
         let attrs=RecordAttributes::default();let usage=limits(None);
         let r=request(Target::Resource {action:"fs/read",resource:&resource_name},&attrs,&usage);
         prop_assert_eq!(permits(&[root.clone()],&r,PolicyDecision::Allow).is_ok(),resource.starts_with(&prefix));
-        let mut descendant=prefix.clone();descendant.extend(resource);
+        let mut descendant=prefix;descendant.extend(resource);
         let name=encode(&descendant);
         let inside=request(Target::Resource {action:"fs/read",resource:&name},&attrs,&usage);
         prop_assert!(permits(&[root],&inside,PolicyDecision::Allow).is_ok());
     }
     #[test]
     fn a_bucket_prefix_never_grants_a_sibling(suffix in "[a-z]{1,10}") {
-        let mut root=root();root.certificates.as_mut().unwrap().keys[0].key.grants=grants("objects:/logs",true,"objects/get");
+        let mut root=root();root.certificates.as_mut().unwrap().keys.first_mut().unwrap().key.grants=grants("objects:/logs",true,"objects/get");
         let blocks=vec![root];let attrs=RecordAttributes::default();let usage=limits(None);
         for resource in ["objects:/logs","objects:/logs/key"] {
             prop_assert!(permits(&blocks,&request(Target::Resource {action:"objects/get",resource},&attrs,&usage),PolicyDecision::Allow).is_ok(), "bucket and descendants must be permitted");
@@ -110,11 +117,11 @@ proptest! {
     fn dns_socket_intersections_never_widen(label in "[a-z]{1,12}", other in "[a-z]{1,12}", port in 1..=65535u16, lower in 1..=65535u16, width in 0..100u16) {
         let host=format!("{label}.example.com");let sibling=format!("{other}.other.test");
         let upper=lower.saturating_add(width);
-        let parent=socket_root(socket_grants("*.example.com".into(),vec![SocketPortRange {first:1,last:65535}]));
+        let parent=socket_root(socket_grants("*.example.com".into(),vec![SocketPortRange {first:1,last:65535}]))?;
         let child=attenuate(&parent,vec![Caveat {kind:CaveatKind::Grants(socket_grants(host.clone(),vec![SocketPortRange {first:u32::from(lower),last:u32::from(upper)}]))}],vec![6;32]).unwrap();
         let mut certified=parent.clone();
-        let certificates=certified[0].certificates.as_mut().unwrap();
-        let mut next=certificates.keys[0].clone();next.key.key_id="child".into();next.key.parent_key_id=Some("key".into());
+        let certificates=certified.first_mut().unwrap().certificates.as_mut().unwrap();
+        let mut next=certificates.keys.first_mut().unwrap().clone();next.key.key_id="child".into();next.key.parent_key_id=Some("key".into());
         next.key.grants=socket_grants(host.clone(),vec![SocketPortRange {first:u32::from(lower),last:u32::from(upper)}]);
         certificates.keys.push(next);
         let attrs=RecordAttributes::default();let usage=limits(None);
@@ -133,11 +140,11 @@ proptest! {
     }
     #[test]
     fn socket_default_port_and_dns_boundaries(port in 1..=65535u16, label in "[a-z]{1,12}") {
-        let parent=socket_root(socket_grants("example.com".into(),vec![]));
+        let parent=socket_root(socket_grants("example.com".into(),vec![]))?;
         let attrs=RecordAttributes::default();let usage=limits(None);
         let r=request(Target::Websocket(Destination {host:Host::Dns("EXAMPLE.COM."),port}),&attrs,&usage);
         prop_assert_eq!(permits(&parent,&r,PolicyDecision::Allow).is_ok(),port==443);
-        let wildcard=socket_root(socket_grants("*.example.com".into(),vec![]));
+        let wildcard=socket_root(socket_grants("*.example.com".into(),vec![]))?;
         for host in ["example.com".to_owned(),format!("{label}example.com"),"example.com.evil".to_owned()] {
             let r=request(Target::Websocket(Destination {host:Host::Dns(&host),port:443}),&attrs,&usage);
             prop_assert!(!permits(&wildcard,&r,PolicyDecision::Allow).is_ok());
@@ -149,7 +156,7 @@ proptest! {
     fn ip_socket_intersections_never_widen(ip in any::<u32>(), prefix in 0..=32u8, ipv6 in any::<u128>(), prefix6 in 0..=128u8, candidate in any::<u32>(), candidate6 in any::<u128>()) {
         let attrs=RecordAttributes::default();let usage=limits(None);
         for (ip,prefix,all) in [(IpAddr::V4(Ipv4Addr::from(ip)),prefix,"0.0.0.0/0"),(IpAddr::V6(Ipv6Addr::from(ipv6)),prefix6,"::/0")] {
-            let parent=socket_root(socket_grants(all.into(),vec![]));
+            let parent=socket_root(socket_grants(all.into(),vec![]))?;
             let child=attenuate(&parent,vec![Caveat {kind:CaveatKind::Grants(socket_grants(format!("{ip}/{prefix}"),vec![]))}],vec![6;32]).unwrap();
             let r=request(Target::Websocket(Destination {host:Host::Ip(ip),port:443}),&attrs,&usage);
             prop_assert!(permits(&parent,&r,PolicyDecision::Allow).is_ok());
@@ -160,11 +167,11 @@ proptest! {
             let (other,expected)=match ip {
                 IpAddr::V4(ip) => {
                     let a=ip.octets();let b=candidate.to_be_bytes();
-                    (IpAddr::V4(Ipv4Addr::from(candidate)), (0..usize::from(prefix)).all(|bit| a[bit/8] & (128>>(bit%8)) == b[bit/8] & (128>>(bit%8))))
+                    (IpAddr::V4(Ipv4Addr::from(candidate)), (u32::from_be_bytes(a) ^ u32::from_be_bytes(b)).leading_zeros() >= u32::from(prefix))
                 },
                 IpAddr::V6(ip) => {
                     let a=ip.octets();let b=candidate6.to_be_bytes();
-                    (IpAddr::V6(Ipv6Addr::from(candidate6)), (0..usize::from(prefix)).all(|bit| a[bit/8] & (128>>(bit%8)) == b[bit/8] & (128>>(bit%8))))
+                    (IpAddr::V6(Ipv6Addr::from(candidate6)), (u128::from_be_bytes(a) ^ u128::from_be_bytes(b)).leading_zeros() >= u32::from(prefix))
                 },
             };
             let r=request(Target::Websocket(Destination {host:Host::Ip(other),port:443}),&attrs,&usage);
@@ -187,23 +194,23 @@ proptest! {
     #[test]
     fn child_certificate_identity_never_adds_claims(keep_group in any::<bool>(), keep_role in any::<bool>(), keep_attribute in any::<bool>(), lineage in prop::collection::vec("[a-z]{1,8}",0..4)) {
         let mut chain=root().certificates.unwrap();
-        let parent=&mut chain.keys[0].key.principal;
+        let parent=&mut chain.keys.first_mut().unwrap().key.principal;
         parent.lineage=vec!["attested".into()];parent.attributes=vec![Attribute {name:"tenant".into(),value:b"tenant-a".to_vec()}];
-        let mut child=chain.keys[0].clone();child.key.key_id="child".into();child.key.parent_key_id=Some("key".into());
+        let mut child=chain.keys.first_mut().unwrap().clone();child.key.key_id="child".into();child.key.parent_key_id=Some("key".into());
         if !keep_group {child.key.principal.groups.clear();}
         if !keep_role {child.key.principal.roles.clear();}
         if !keep_attribute {child.key.principal.attributes.clear();}
         child.key.principal.lineage.extend(lineage);chain.keys.push(child);
         prop_assert!(CertificateChain::try_from(CertificateChainProto::from(chain.clone())).is_ok());
         for change in 0..6 {
-            let mut widened=chain.clone();let p=&mut widened.keys[1].key.principal;
+            let mut widened=chain.clone();let p=&mut widened.keys.get_mut(1).unwrap().key.principal;
             match change {
                 0 => p.id="another-issuer".into(),
                 1 => p.kind=PrincipalKind::Service,
                 2 => p.groups.push("unattested-group".into()),
                 3 => p.roles.push("unattested-role".into()),
                 4 => p.attributes.push(Attribute {name:"new-claim".into(),value:vec![1]}),
-                _ => p.lineage[0]="forged-ancestor".into(),
+                _ => *p.lineage.first_mut().unwrap()="forged-ancestor".into(),
             }
             prop_assert!(CertificateChain::try_from(CertificateChainProto::from(widened)).is_err());
         }
