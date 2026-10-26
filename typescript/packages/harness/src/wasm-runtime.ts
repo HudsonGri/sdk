@@ -63,7 +63,7 @@ export function assertHarnessWasmExports(value: unknown): void {
     "viewRevision", "firstSequence", "recordCount", "record", "free",
   ], true);
   const agents = hasClass(exports, "WasmAgentClient", "wasmagentclient", [
-    "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "free",
+    "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "free",
   ], true);
   const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
   const providers = typeof exports.WasmProviderRegistry === "function"
