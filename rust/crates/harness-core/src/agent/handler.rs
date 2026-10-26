@@ -1,0 +1,236 @@
+//! The agent as an A4 actor: one [`Handler`] package serves every agent.
+//!
+//! Each agent's actor subscribes to its inbox (subscription [`INBOX`]). A delivery
+//! runs one [`step`], lowers its effects into the one commit the runtime publishes
+//! with the checkpoint, and maps the step's alarm onto the actor's single alarm.
+//! A spawn's commit also creates the child's actor state at the fork cut, so the
+//! child's first delivery is its `ForkAdopted` record. There is no other timer,
+//! poller or per-agent task.
+
+use super::{
+    AgentId, AgentPath, AgentRecord, AgentState, Alarm, Error, ForkAdopted, InboxRecord, IntentId,
+    Out, Spawn, TurnDriver, Wake, create_root, delivery_key, inbox_tail, lower, recipients, step,
+};
+use acyclic_actors::{
+    addressing::ActorReference,
+    domain::{ActorLimits, CodeSha256},
+    guest::{
+        AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture,
+        Handler, Manifest, Transition, Trigger,
+    },
+    local::{PreparedPublish, Store, Subscription},
+};
+use acyclic_stream::{CommitRequest, StreamProvider};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The agent's one subscription: its inbox.
+pub const INBOX: &str = "inbox";
+
+/// Checkpoint: the agent state and the inbox cursor of the last consumed record.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Saved {
+    state: AgentState,
+    cursor: u64,
+}
+
+fn codec() -> CodecIdentity {
+    CodecIdentity {
+        name: "acyclic.harness.agent".into(),
+        version: "1".into(),
+    }
+}
+
+fn guest(error: impl std::fmt::Display) -> GuestError {
+    GuestError::Handler(error.to_string())
+}
+
+/// One handler package for every agent, over one turn driver.
+pub struct AgentHandler<P: StreamProvider + ?Sized, D> {
+    store: Store<P>,
+    driver: D,
+    manifest: Manifest,
+}
+
+impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
+    /// Handler whose actors live under `store`'s root.
+    pub fn new(store: Store<P>, driver: D, limits: ActorLimits) -> Result<Self, GuestError> {
+        let digest = blake3::hash(include_str!("handler.rs").as_bytes());
+        Ok(Self {
+            store,
+            driver,
+            manifest: Manifest {
+                code: CodeSha256::try_from(digest.as_bytes().to_vec()).map_err(guest)?,
+                codec: codec(),
+                subscriptions: vec![INBOX.into()],
+                bindings: Vec::new(),
+                limits,
+            },
+        })
+    }
+
+    /// The effects that create `agent`'s actor, first consuming inbox record `cursor`.
+    /// They ride in the commit that creates the agent: a spawn or a root creation.
+    pub fn create(
+        &self,
+        actor: &ActorReference,
+        agent: &AgentPath,
+        cursor: u64,
+    ) -> Result<[Effect; 2], Error> {
+        let subscriptions = BTreeMap::from([(
+            INBOX.to_owned(),
+            Subscription {
+                path: agent.inbox()?,
+                cursor,
+            },
+        )]);
+        self.store
+            .create(actor, subscriptions, None)
+            .map_err(|_| Error::Record("agent actor state cannot be created"))
+    }
+
+    /// One commit creating root agent `adopted.agent` as an actor in `within`'s
+    /// account and namespace: its inbox with `ForkAdopted`, its actor state and
+    /// its activation entry. The caller adds volume contributions, then submits.
+    pub fn create_root(
+        &self,
+        within: &ActorReference,
+        intent: &IntentId,
+        adopted: ForkAdopted,
+    ) -> Result<Spawn, Error> {
+        let created = create_root(intent, adopted)?;
+        let actor = Self::actor(within, &created.child.id())?;
+        let mut publish = PreparedPublish::foreign(created.request.idempotency_key.clone());
+        let effects = effects(created.request)
+            .into_iter()
+            .chain(self.create(&actor, &created.child, 0)?);
+        for effect in effects {
+            publish
+                .join(effect)
+                .map_err(|_| Error::Record("agent creation does not compose"))?;
+        }
+        Ok(Spawn {
+            child: created.child,
+            request: publish.into_request(),
+        })
+    }
+
+    /// The actor of `agent` in `actor`'s account and namespace.
+    pub fn actor(within: &ActorReference, agent: &AgentId) -> Result<ActorReference, Error> {
+        ActorReference::new(
+            within.account().as_bytes(),
+            within.namespace().as_str().as_bytes(),
+            agent.as_str().as_bytes(),
+        )
+        .map_err(|_| Error::Path("agent id is not an actor id"))
+    }
+
+    async fn transition(
+        &self,
+        delivery: Delivery,
+        checkpoint: Option<&Checkpoint>,
+    ) -> Result<Transition, Error> {
+        let saved = checkpoint
+            .map(|checkpoint| {
+                serde_json::from_slice::<Saved>(&checkpoint.bytes)
+                    .map_err(|_| Error::Record("agent checkpoint is malformed"))
+            })
+            .transpose()?;
+        let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
+            (Trigger::Record { sequence, .. }, Some(record)) => (
+                Wake::Inbox {
+                    sequence: *sequence,
+                    record: InboxRecord::decode(&record.value)?,
+                },
+                sequence + 1,
+                format!("record:{sequence}"),
+            ),
+            (Trigger::Alarm { generation, .. }, None) => (
+                Wake::Alarm,
+                saved.as_ref().map_or(0, |saved| saved.cursor),
+                format!("alarm:{generation}"),
+            ),
+            _ => return Err(Error::Record("delivery does not match its trigger")),
+        };
+        let path = match (&saved, &wake) {
+            (Some(saved), _) => saved.state.path.clone(),
+            (None, Wake::Inbox { record: InboxRecord::ForkAdopted(adopted), .. }) => {
+                match &adopted.parent {
+                    Some(parent) => parent.child(&adopted.agent)?,
+                    None => AgentPath::root(&adopted.agent),
+                }
+            }
+            (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
+        };
+        let step = step(&self.driver, &path, saved.map(|saved| saved.state), cursor, wake).await?;
+        let mut tails = BTreeMap::new();
+        for agent in recipients(&step) {
+            let tail = inbox_tail(&**self.store.provider(), &agent).await?;
+            tails.insert(agent, tail);
+        }
+        let request = lower(&step, cursor, &tails, delivery_key(&step.state, &trigger)?)?;
+        let mut effects = effects(request);
+        let spawned: BTreeSet<_> = step
+            .outs
+            .iter()
+            .filter_map(|out| match out {
+                Out::Spawn { intent, .. } => Some(AgentId::derive(&path.id(), intent.as_str())),
+                _ => None,
+            })
+            .collect();
+        for child in spawned {
+            let actor = Self::actor(&delivery.actor, &child)?;
+            effects.extend(self.create(&actor, &path.child(&child)?, cursor)?);
+        }
+        let saved = Saved {
+            state: step.state,
+            cursor,
+        };
+        Ok(Transition {
+            checkpoint: Checkpoint {
+                codec: codec(),
+                bytes: serde_json::to_vec(&saved)
+                    .map_err(|_| Error::Record("agent checkpoint does not encode"))?
+                    .into(),
+            },
+            alarm: match step.alarm {
+                Alarm::Clear => AlarmChange::Clear,
+                Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
+            },
+            effects,
+        })
+    }
+}
+
+/// The lowered commit as effects: the first carries every condition, so the
+/// runtime's join keeps them sorted and unique by path.
+fn effects(request: CommitRequest) -> Vec<Effect> {
+    let mut conditions = Some(request.conditions);
+    request
+        .mutations
+        .into_iter()
+        .map(|mutation| Effect {
+            conditions: conditions.take().unwrap_or_default(),
+            mutation,
+        })
+        .collect()
+}
+
+impl<P, D> Handler for AgentHandler<P, D>
+where
+    P: StreamProvider + ?Sized + 'static,
+    D: TurnDriver + 'static,
+{
+    fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+    ) -> GuestFuture<'a, Transition> {
+        Box::pin(async move { self.transition(delivery, checkpoint).await.map_err(guest) })
+    }
+}
