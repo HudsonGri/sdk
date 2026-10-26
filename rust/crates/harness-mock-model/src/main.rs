@@ -12,6 +12,7 @@ struct Host {
     engine: Engine,
     record: recorder::Recorder,
     sequence: u64,
+    recovery: String,
 }
 
 mod recorder;
@@ -19,6 +20,12 @@ mod recorder;
 struct RecordedReply {
     reply: Response<Body>,
     committed: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
+}
+
+fn refusal(step: &str, error: impl std::fmt::Display, recovery: &str) -> std::io::Error {
+    std::io::Error::other(format!(
+        "STEP {step} failed: {error}; RECOVERY: execute exact argv {recovery}"
+    ))
 }
 
 fn response(status: u16, kind: &str, body: Body) -> Response<Body> {
@@ -65,6 +72,7 @@ fn answer(
     let (step, reply) = if let Some((index, step)) = host.engine.take(namespace, endpoint, &body) {
         let bound = bind_result(step, &body);
         let reply = if let Err(error) = &bound {
+            let error = refusal("bind reply selectors", error, &host.recovery).to_string();
             response(500, "json", Body::from(json!({"error":error}).to_string()))
         } else if let Some(reply) = bound
             .as_ref()
@@ -92,7 +100,8 @@ fn answer(
             *response.status_mut() =
                 StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             if let Some(kind) = reply.content_type {
-                let kind = hyper::header::HeaderValue::from_str(&kind).map_err(|_| std::io::Error::other("STEP replay content type failed; recovery: recapture a valid provider exchange"))?;
+                let kind = hyper::header::HeaderValue::from_str(&kind)
+                    .map_err(|error| refusal("replay content type", error, &host.recovery))?;
                 response.headers_mut().insert("content-type", kind);
             }
             response
@@ -215,6 +224,8 @@ async fn serve(
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // JSON argv preserves literal arguments on every OS without shell quoting.
+    let recovery = serde_json::to_string(&std::env::args().collect::<Vec<_>>())?;
     let args: Vec<_> = std::env::args().skip(1).collect();
     let [flag, script, record_flag, record] = args.as_slice() else {
         return Err(
@@ -224,11 +235,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if flag != "--script" || record_flag != "--record" {
         return Err("expected --script and --record".into());
     }
-    let script = load_script(std::path::Path::new(script))?;
+    let script = load_script(std::path::Path::new(script))
+        .map_err(|error| refusal("load replay script", error, &recovery))?;
     let host = Rc::new(RefCell::new(Host {
         engine: Engine::new(script),
         record: recorder::Recorder::open(File::create(record)?)?,
         sequence: 0,
+        recovery,
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     println!(

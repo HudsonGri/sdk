@@ -28,9 +28,8 @@ pub struct JsonSelection {
 /// remains opaque, including strings which resemble binding expressions.
 pub fn bind_result(step: &Step, body: &Value) -> Result<Step, String> {
     if step.replay.is_some() {
-        return recording::bind_recording(step, body).map_err(|error| format!(
-            "STEP bind recorded selectors failed: {error}; RECOVERY: correct recording_projection selectors against the admitted exchange and current request, then rerun harness-mock-model --script <script> --record <requests.jsonl>"
-        ));
+        return recording::bind_recording(step, body)
+            .map_err(|error| format!("STEP bind recorded selectors failed: {error}"));
     }
     let result = serde_json::from_str(&last_content(body, true)).unwrap_or(Value::Null);
     let mut value = serde_json::to_value(step).map_err(|error| error.to_string())?;
@@ -150,7 +149,7 @@ pub fn load_script(path: &std::path::Path) -> std::io::Result<crate::Script> {
                 if step.recording_projection.is_some() {
                     step.decoded_replay = Some(Box::new(
                         recording::decode_recording(step).map_err(|error| std::io::Error::other(format!(
-                            "STEP admit recorded projection failed: {error}; RECOVERY: correct recording_projection against the complete admitted exchange, then rerun harness-mock-model --script {} --record <requests.jsonl>", path.display()
+                            "STEP admit recorded projection failed for {}: {error}", path.display()
                         )))?,
                     ));
                 }
