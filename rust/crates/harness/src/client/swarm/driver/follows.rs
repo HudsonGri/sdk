@@ -6,7 +6,15 @@ use futures::{
     StreamExt as _, TryStreamExt as _,
     stream::{self, AbortHandle, Abortable, SelectAll},
 };
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
+
+/// Status follows that may await their first frame at once. It keeps a large
+/// membership snapshot within the session's bounded outbound queue.
+const ADMISSION_WINDOW: usize = acyclic_stream::MAX_ITEMS / 2;
 
 type Frames = BoxProviderStream<'static, std::result::Result<wire::SessionFrame, StreamError>>;
 struct Content {
@@ -23,18 +31,22 @@ pub(super) struct Follows {
     session: Client,
     agents: BTreeMap<StreamPath, Content>,
     content: BTreeMap<StreamPath, Content>,
+    /// Admitted agents whose status follow has delivered no frame yet.
+    unanswered: BTreeSet<StreamPath>,
     sources: SelectAll<futures::stream::LocalBoxStream<'static, Routed>>,
 }
 
 impl Follows {
-    pub fn new(session: Client, discovery: Frames) -> Self {
+    pub fn new(session: Client) -> Self {
         let mut follows = Self {
             session,
             agents: BTreeMap::new(),
             content: BTreeMap::new(),
+            unanswered: BTreeSet::new(),
             sources: SelectAll::new(),
         };
-        follows.source(None, false, discovery);
+        // The routed set never ends while the driver owns it.
+        follows.source(None, false, Box::pin(stream::pending()));
         follows
     }
 
@@ -91,6 +103,7 @@ impl Follows {
         }
         let subscription = follow(&agent, "status", wire::SessionDelivery::Latest, None)?;
         let status = self.subscribe(agent.clone(), true, subscription);
+        self.unanswered.insert(agent.clone());
         self.agents.insert(agent, status);
         Ok(true)
     }
@@ -127,14 +140,26 @@ impl Follows {
 
     pub fn retire(&mut self, agent: &StreamPath) {
         self.remove(agent);
+        self.unanswered.remove(agent);
         self.agents.remove(agent);
+    }
+    /// Whether another agent may be admitted without outrunning the session.
+    pub fn admitting(&self) -> bool {
+        self.unanswered.len() < ADMISSION_WINDOW
     }
     pub fn contains(&self, agent: &StreamPath) -> bool {
         self.agents.contains_key(agent)
     }
 
     pub async fn next(&mut self) -> Option<Routed> {
-        self.sources.next().await
+        let routed = self.sources.next().await;
+        if let Some(Routed {
+            agent: Some(agent), ..
+        }) = &routed
+        {
+            self.unanswered.remove(agent);
+        }
+        routed
     }
 }
 

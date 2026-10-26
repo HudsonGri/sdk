@@ -26,7 +26,7 @@ fn check(commands: &[u8], broken: bool) -> TestCaseResult {
         acyclic_stream::session::testing::authority(),
         Arc::new(Unpolled),
     );
-    let mut follows = Follows::new(session, Box::pin(futures::stream::pending()));
+    let mut follows = Follows::new(session);
     let root = StreamPath::new("swarm").unwrap();
     let mut views = ClientViews::new(
         root.clone(),

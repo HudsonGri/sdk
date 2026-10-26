@@ -48,8 +48,8 @@ impl SwarmClient {
     }
 
     /// Follows file-derived demand through the caller's shared Streams session.
-    /// Children already provides snapshot plus live follow across every hierarchy
-    /// page, so discovery needs no second enumeration or harness channel map.
+    /// The parent's settled membership files are the only discovery source: the
+    /// snapshot admits one agent per turn, then live membership records follow.
     /// Status stays subscribed for every agent. Selected content starts from the
     /// complete checked cursor returned by `heads`, and promotion retains it.
     /// A fatal source or renderer error ends this cache; reset from fresh queries.
@@ -73,27 +73,10 @@ impl SwarmClient {
             let change = views.apply(update)?;
             changed(change).await
         };
-        // Registration precedes reading the layout. The platform owns the
-        // hierarchy snapshot, live creation cursor, credit and reconnect fence.
-        let discovery = session
-            .subscribe(wire::SessionSubscription {
-                credential: 0,
-                filter: None,
-                channel: None,
-                resume: Some(wire::SessionCursor::default()),
-                kind: Some(wire::session_subscription::Kind::Children(
-                    wire::ChildrenRequest {
-                        parent: Some(self.root.as_str().into()),
-                        limit: acyclic_stream::MAX_ITEMS as u32,
-                    },
-                )),
-            })
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?;
         let mut membership =
             membership::Membership::observe(parent, session, self.root.clone(), self.limits.agents)
                 .await?;
-        let mut follows = follows::Follows::new(session.clone(), discovery);
+        let mut follows = follows::Follows::new(session.clone());
         let mut demand = ClientInterests::from_layout(self.root.clone(), [], [], 0)?;
         let mut snapshots = snapshots::Snapshots::new(self.limits.selected);
         let mut files = InterestFiles::observe(
@@ -105,6 +88,8 @@ impl SwarmClient {
         )
         .await?;
         loop {
+            // A snapshot member waits for session credit; live changes do not.
+            let admit = !membership.snapshot_pending() || follows.admitting();
             let admission = futures::select_biased! {
                 completed = snapshots.next().fuse() => {
                     if let Some((agent, snapshot)) = snapshots.finish(completed) {
@@ -114,7 +99,9 @@ impl SwarmClient {
                     }
                     None
                 },
-                member = membership.next().fuse() => {
+                member = async {
+                    if admit { membership.next().await } else { futures::future::pending().await }
+                }.fuse() => {
                     match member? {
                         Some((agent, true)) => Some(agent),
                         Some((agent, false)) => {
@@ -145,18 +132,6 @@ impl SwarmClient {
                     let routed = routed.ok_or_else(|| Error::Storage("swarm follows ended".into()))?;
                     let frame = routed.frame.map_err(|error| Error::Storage(error.to_string()))?;
                     match (routed.agent, frame.body) {
-                        (None, Some(wire::session_frame::Body::Data(data))) => {
-                            let Some(wire::session_data::Item::Child(child)) = data.item else {
-                                return Err(Error::Invalid("discovery received non-child data".into()));
-                            };
-                            let agent = StreamPath::new(child.path).map_err(|error| Error::Invalid(error.to_string()))?;
-                            // Stream subtrees retain archived history. Only the
-                            // parent membership files can admit or retire a row.
-                            if demand.tier(&agent).is_none() {
-                                return Err(Error::Invalid("discovered agent lies outside swarm".into()));
-                            }
-                            membership.discovered(&agent).then_some(agent)
-                        }
                         (Some(agent), Some(wire::session_frame::Body::Data(data))) => {
                             publish(SwarmUpdate::Data { agent, overview: routed.overview, data }).await?;
                             None
@@ -172,8 +147,7 @@ impl SwarmClient {
                     }
                 },
             };
-            // Snapshot children and live membership records share admission.
-            // Both arrive through the credit-paced platform session above.
+            // Snapshot members and live membership records share admission.
             if let Some(agent) = admission {
                 if follows.discover(&demand, agent.clone(), self.limits.agents)? {
                     publish(SwarmUpdate::Agent {

@@ -133,9 +133,6 @@ impl StreamProvider for Observed {
             matches!(update, FollowUpdate::Record(_))
         }))
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.memory.children(request).await
-    }
     async fn children_page(
         &self,
         request: ChildrenPageRequest,

@@ -25,7 +25,6 @@ fn measured(case: SwarmCase, fault: Fault) -> TestResult<Work> {
         "allocations",
         "allocated_bytes",
         "delivered_records",
-        "discovered_children",
         "server_follows",
         "server_records",
         "attention",
@@ -42,7 +41,6 @@ fn linear_counts(small: &Work, doubled: &Work) -> TestResult {
         "server_follows",
         "server_records",
         "delivered_records",
-        "discovered_children",
         "attention",
         "full_records",
         "fold_items",
@@ -55,13 +53,6 @@ fn linear_counts(small: &Work, doubled: &Work) -> TestResult {
     for work in [small, doubled] {
         if work["delivered_records"] != work["server_records"] {
             return Err("paced delivery conflated or duplicated a provider record".into());
-        }
-    }
-    // The parent membership volume is one persistent root child, independent
-    // of agent count. Assert that exact overhead before comparing swarm work.
-    for work in [small, doubled] {
-        if work["discovered_children"] != work["agents"] + 1 {
-            return Err("discovery must visit every agent and exactly one parent volume".into());
         }
     }
     if doubled["agents"] != 2 * small["agents"]
