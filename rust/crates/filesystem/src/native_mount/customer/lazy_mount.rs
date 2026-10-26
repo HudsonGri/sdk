@@ -396,7 +396,9 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = (|| {
             if let Some(session) = owner.as_mut() {
-                session.retire_with_context(&super::super::NativeSessionStopWork::AcceptedWait(wait))?;
+                session.retire_with_context(&super::super::NativeSessionStopWork::AcceptedWait(
+                    wait,
+                ))?;
                 if !session.cleanup_state().cleanup_complete() {
                     return Err(NativeMountError::ControlPending.into());
                 }

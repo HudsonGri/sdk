@@ -27,8 +27,8 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
     } = Fixture::new()?;
     let producer = std::fs::read(root.path().join("absent-worker-input"))
         .expect_err("worker input must be absent");
-    let cleanup = std::fs::read(root.path())
-        .expect_err("a directory cannot be read as cleanup bytes");
+    let cleanup =
+        std::fs::read(root.path()).expect_err("a directory cannot be read as cleanup bytes");
     let producer_code = producer.raw_os_error();
     let cleanup_code = cleanup.raw_os_error();
     session.terminal_failures = super::super::retirement::TerminalFailures {
@@ -47,15 +47,29 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
     let mut proof = mount.retire(&cancellation)?;
     retired(root.path(), &fence, before, &retirement_work)?;
     assert!(mount.source.physically_retired()?);
-    assert!(mount.session.lock().map_err(|_| "session poisoned")?.is_none());
+    assert!(
+        mount
+            .session
+            .lock()
+            .map_err(|_| "session poisoned")?
+            .is_none()
+    );
     let (first, second) = proof
         .take_retained_capture_failure()
         .ok_or("drain proof lost the namespace outcomes")?;
     assert!(matches!(first, NativeMountError::Io(cause) if cause.raw_os_error() == producer_code));
-    assert!(matches!(second, Some(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code));
+    assert!(
+        matches!(second, Some(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code)
+    );
     assert!(proof.take_retained_capture_failure().is_none());
-    assert_eq!(retirement_work.receipt().allocation_operations, before.allocation_operations);
-    assert_eq!(retirement_work.receipt().peak_allocation_bytes, before.peak_allocation_bytes);
+    assert_eq!(
+        retirement_work.receipt().allocation_operations,
+        before.allocation_operations
+    );
+    assert_eq!(
+        retirement_work.receipt().peak_allocation_bytes,
+        before.peak_allocation_bytes
+    );
     Ok(())
 }
 

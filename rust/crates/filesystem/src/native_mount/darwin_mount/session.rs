@@ -217,7 +217,10 @@ impl DarwinMountSession {
                 return self.retired_outcome(&events, wait, false);
             }
             if (state.resources.is_some()
-                || state.retirement.as_ref().is_some_and(|packet| !packet.is_retired()))
+                || state
+                    .retirement
+                    .as_ref()
+                    .is_some_and(|packet| !packet.is_retired()))
                 && let Some(error) = state.failure.take()
             {
                 return Err(error);
@@ -256,7 +259,10 @@ impl DarwinMountSession {
             {
                 let mut state = events.state();
                 if (state.resources.is_some()
-                    || state.retirement.as_ref().is_some_and(|packet| !packet.is_retired()))
+                    || state
+                        .retirement
+                        .as_ref()
+                        .is_some_and(|packet| !packet.is_retired()))
                     && let Some(error) = state.failure.take()
                 {
                     return Err(error);
@@ -293,7 +299,10 @@ impl DarwinMountSession {
         let mut state = events.state();
         if let Err(error) = events.retire(&mut state, wait, SourceRetirementWait::Caller) {
             if state.resources.is_some()
-                || state.retirement.as_ref().is_some_and(|packet| !packet.is_retired())
+                || state
+                    .retirement
+                    .as_ref()
+                    .is_some_and(|packet| !packet.is_retired())
             {
                 return Err(error);
             }
@@ -315,12 +324,15 @@ impl DarwinMountSession {
         let before = self
             .loop_finished_before_teardown
             .ok_or(NativeMountError::ControlPending)?;
-        let result = self.loop_result.take().ok_or(NativeMountError::ControlPending)?;
+        let result = self
+            .loop_result
+            .take()
+            .ok_or(NativeMountError::ControlPending)?;
         match result {
             Ok(0) if !before || !was_mounted => Ok(None),
-            Ok(status) => Ok(Some(NativeMountError::DarwinTeardown(DarwinTeardownFailure(
-                status,
-            )))),
+            Ok(status) => Ok(Some(NativeMountError::DarwinTeardown(
+                DarwinTeardownFailure(status),
+            ))),
             Err(error) => Ok(Some(error)),
         }
     }

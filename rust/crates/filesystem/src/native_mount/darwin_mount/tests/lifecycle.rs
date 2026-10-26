@@ -287,8 +287,16 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
         loop_result: None,
         native_root_identity: None,
     };
-    assert!(session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?.is_empty());
-    assert!(session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?.is_empty());
+    assert!(
+        session
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?
+            .is_empty()
+    );
+    assert!(
+        session
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?
+            .is_empty()
+    );
     assert!(session.unmount.context().is_err());
     assert!(session.namespace_detach_confirmed());
     session.thread = Some(std::thread::spawn(|| 7));
@@ -298,9 +306,16 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
         .store(true, Ordering::Release);
     session.loop_finished_before_teardown = None;
     let mut outcome = session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?;
-    assert!(matches!(outcome.take(), Some(NativeMountError::DarwinTeardown(DarwinTeardownFailure(7)))));
+    assert!(matches!(
+        outcome.take(),
+        Some(NativeMountError::DarwinTeardown(DarwinTeardownFailure(7)))
+    ));
     assert!(outcome.is_empty());
-    assert!(session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?.is_empty());
+    assert!(
+        session
+            .stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?
+            .is_empty()
+    );
     assert!(session.thread.is_none());
     Ok(())
 }

@@ -49,8 +49,8 @@ fn terminal_worker_retires_destination(
         assert!(!panicked, "retained FUSE worker panic");
         std::fs::read(missing).map(drop)
     });
-    let cleanup_error = std::fs::read(root.path())
-        .expect_err("a directory cannot be read as source bytes");
+    let cleanup_error =
+        std::fs::read(root.path()).expect_err("a directory cannot be read as source bytes");
     let cleanup_code = cleanup_error.raw_os_error();
     let (callbacks, _) = shared_sources(posix_config())?;
     let core = projection_core(
@@ -88,7 +88,12 @@ fn terminal_worker_retires_destination(
     // The real physical owner must return after the failed worker and source
     // have exited. The old early-return path parks here with the fence held.
     run_fuse_session((Arc::clone(&core), Arc::clone(&state)));
-    assert!(state.lock().map_err(|_| "retirement state poisoned")?.is_retired());
+    assert!(
+        state
+            .lock()
+            .map_err(|_| "retirement state poisoned")?
+            .is_retired()
+    );
     retired(root.path(), &fence, before, &work)?;
     let mut facade = super::super::FuseSession {
         core,
@@ -102,22 +107,39 @@ fn terminal_worker_retires_destination(
         NativeSessionStopWork::AcceptedWait(&wait)
     };
     let mut outcomes = facade.stop(&stop)?;
-    let first = outcomes.take().ok_or("worker error was lost during cleanup")?;
+    let first = outcomes
+        .take()
+        .ok_or("worker error was lost during cleanup")?;
     if panicked {
         let NativeMountError::DriverPanicked { panic, .. } = first else {
             panic!("worker panic changed to {first:?}");
         };
         let payload = panic.into_inner().map_err(|_| "panic payload poisoned")?;
-        assert_eq!(payload.downcast_ref::<&str>(), Some(&"retained FUSE worker panic"));
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"retained FUSE worker panic")
+        );
     } else {
-        assert!(matches!(first, NativeMountError::Io(ref cause) if cause.kind() == std::io::ErrorKind::NotFound));
+        assert!(
+            matches!(first, NativeMountError::Io(ref cause) if cause.kind() == std::io::ErrorKind::NotFound)
+        );
     }
-    let second = outcomes.take().ok_or("source error was lost during cleanup")?;
-    assert!(matches!(second, NativeMountError::Io(ref cause) if cause.raw_os_error() == cleanup_code));
+    let second = outcomes
+        .take()
+        .ok_or("source error was lost during cleanup")?;
+    assert!(
+        matches!(second, NativeMountError::Io(ref cause) if cause.raw_os_error() == cleanup_code)
+    );
     assert!(outcomes.is_empty());
     assert!(facade.stop(&stop)?.is_empty());
-    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-    assert_eq!(work.receipt().peak_allocation_bytes, before.peak_allocation_bytes);
+    assert_eq!(
+        work.receipt().allocation_operations,
+        before.allocation_operations
+    );
+    assert_eq!(
+        work.receipt().peak_allocation_bytes,
+        before.peak_allocation_bytes
+    );
     Ok(())
 }
 

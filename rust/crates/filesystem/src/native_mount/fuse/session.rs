@@ -84,7 +84,8 @@ impl FuseSessionState {
         self.before.take();
         if self.worker.is_some() {
             started(ReadOperations.delta(1))?;
-            self.failure.producer = self.worker
+            self.failure.producer = self
+                .worker
                 .take()
                 .ok_or(NativeMountError::FuseShutdownFailed)?
                 .join()

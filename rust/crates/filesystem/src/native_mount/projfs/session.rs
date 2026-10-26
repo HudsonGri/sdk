@@ -377,9 +377,11 @@ impl ProjFsSession {
         self.runtime = None;
         drop(runtime);
         if let Some(cleanup) = self.projection_cleanup.as_mut() {
-            if self.namespace_outcome.as_ref().is_some_and(|outcome| {
-                !outcome.failures.is_empty()
-            }) {
+            if self
+                .namespace_outcome
+                .as_ref()
+                .is_some_and(|outcome| !outcome.failures.is_empty())
+            {
                 // Never delete data whose publication/capture failed. Remove
                 // only the detached root tag; the outcome retains the cause.
                 cleanup.0.clear();
