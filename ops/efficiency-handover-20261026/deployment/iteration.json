@@ -1,0 +1,122 @@
+{
+  "author": "Codex",
+  "as_of": "2026-10-26T01:17:54.197315Z",
+  "queue_to_merge": {
+    "p50_hours": 9.300266840694444,
+    "p95_hours": 12.632916424777777,
+    "samples": 4,
+    "rows": [
+      {
+        "pr": 1487,
+        "queued": "2026-10-25T00:03:24Z",
+        "merged": "2026-10-25T07:52:10.053610Z",
+        "hours": 7.812792669444444
+      },
+      {
+        "pr": 1489,
+        "queued": "2026-10-25T00:52:40Z",
+        "merged": "2026-10-25T07:52:14.295887Z",
+        "hours": 6.9928599686111115
+      },
+      {
+        "pr": 1499,
+        "queued": "2026-10-25T09:10:31Z",
+        "merged": "2026-10-25T22:08:01.728215Z",
+        "hours": 12.958535615277778
+      },
+      {
+        "pr": 1501,
+        "queued": "2026-10-25T11:20:51Z",
+        "merged": "2026-10-25T22:08:06.867643Z",
+        "hours": 10.787741011944444
+      }
+    ]
+  },
+  "job_hours_per_merge": 54.25338388888889,
+  "longest_drought_hours": 14.263055555555555,
+  "first_observed_pass": {
+    "passed": 1,
+    "prs": 16,
+    "fraction": 0.0625
+  },
+  "steer_to_implemented": {
+    "p50_hours": null,
+    "p95_hours": null,
+    "samples": 0
+  },
+  "relays": [],
+  "sent_followups": [
+    {
+      "lane": "gate-speed",
+      "file": "gate-speed-20261026T005542Z.md",
+      "sent_at": "2026-10-26T00:59:14.6471778Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "main-green",
+      "file": "main-green-20261026T005542Z.md",
+      "sent_at": "2026-10-26T00:59:15.1764079Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "tool-latency",
+      "file": "tool-latency-20261026T005542Z.md",
+      "sent_at": "2026-10-26T00:59:15.8233497Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "plugins",
+      "file": "plugins-20261026T004421Z.md",
+      "sent_at": "2026-10-26T00:59:16.583143Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "gate-speed",
+      "file": "queue-recovered-20261026T010200Z.md",
+      "sent_at": "2026-10-26T01:07:33.1550340Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "main-green",
+      "file": "queue-recovered-20261026T010200Z.md",
+      "sent_at": "2026-10-26T01:07:34.0290063Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "streams",
+      "file": "streams-schedule-20261026T005542Z.md",
+      "sent_at": "2026-10-26T01:07:34.5278638Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "b-runtime",
+      "file": "b-runtime-schedule-20261026T005542Z.md",
+      "sent_at": "2026-10-26T01:07:35.4307148Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "fs-concurrency",
+      "file": "fs-concurrency-schedule-20261026T005542Z.md",
+      "sent_at": "2026-10-26T01:07:36.8339789Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "b-authority",
+      "file": "b-authority-schedule-20261026T005542Z.md",
+      "sent_at": "2026-10-26T01:07:38.3677171Z",
+      "state": "awaiting measured application; queued is not applied"
+    },
+    {
+      "lane": "client-perf",
+      "file": "client-perf-schedule-20261026T005542Z.md",
+      "sent_at": "2026-10-26T01:07:40.2959472Z",
+      "state": "awaiting measured application; queued is not applied"
+    }
+  ],
+  "limits": [
+    "First-observed PR outcome in retained alerts is not guaranteed lifetime first-pass or a head-specific pass rate.",
+    "Queue latency covers only explicit first-observed MERGE1 queued events with a successful merge; missing queues excluded.",
+    "Relay acknowledgement is separate from installation/application. Missing outcome is unknown, not zero latency."
+  ],
+  "cycle": 233
+}

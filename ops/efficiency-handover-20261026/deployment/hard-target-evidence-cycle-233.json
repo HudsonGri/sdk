@@ -1,0 +1,2422 @@
+{
+  "author": "Codex",
+  "cycle": 233,
+  "as_of": "2026-10-26T01:17:54.197315Z",
+  "jobs": 1588,
+  "job_wall_p95_seconds": 1469.5259499999995,
+  "failed_jobs_over_300s": 301,
+  "failed_job_wrapper_hours": 80.7537938888889,
+  "rows": [
+    {
+      "at": "2026-10-25T01:33:42.547Z",
+      "log_id": "1792885042883-669288-30646722",
+      "lane": "pr-gate",
+      "wall": 6979.663,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T01:38:50.451Z",
+      "log_id": "1792891739380-713861-a75e485e",
+      "lane": "main-green",
+      "wall": 591.071,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T01:47:04.566Z",
+      "log_id": "1792890957049-709949-959676b8",
+      "lane": "b-runtime",
+      "wall": 1867.516,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T02:04:49.178Z",
+      "log_id": "1792892566446-720477-8c159d4a",
+      "lane": "b-runtime",
+      "wall": 1322.732,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T02:33:28.407Z",
+      "log_id": "1792894370190-730693-7d1c47e2",
+      "lane": "b-runtime",
+      "wall": 1238.217,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T02:47:43.074Z",
+      "log_id": "1792895286087-733556-cbe8ccf0",
+      "lane": "b-runtime",
+      "wall": 1176.987,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:01:09.521Z",
+      "log_id": "1792896793616-741694-39e7d775",
+      "lane": "win-qual",
+      "wall": 475.905,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:03:53.264Z",
+      "log_id": "1792896766580-741540-7e369f66",
+      "lane": "b-runtime",
+      "wall": 666.684,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:11:06.233Z",
+      "log_id": "1792897314577-743397-7a8734c0",
+      "lane": "approvals",
+      "wall": 551.655,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:18:40.726Z",
+      "log_id": "1792897638432-744749-588fa762",
+      "lane": "b-runtime",
+      "wall": 682.293,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:19:45.302Z",
+      "log_id": "1792898017570-749023-441b95ae",
+      "lane": "approvals",
+      "wall": 367.732,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:22:56.577Z",
+      "log_id": "1792892306306-716383-0468e9f9",
+      "lane": "pr-gate",
+      "wall": 6270.27,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:30:18.480Z",
+      "log_id": "1792898216578-749647-3edbe554",
+      "lane": "b-runtime",
+      "wall": 801.902,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:42:19.218Z",
+      "log_id": "1792892794517-721328-2882e0f1",
+      "lane": "pr-gate",
+      "wall": 6944.7,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T03:51:55.149Z",
+      "log_id": "1792899511773-755953-fa1b04ba",
+      "lane": "b-runtime",
+      "wall": 803.375,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T04:06:20.191Z",
+      "log_id": "1792900248686-762303-33d99127",
+      "lane": "win-qual",
+      "wall": 931.505,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T04:06:53.407Z",
+      "log_id": "1792900509263-763416-55edc3fc",
+      "lane": "b-runtime",
+      "wall": 704.144,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T04:45:32.052Z",
+      "log_id": "1792902657497-774558-a72d2d62",
+      "lane": "win-qual",
+      "wall": 874.555,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T04:46:03.426Z",
+      "log_id": "1792902651682-774488-bb404a3e",
+      "lane": "approvals",
+      "wall": 911.743,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T04:48:00.023Z",
+      "log_id": "1792902819055-775151-c9273be0",
+      "lane": "b-runtime",
+      "wall": 860.968,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T04:56:24.866Z",
+      "log_id": "1792903500029-780421-12c72b08",
+      "lane": "b-runtime",
+      "wall": 684.837,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T05:04:22.377Z",
+      "log_id": "1792903733198-781744-04b18be9",
+      "lane": "approvals",
+      "wall": 929.178,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T05:17:53.756Z",
+      "log_id": "1792903605438-781167-7d1a9420",
+      "lane": "approvals",
+      "wall": 1868.317,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T05:38:07.672Z",
+      "log_id": "1792905472875-791099-2b51cba3",
+      "lane": "approvals",
+      "wall": 1214.797,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T05:45:05.218Z",
+      "log_id": "1792899970057-761132-6919ff8c",
+      "lane": "pr-gate",
+      "wall": 7135.161,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:05:30.818Z",
+      "log_id": "1792907526908-801444-61ebf3aa",
+      "lane": "main-rebase",
+      "wall": 803.909,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:06:22.684Z",
+      "log_id": "1792908040292-805275-b5e8c1fc",
+      "lane": "b-runtime",
+      "wall": 342.391,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:11:49.568Z",
+      "log_id": "1792908325075-806819-242d91a7",
+      "lane": "win-qual",
+      "wall": 384.492,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:13:53.082Z",
+      "log_id": "1792907482012-801197-96604f8b",
+      "lane": "e2e-gate",
+      "wall": 1351.07,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:18:24.951Z",
+      "log_id": "1792908733847-813964-5ca99453",
+      "lane": "fs-concurrency",
+      "wall": 371.103,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:24:32.910Z",
+      "log_id": "1792907961001-804659-977fcbbb",
+      "lane": "approvals",
+      "wall": 1511.909,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:24:37.853Z",
+      "log_id": "1792908535344-808368-2d7efbe9",
+      "lane": "mac-live",
+      "wall": 942.509,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:24:51.784Z",
+      "log_id": "1792908485876-808087-d5dfbc90",
+      "lane": "b-runtime",
+      "wall": 1005.908,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:24:53.489Z",
+      "log_id": "1792909155277-817111-1c322015",
+      "lane": "sessions",
+      "wall": 338.211,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:24:59.846Z",
+      "log_id": "1792908966309-815470-80852434",
+      "lane": "win-qual",
+      "wall": 533.536,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:29:39.991Z",
+      "log_id": "1792908468474-807957-e404af33",
+      "lane": "main-rebase",
+      "wall": 1311.517,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:32:23.333Z",
+      "log_id": "1792909192065-817440-f1826e73",
+      "lane": "approvals",
+      "wall": 751.268,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:33:35.090Z",
+      "log_id": "1792909611077-820742-a6d26f7b",
+      "lane": "sessions",
+      "wall": 404.013,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:35:22.548Z",
+      "log_id": "1792908274159-806592-2452895b",
+      "lane": "e2e-gate",
+      "wall": 1848.388,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T06:38:37.367Z",
+      "log_id": "1792909718993-821200-0a998cee",
+      "lane": "plugins",
+      "wall": 598.374,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:52:34.430Z",
+      "log_id": "1792910559069-828435-fafd85ee",
+      "lane": "fs-concurrency",
+      "wall": 595.36,
+      "rc": 129,
+      "termination": "cancelled"
+    },
+    {
+      "at": "2026-10-25T06:52:57.701Z",
+      "log_id": "1792910276972-824011-bdabcc46",
+      "lane": "b-runtime",
+      "wall": 900.729,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:55:28.733Z",
+      "log_id": "1792910645170-828856-dfa35c1f",
+      "lane": "plugins",
+      "wall": 683.563,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:58:06.159Z",
+      "log_id": "1792911054320-830883-8f3aa3c1",
+      "lane": "plugins",
+      "wall": 431.839,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T06:58:36.164Z",
+      "log_id": "1792911146505-831422-45f7678d",
+      "lane": "b-runtime",
+      "wall": 369.658,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:03:08.862Z",
+      "log_id": "1792911007660-830619-86d742c8",
+      "lane": "sessions",
+      "wall": 781.201,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:11:36.322Z",
+      "log_id": "1792911630275-835049-07f31e93",
+      "lane": "b-runtime",
+      "wall": 666.046,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:11:42.714Z",
+      "log_id": "1792911559250-834134-c91c06f6",
+      "lane": "plugins",
+      "wall": 743.464,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:13:34.914Z",
+      "log_id": "1792912011762-837316-dba834bc",
+      "lane": "sessions",
+      "wall": 403.152,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:20:39.102Z",
+      "log_id": "1792912353996-842224-c75c4a7e",
+      "lane": "fs-concurrency",
+      "wall": 485.105,
+      "rc": 224,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T07:22:39.669Z",
+      "log_id": "1792912567056-843191-a22d858e",
+      "lane": "fs-concurrency",
+      "wall": 392.612,
+      "rc": 224,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T07:23:09.561Z",
+      "log_id": "1792912607502-843409-e0e1dd93",
+      "lane": "sessions",
+      "wall": 382.059,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:24:40.527Z",
+      "log_id": "1792912420954-842597-6dd04c56",
+      "lane": "b-runtime",
+      "wall": 659.572,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:28:25.574Z",
+      "log_id": "1792912564373-843149-c5701743",
+      "lane": "plugins",
+      "wall": 741.2,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:31:49.334Z",
+      "log_id": "1792913036586-845824-b2c9a242",
+      "lane": "approvals",
+      "wall": 472.748,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:43:24.007Z",
+      "log_id": "1792913792253-849208-83e4be50",
+      "lane": "approvals",
+      "wall": 411.754,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:49:27.298Z",
+      "log_id": "1792913165334-846397-1e302400",
+      "lane": "b-runtime",
+      "wall": 1401.964,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:49:34.906Z",
+      "log_id": "1792913388399-847375-483d5d79",
+      "lane": "mac-live",
+      "wall": 1186.507,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T07:53:45.365Z",
+      "log_id": "1792914430329-855786-36ebd495",
+      "lane": "fs-concurrency",
+      "wall": 395.035,
+      "rc": 1,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T08:03:34.066Z",
+      "log_id": "1792915097522-859726-7cf8f410",
+      "lane": "sessions",
+      "wall": 316.544,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:04:09.800Z",
+      "log_id": "1792913829568-849477-3423bfe2",
+      "lane": "plugins",
+      "wall": 1620.231,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:05:18.936Z",
+      "log_id": "1792915090946-859633-86fb8b90",
+      "lane": "fs-concurrency",
+      "wall": 427.989,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:12:55.733Z",
+      "log_id": "1792915280103-860689-eb6e7fd8",
+      "lane": "b-runtime",
+      "wall": 695.63,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:13:35.820Z",
+      "log_id": "1792915369519-861439-cfb46457",
+      "lane": "win-qual",
+      "wall": 646.301,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:20:44.299Z",
+      "log_id": "1792915943275-868638-05924ec3",
+      "lane": "main-rebase",
+      "wall": 501.024,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:22:09.476Z",
+      "log_id": "1792914662563-856980-4e753436",
+      "lane": "mac-live",
+      "wall": 1866.912,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T08:25:30.479Z",
+      "log_id": "1792915607902-862712-7faad5a7",
+      "lane": "plugins",
+      "wall": 1122.577,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:28:23.840Z",
+      "log_id": "1792915696337-863250-1cdd9860",
+      "lane": "sessions",
+      "wall": 1207.503,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:33:14.216Z",
+      "log_id": "1792916649609-872218-11c9e7f9",
+      "lane": "main-rebase",
+      "wall": 544.607,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:34:42.723Z",
+      "log_id": "1792916457076-870810-c0ce62f0",
+      "lane": "approvals",
+      "wall": 825.647,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:36:26.724Z",
+      "log_id": "1792916681242-872473-be851784",
+      "lane": "b-runtime",
+      "wall": 705.482,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:36:52.971Z",
+      "log_id": "1792916997799-874510-06f55b80",
+      "lane": "fs-concurrency",
+      "wall": 415.171,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:48:10.820Z",
+      "log_id": "1792917561218-877740-b0ed089f",
+      "lane": "main-green",
+      "wall": 529.602,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:50:59.472Z",
+      "log_id": "1792917811348-883305-c06d66a1",
+      "lane": "sessions",
+      "wall": 448.124,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:51:20.864Z",
+      "log_id": "1792916469754-870968-799d1977",
+      "lane": "providers-final-20261025a",
+      "wall": 1811.109,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T08:55:46.297Z",
+      "log_id": "1792916142261-869403-07c1091f",
+      "lane": "win-qual",
+      "wall": 2404.035,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:01:30.755Z",
+      "log_id": "1792917656477-878332-2dd17979",
+      "lane": "plugins",
+      "wall": 1234.278,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:03:07.747Z",
+      "log_id": "1792917328358-876508-61b86810",
+      "lane": "main-rebase",
+      "wall": 1659.389,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:04:39.516Z",
+      "log_id": "1792918625580-888190-aaa31ff4",
+      "lane": "plugins",
+      "wall": 453.935,
+      "rc": 1,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T09:07:48.491Z",
+      "log_id": "1792917437944-877042-37a75df8",
+      "lane": "b-runtime",
+      "wall": 1830.547,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T09:09:27.913Z",
+      "log_id": "1792918861396-889202-cfe2ee7b",
+      "lane": "fs-concurrency",
+      "wall": 506.517,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:10:06.417Z",
+      "log_id": "1792919064550-890362-a41a186c",
+      "lane": "b-runtime",
+      "wall": 341.866,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:12:23.587Z",
+      "log_id": "1792918163412-885180-8db5feb6",
+      "lane": "mac-live",
+      "wall": 1380.175,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:17:21.492Z",
+      "log_id": "1792919441023-891958-4915a113",
+      "lane": "plugins",
+      "wall": 400.469,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:18:49.401Z",
+      "log_id": "1792919453973-892065-e0784192",
+      "lane": "fs-concurrency",
+      "wall": 475.428,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:19:09.271Z",
+      "log_id": "1792919535268-895582-acabb563",
+      "lane": "b-runtime",
+      "wall": 414.002,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:25:51.122Z",
+      "log_id": "1792919820417-897549-0da862a4",
+      "lane": "approvals",
+      "wall": 530.705,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:27:29.078Z",
+      "log_id": "1792919810203-897468-a27d048a",
+      "lane": "b-runtime",
+      "wall": 638.874,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:28:36.776Z",
+      "log_id": "1792918669536-888344-50a22bbd",
+      "lane": "plugins",
+      "wall": 1847.239,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T09:35:44.641Z",
+      "log_id": "1792920185816-899990-b1daf181",
+      "lane": "plugins",
+      "wall": 758.825,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:36:48.470Z",
+      "log_id": "1792919872183-897796-5a6fe2ad",
+      "lane": "mac-live",
+      "wall": 1136.287,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:41:24.270Z",
+      "log_id": "1792920565321-901680-94888e23",
+      "lane": "sessions",
+      "wall": 718.948,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:47:43.259Z",
+      "log_id": "1792920534150-901389-d3737e6e",
+      "lane": "b-runtime",
+      "wall": 1129.109,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T09:49:38.283Z",
+      "log_id": "1792919915227-897998-fa9f3a9d",
+      "lane": "sessions",
+      "wall": 1863.055,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T09:58:20.049Z",
+      "log_id": "1792921142150-904819-efa158d8",
+      "lane": "mac-live",
+      "wall": 1157.898,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:01:25.864Z",
+      "log_id": "1792915569649-862463-dcb9c5bc",
+      "lane": "pr-gate",
+      "wall": 6916.214,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:03:17.693Z",
+      "log_id": "1792914919792-858659-76044820",
+      "lane": "main-gate",
+      "wall": 7677.901,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:07:58.694Z",
+      "log_id": "1792921966221-914083-e912a17f",
+      "lane": "mac-live",
+      "wall": 912.473,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:17:17.536Z",
+      "log_id": "1792922811114-918692-a0d18fe7",
+      "lane": "sessions",
+      "wall": 626.422,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:18:47.467Z",
+      "log_id": "1792923055448-920199-e983e03c",
+      "lane": "providers-final-20261025b",
+      "wall": 472.019,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:19:11.846Z",
+      "log_id": "1792923004905-919813-be99de57",
+      "lane": "main-green",
+      "wall": 546.941,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:27:47.785Z",
+      "log_id": "1792923602180-928180-d59fe382",
+      "lane": "providers-final-20261025b",
+      "wall": 465.605,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:33:09.743Z",
+      "log_id": "1792923855856-930002-4c818906",
+      "lane": "main-green",
+      "wall": 533.886,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:37:06.124Z",
+      "log_id": "1792922775773-918439-568cc276",
+      "lane": "b-runtime",
+      "wall": 1850.351,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T10:42:59.280Z",
+      "log_id": "1792923128532-925407-db907ca3",
+      "lane": "b-runtime",
+      "wall": 1850.748,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T10:46:41.526Z",
+      "log_id": "1792924769977-934782-7c3dd522",
+      "lane": "providers-final-20261025b",
+      "wall": 431.549,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:53:02.402Z",
+      "log_id": "1792923747692-929183-8d5f7053",
+      "lane": "sessions",
+      "wall": 1834.709,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T10:53:58.047Z",
+      "log_id": "1792925158105-941246-573016c7",
+      "lane": "fs-concurrency",
+      "wall": 479.941,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:55:53.781Z",
+      "log_id": "1792923935457-930467-edbac8bc",
+      "lane": "mac-live",
+      "wall": 1818.323,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T10:59:06.025Z",
+      "log_id": "1792925399964-942606-903b7317",
+      "lane": "b-runtime",
+      "wall": 546.061,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:02:53.397Z",
+      "log_id": "1792925691793-945065-6ea46565",
+      "lane": "fs-concurrency",
+      "wall": 481.603,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:08:03.073Z",
+      "log_id": "1792925938200-946560-937bca40",
+      "lane": "win-qual",
+      "wall": 544.873,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:26:03.864Z",
+      "log_id": "1792926594088-950333-a9a57f06",
+      "lane": "b-runtime",
+      "wall": 969.776,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:27:42.091Z",
+      "log_id": "1792927241641-957890-7e28b324",
+      "lane": "scale-fds6",
+      "wall": 420.45,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:29:54.629Z",
+      "log_id": "1792927254755-957994-3c170ddc",
+      "lane": "win-qual",
+      "wall": 539.874,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:33:04.251Z",
+      "log_id": "1792926744056-954866-6c5ebc5f",
+      "lane": "mac-live",
+      "wall": 1240.194,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:39:38.443Z",
+      "log_id": "1792927950600-970141-d300c3ef",
+      "lane": "providers-final-20261025b",
+      "wall": 427.843,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:44:34.037Z",
+      "log_id": "1792928017481-970679-2073efae",
+      "lane": "approvals",
+      "wall": 656.555,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:44:39.518Z",
+      "log_id": "1792928219796-971969-4c4c715f",
+      "lane": "providers-final-20261025b",
+      "wall": 459.721,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:50:57.483Z",
+      "log_id": "1792927440344-963939-46d82ce9",
+      "lane": "approvals",
+      "wall": 1617.139,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:52:03.938Z",
+      "log_id": "1792928735089-978552-42c39eab",
+      "lane": "providers-final-20261025b",
+      "wall": 388.849,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T11:55:14.763Z",
+      "log_id": "1792927695785-968677-40332954",
+      "lane": "approvals",
+      "wall": 1618.978,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:03:04.177Z",
+      "log_id": "1792923336995-926639-0611ec07",
+      "lane": "pr-gate",
+      "wall": 6447.182,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:04:56.107Z",
+      "log_id": "1792929400325-981813-3e1a4d98",
+      "lane": "fs-concurrency",
+      "wall": 495.782,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:06:06.331Z",
+      "log_id": "1792929588543-982874-3770cd7f",
+      "lane": "fs-concurrency",
+      "wall": 377.788,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:06:57.030Z",
+      "log_id": "1792928641117-977982-8b825bae",
+      "lane": "mac-live",
+      "wall": 1375.913,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:12:45.829Z",
+      "log_id": "1792929949390-984644-c12616b3",
+      "lane": "sessions",
+      "wall": 416.439,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:14:07.093Z",
+      "log_id": "1792929004462-979616-7c0306b9",
+      "lane": "mac-live",
+      "wall": 1442.631,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:17:27.521Z",
+      "log_id": "1792929545736-982424-821520b3",
+      "lane": "sessions",
+      "wall": 1101.785,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:18:14.426Z",
+      "log_id": "1792930210584-985654-90e3ca22",
+      "lane": "providers-final-20261025b",
+      "wall": 483.841,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:22:36.438Z",
+      "log_id": "1792929223015-980877-c1ddbdde",
+      "lane": "approvals",
+      "wall": 1733.423,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:27:26.666Z",
+      "log_id": "1792930834898-992350-d994e970",
+      "lane": "plugins",
+      "wall": 411.768,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:32:18.309Z",
+      "log_id": "1792930501967-990502-aba4b973",
+      "lane": "sessions",
+      "wall": 1036.341,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:32:21.849Z",
+      "log_id": "1792930894774-992779-b8cd807f",
+      "lane": "providers-final-20261025b",
+      "wall": 647.074,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:35:49.249Z",
+      "log_id": "1792930404957-989753-0a5d882e",
+      "lane": "providers-final-20261025b",
+      "wall": 1344.291,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:36:26.703Z",
+      "log_id": "1792931044360-993810-d850c31b",
+      "lane": "b-runtime",
+      "wall": 742.342,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:38:58.349Z",
+      "log_id": "1792931492414-996426-ed1886d4",
+      "lane": "providers-final-20261025b",
+      "wall": 445.934,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:40:41.505Z",
+      "log_id": "1792931528216-996750-c8cac43e",
+      "lane": "fs-concurrency",
+      "wall": 513.289,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:40:56.823Z",
+      "log_id": "1792931610121-997333-a5ebfdee",
+      "lane": "b-runtime",
+      "wall": 446.701,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:41:48.295Z",
+      "log_id": "1792931686536-997721-4d82cda3",
+      "lane": "providers-final-20261025b",
+      "wall": 421.759,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:42:46.125Z",
+      "log_id": "1792931625367-997419-31c75030",
+      "lane": "mac-live",
+      "wall": 540.758,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:44:44.979Z",
+      "log_id": "1792931867737-999002-544164f8",
+      "lane": "providers-final-20261025b",
+      "wall": 417.242,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:46:14.365Z",
+      "log_id": "1792931504994-996519-3c941581",
+      "lane": "plugins",
+      "wall": 869.37,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:49:04.599Z",
+      "log_id": "1792931184181-994862-46676310",
+      "lane": "mac-live",
+      "wall": 1360.417,
+      "rc": 224,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T12:50:28.059Z",
+      "log_id": "1792932213491-1004450-13e91e41",
+      "lane": "providers-final-20261025b",
+      "wall": 414.567,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:55:37.548Z",
+      "log_id": "1792932530161-1006357-9c87d31d",
+      "lane": "providers-final-20261025b",
+      "wall": 407.386,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T12:58:24.883Z",
+      "log_id": "1792932772114-1008164-7a670fd8",
+      "lane": "scale-fds6",
+      "wall": 332.769,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:00:29.730Z",
+      "log_id": "1792931900323-999194-248c1fe9",
+      "lane": "b-runtime",
+      "wall": 1329.407,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:00:47.530Z",
+      "log_id": "1792932739594-1007629-910e1907",
+      "lane": "plugins",
+      "wall": 507.936,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:05:38.036Z",
+      "log_id": "1792933141276-1010509-efbaa1d0",
+      "lane": "providers-final-20261025b",
+      "wall": 396.76,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:10:48.513Z",
+      "log_id": "1792933186232-1010650-10ce285e",
+      "lane": "b-runtime",
+      "wall": 662.281,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:12:14.141Z",
+      "log_id": "1792933062955-1010036-62854417",
+      "lane": "providers-final-20261025b",
+      "wall": 871.186,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:15:24.459Z",
+      "log_id": "1792932816998-1008390-7c8a6e94",
+      "lane": "mac-live",
+      "wall": 1307.461,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:17:46.915Z",
+      "log_id": "1792933873102-1014426-a15cddda",
+      "lane": "b-runtime",
+      "wall": 393.813,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:26:23.145Z",
+      "log_id": "1792934189909-1018610-5247143b",
+      "lane": "approvals",
+      "wall": 593.236,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:27:02.670Z",
+      "log_id": "1792934393529-1019694-fa047a21",
+      "lane": "providers-final-20261025b",
+      "wall": 429.141,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:35:49.345Z",
+      "log_id": "1792934860410-1022338-0a56c41f",
+      "lane": "fs-concurrency",
+      "wall": 488.935,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:39:20.691Z",
+      "log_id": "1792934960502-1022973-5e7dc28b",
+      "lane": "approvals",
+      "wall": 600.188,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:49:13.474Z",
+      "log_id": "1792929870103-984202-28cbd607",
+      "lane": "pr-gate",
+      "wall": 6283.37,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:52:27.028Z",
+      "log_id": "1792935008475-1023204-4a7ab68e",
+      "lane": "mac-live",
+      "wall": 1338.552,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:54:02.582Z",
+      "log_id": "1792935477552-1025728-a35cbe63",
+      "lane": "b-runtime",
+      "wall": 965.03,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T13:55:17.532Z",
+      "log_id": "1792936049467-1032427-dd75904c",
+      "lane": "fs-concurrency",
+      "wall": 468.065,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:02:46.476Z",
+      "log_id": "1792936537405-1035399-1756cabe",
+      "lane": "providers-final-20261025b",
+      "wall": 429.07,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:07:37.816Z",
+      "log_id": "1792936524719-1035163-c68d2fc5",
+      "lane": "b-runtime",
+      "wall": 733.096,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:14:11.033Z",
+      "log_id": "1792936052443-1032490-681f12a1",
+      "lane": "b-runtime",
+      "wall": 1598.589,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:18:56.782Z",
+      "log_id": "1792937445475-1039890-fe1dbbb1",
+      "lane": "providers-final-20261025b",
+      "wall": 491.307,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:19:30.577Z",
+      "log_id": "1792937431208-1039675-d5123940",
+      "lane": "plugins",
+      "wall": 539.369,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:20:15.158Z",
+      "log_id": "1792937608619-1044352-f96fd0df",
+      "lane": "providers-final-20261025b",
+      "wall": 406.539,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:29:54.527Z",
+      "log_id": "1792938164676-1047160-039e26e4",
+      "lane": "b-runtime",
+      "wall": 429.851,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:30:11.994Z",
+      "log_id": "1792938258126-1047514-e90187c7",
+      "lane": "providers-final-20261025b",
+      "wall": 353.868,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:33:40.058Z",
+      "log_id": "1792938258588-1047540-102fa9dd",
+      "lane": "providers-final-20261025b",
+      "wall": 561.469,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:39:05.119Z",
+      "log_id": "1792938221491-1047362-251c97b7",
+      "lane": "approvals",
+      "wall": 923.627,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:46:08.653Z",
+      "log_id": "1792938341378-1048302-8c43321c",
+      "lane": "mac-live",
+      "wall": 1227.274,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:49:41.033Z",
+      "log_id": "1792939438885-1057085-3c5b6fc5",
+      "lane": "plugins",
+      "wall": 342.147,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T14:52:42.649Z",
+      "log_id": "1792939334742-1056236-b406f219",
+      "lane": "approvals",
+      "wall": 627.907,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:02:19.858Z",
+      "log_id": "1792940098347-1061050-504eda7e",
+      "lane": "fs-concurrency",
+      "wall": 441.51,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:09:33.757Z",
+      "log_id": "1792939619212-1057932-2386b25d",
+      "lane": "b-runtime",
+      "wall": 1354.544,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:13:11.089Z",
+      "log_id": "1792940726111-1064457-10ad3998",
+      "lane": "fs-concurrency",
+      "wall": 464.978,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:19:14.300Z",
+      "log_id": "1792941113737-1066462-1078b0cc",
+      "lane": "providers-final-20261025b",
+      "wall": 440.563,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:22:23.056Z",
+      "log_id": "1792941049232-1066066-b5fbe45e",
+      "lane": "b-runtime",
+      "wall": 693.824,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:22:54.875Z",
+      "log_id": "1792940502165-1063438-02bfd3c7",
+      "lane": "b-runtime",
+      "wall": 1272.709,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:24:45.556Z",
+      "log_id": "1792941459582-1072023-aec750ef",
+      "lane": "b-runtime",
+      "wall": 425.974,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:34:36.921Z",
+      "log_id": "1792940602758-1063988-10f8ee0f",
+      "lane": "approvals",
+      "wall": 1874.162,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T15:41:40.083Z",
+      "log_id": "1792942527309-1077265-b0d38ee5",
+      "lane": "fs-concurrency",
+      "wall": 372.774,
+      "rc": 1,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T15:44:08.221Z",
+      "log_id": "1792942278467-1075782-fcba0df8",
+      "lane": "plugins",
+      "wall": 769.753,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:48:58.413Z",
+      "log_id": "1792942899184-1078616-7cbd60ae",
+      "lane": "approvals",
+      "wall": 439.229,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T15:56:13.655Z",
+      "log_id": "1792942980300-1082070-256d3648",
+      "lane": "plugins",
+      "wall": 793.355,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T16:03:17.168Z",
+      "log_id": "1792942473088-1076851-7e3e9851",
+      "lane": "b-runtime",
+      "wall": 1724.08,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T16:20:55.432Z",
+      "log_id": "1792944838446-1093422-efff58e2",
+      "lane": "providers-final-20261025b",
+      "wall": 416.985,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T16:27:38.653Z",
+      "log_id": "1792943777831-1085140-ebe8b74e",
+      "lane": "b-runtime",
+      "wall": 1880.822,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T16:27:58.561Z",
+      "log_id": "1792944212193-1087328-ae74f0c4",
+      "lane": "b-runtime",
+      "wall": 1466.368,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T16:32:29.837Z",
+      "log_id": "1792945603906-1096530-021ceb9a",
+      "lane": "providers-final-20261025b",
+      "wall": 345.931,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T16:45:07.169Z",
+      "log_id": "1792946067396-1098926-4161d740",
+      "lane": "plugins",
+      "wall": 639.772,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T16:52:12.020Z",
+      "log_id": "1792946302410-1100148-6def01a2",
+      "lane": "approvals",
+      "wall": 829.61,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:12:44.097Z",
+      "log_id": "1792946690060-1104599-17a1bbda",
+      "lane": "approvals",
+      "wall": 1674.037,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:21:43.297Z",
+      "log_id": "1792948549133-1116770-67553268",
+      "lane": "providers-final-20261025b",
+      "wall": 354.163,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:22:56.207Z",
+      "log_id": "1792948625650-1117243-c703e998",
+      "lane": "fs-concurrency",
+      "wall": 350.557,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:23:37.545Z",
+      "log_id": "1792948212233-1111807-8ba531f6",
+      "lane": "b-runtime",
+      "wall": 805.311,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:30:40.420Z",
+      "log_id": "1792949087219-1120069-c1abe2d9",
+      "lane": "fs-concurrency",
+      "wall": 353.2,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:31:43.456Z",
+      "log_id": "1792949064397-1119924-d21b843e",
+      "lane": "fs-concurrency",
+      "wall": 439.058,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:39:51.978Z",
+      "log_id": "1792949642388-1122118-79de8355",
+      "lane": "fs-concurrency",
+      "wall": 349.59,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T17:45:13.458Z",
+      "log_id": "1792949803141-1122893-7da585da",
+      "lane": "mac-live",
+      "wall": 510.317,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:02:11.063Z",
+      "log_id": "1792950479439-1128580-73549f18",
+      "lane": "mac-live",
+      "wall": 851.624,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:11:34.908Z",
+      "log_id": "1792950841551-1130089-c7212077",
+      "lane": "b-runtime",
+      "wall": 1053.357,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:13:48.550Z",
+      "log_id": "1792951214707-1131607-24689471",
+      "lane": "approvals",
+      "wall": 813.842,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:23:38.522Z",
+      "log_id": "1792952088790-1138068-347f0665",
+      "lane": "b-runtime",
+      "wall": 529.732,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:30:38.550Z",
+      "log_id": "1792952697738-1141243-6b8fa384",
+      "lane": "main-green",
+      "wall": 340.812,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:34:30.964Z",
+      "log_id": "1792951577080-1133202-2a4abb47",
+      "lane": "approvals",
+      "wall": 1693.884,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:45:20.739Z",
+      "log_id": "1792953607283-1146043-9abd268e",
+      "lane": "b-runtime",
+      "wall": 313.456,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:50:16.371Z",
+      "log_id": "1792953299488-1144167-90f542af",
+      "lane": "approvals",
+      "wall": 916.883,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:54:02.836Z",
+      "log_id": "1792953916403-1151605-b505ab18",
+      "lane": "main-green",
+      "wall": 526.433,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T18:57:25.701Z",
+      "log_id": "1792953975096-1152037-e8061e57",
+      "lane": "b-runtime",
+      "wall": 670.605,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:03:59.851Z",
+      "log_id": "1792954087820-1152835-9f0ea5f9",
+      "lane": "client-perf",
+      "wall": 952.031,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:04:44.644Z",
+      "log_id": "1792954071683-1152605-fdf9db11",
+      "lane": "approvals",
+      "wall": 1012.96,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:06:15.060Z",
+      "log_id": "1792954434874-1154433-0e5ffb6b",
+      "lane": "approvals",
+      "wall": 740.185,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:06:50.203Z",
+      "log_id": "1792954835983-1163342-4b3e31f9",
+      "lane": "plugins",
+      "wall": 374.219,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:07:14.322Z",
+      "log_id": "1792954496518-1154846-bc1fb1fa",
+      "lane": "main-green",
+      "wall": 737.804,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:07:48.087Z",
+      "log_id": "1792954081164-1152744-0416c622",
+      "lane": "plugins",
+      "wall": 1186.922,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T19:09:29.182Z",
+      "log_id": "1792954967392-1190104-b4f0d046",
+      "lane": "fs-concurrency",
+      "wall": 401.789,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:13:12.330Z",
+      "log_id": "1792955128745-1224121-bce61d18",
+      "lane": "plugins",
+      "wall": 463.584,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:15:29.016Z",
+      "log_id": "1792955118682-1220903-f75fc9cc",
+      "lane": "client-perf",
+      "wall": 610.334,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:21:34.751Z",
+      "log_id": "1792954274492-1153485-e814b5da",
+      "lane": "approvals",
+      "wall": 1820.258,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:22:34.600Z",
+      "log_id": "1792955694919-1240889-736332eb",
+      "lane": "fs-concurrency",
+      "wall": 459.681,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:22:48.141Z",
+      "log_id": "1792955798446-1241466-c0ea7038",
+      "lane": "b-runtime",
+      "wall": 369.694,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:28:21.805Z",
+      "log_id": "1792955890784-1241938-cd974691",
+      "lane": "providers-final-20261025b",
+      "wall": 611.02,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:37:08.235Z",
+      "log_id": "1792955678968-1240597-cacf7a2f",
+      "lane": "mac-live",
+      "wall": 1349.266,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:42:16.305Z",
+      "log_id": "1792956281658-1244828-a5de7e5e",
+      "lane": "b-runtime",
+      "wall": 1054.647,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:44:41.070Z",
+      "log_id": "1792957091041-1250345-d27e60e6",
+      "lane": "fs-concurrency",
+      "wall": 390.028,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:47:53.883Z",
+      "log_id": "1792957102378-1250615-f4b6e9a4",
+      "lane": "plugins",
+      "wall": 571.504,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:49:42.701Z",
+      "log_id": "1792957057687-1249984-cfda97d7",
+      "lane": "plugins",
+      "wall": 725.013,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T19:54:33.090Z",
+      "log_id": "1792956203297-1243995-4b147261",
+      "lane": "approvals",
+      "wall": 1869.793,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-25T19:54:34.897Z",
+      "log_id": "1792957655008-1257829-a4b33bb8",
+      "lane": "e2e-gate",
+      "wall": 419.888,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:05:17.449Z",
+      "log_id": "1792957706637-1258150-68341185",
+      "lane": "plugins",
+      "wall": 1010.812,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:07:45.359Z",
+      "log_id": "1792958220804-1260655-4ed2599d",
+      "lane": "plugins",
+      "wall": 644.554,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:14:55.303Z",
+      "log_id": "1792958965587-56473-2e6d826c",
+      "lane": "plugins",
+      "wall": 329.715,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:20:55.900Z",
+      "log_id": "1792959144832-60301-e9632346",
+      "lane": "providers-final-20261025b",
+      "wall": 511.068,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:21:45.809Z",
+      "log_id": "1792959299714-60920-15d6e061",
+      "lane": "fs-concurrency",
+      "wall": 406.095,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:22:50.570Z",
+      "log_id": "1792959371772-61237-0ac08978",
+      "lane": "plugins",
+      "wall": 398.797,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:25:18.311Z",
+      "log_id": "1792958891059-55994-c3ca4c80",
+      "lane": "b-runtime",
+      "wall": 1027.252,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:28:52.384Z",
+      "log_id": "1792959452520-61709-c7c84fc4",
+      "lane": "plugins",
+      "wall": 679.864,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:29:42.694Z",
+      "log_id": "1792954072935-1152643-8a511fd7",
+      "lane": "pr-gate",
+      "wall": 6109.758,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:34:11.772Z",
+      "log_id": "1792960010669-64933-edce17db",
+      "lane": "plugins",
+      "wall": 441.102,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:34:21.845Z",
+      "log_id": "1792960004519-64869-9983802b",
+      "lane": "providers-final-20261025b",
+      "wall": 457.325,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:35:38.856Z",
+      "log_id": "1792959961554-64638-1be40f25",
+      "lane": "b-runtime",
+      "wall": 577.302,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:40:18.091Z",
+      "log_id": "1792960321131-66694-5d4b4287",
+      "lane": "providers-final-20261025b",
+      "wall": 496.959,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:42:56.127Z",
+      "log_id": "1792960571854-68067-8be19475",
+      "lane": "fs-concurrency",
+      "wall": 404.273,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:43:29.178Z",
+      "log_id": "1792960637118-68560-2464c24b",
+      "lane": "b-runtime",
+      "wall": 372.059,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:52:20.142Z",
+      "log_id": "1792960160948-65987-2c16a4fa",
+      "lane": "mac-live",
+      "wall": 1379.193,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T20:55:44.746Z",
+      "log_id": "1792960637345-68578-227d673b",
+      "lane": "providers-final-20261025b",
+      "wall": 1107.401,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T21:03:40.444Z",
+      "log_id": "1792961726753-77474-41737f15",
+      "lane": "plugins",
+      "wall": 493.691,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T21:04:42.413Z",
+      "log_id": "1792961060831-74391-adc54ca0",
+      "lane": "b-runtime",
+      "wall": 1221.582,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T21:06:12.717Z",
+      "log_id": "1792961942249-78327-f64f7341",
+      "lane": "providers-final-20261025b",
+      "wall": 430.468,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T21:17:10.019Z",
+      "log_id": "1792962625544-81911-f46befaf",
+      "lane": "providers-final-20261025b",
+      "wall": 404.475,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T21:21:14.051Z",
+      "log_id": "1792962906465-86111-c704f0eb",
+      "lane": "fs-concurrency",
+      "wall": 367.586,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T21:23:33.696Z",
+      "log_id": "1792962984816-86724-e3f23420",
+      "lane": "b-runtime",
+      "wall": 428.88,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T21:26:06.495Z",
+      "log_id": "1792963094133-87144-b4366fca",
+      "lane": "providers-final-20261025b",
+      "wall": 472.362,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:23:15.447Z",
+      "log_id": "1792970265672-108352-a35f5dad",
+      "lane": "fs-concurrency",
+      "wall": 329.774,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:24:10.169Z",
+      "log_id": "1792970093863-106860-e599adc1",
+      "lane": "main-green",
+      "wall": 556.305,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:27:12.867Z",
+      "log_id": "1792970163762-107518-28161435",
+      "lane": "plugins",
+      "wall": 669.105,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:32:56.608Z",
+      "log_id": "1792970627452-111161-df5e9b65",
+      "lane": "approvals",
+      "wall": 549.156,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:35:27.948Z",
+      "log_id": "1792970736059-112054-fee7e46b",
+      "lane": "b-runtime",
+      "wall": 591.889,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:41:23.105Z",
+      "log_id": "1792970278281-108505-13d4890c",
+      "lane": "mac-live",
+      "wall": 1404.824,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:41:31.273Z",
+      "log_id": "1792971320949-115260-318897f6",
+      "lane": "providers-final-20261025b",
+      "wall": 370.324,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:44:57.999Z",
+      "log_id": "1792971395434-116136-329ebd62",
+      "lane": "fs-concurrency",
+      "wall": 502.565,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:46:39.113Z",
+      "log_id": "1792971389983-116044-9e51fd94",
+      "lane": "plugins",
+      "wall": 609.129,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:46:44.707Z",
+      "log_id": "1792971669626-117552-0ffe34bc",
+      "lane": "plugins",
+      "wall": 335.081,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:47:05.129Z",
+      "log_id": "1792971706459-117967-eb714f92",
+      "lane": "approvals",
+      "wall": 318.67,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:50:12.157Z",
+      "log_id": "1792970735734-112014-4d7424dd",
+      "lane": "client-perf",
+      "wall": 1476.422,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-25T23:53:15.444Z",
+      "log_id": "1792971924139-122975-8541aee5",
+      "lane": "providers-final-20261025b",
+      "wall": 471.304,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:00:38.454Z",
+      "log_id": "1792972310914-125351-b909e3a4",
+      "lane": "main-green",
+      "wall": 527.54,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:03:29.954Z",
+      "log_id": "1792972534759-126645-cc0f02aa",
+      "lane": "approvals",
+      "wall": 475.194,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:06:43.057Z",
+      "log_id": "1792971901026-122657-0b952e47",
+      "lane": "plugins",
+      "wall": 1302.03,
+      "rc": 4,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:11:47.107Z",
+      "log_id": "1792973180479-129361-a2107d65",
+      "lane": "fs-concurrency",
+      "wall": 326.627,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:11:50.248Z",
+      "log_id": "1792973054644-128885-e00f5b0e",
+      "lane": "approvals",
+      "wall": 455.603,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:11:52.295Z",
+      "log_id": "1792972177380-124458-67ea24a9",
+      "lane": "b-runtime",
+      "wall": 1334.915,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:12:12.917Z",
+      "log_id": "1792973062546-128968-1ff762df",
+      "lane": "providers-final-20261025b",
+      "wall": 470.371,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:12:24.533Z",
+      "log_id": "1792973167517-129273-a2647030",
+      "lane": "win-qual",
+      "wall": 377.016,
+      "rc": 2,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:16:15.840Z",
+      "log_id": "1792973241125-129750-dc8faf3a",
+      "lane": "main-green",
+      "wall": 534.714,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:20:29.991Z",
+      "log_id": "1792973242794-129793-e69ae261",
+      "lane": "providers-final-20261025b",
+      "wall": 787.197,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:20:33.664Z",
+      "log_id": "1792972196370-124584-74f9e378",
+      "lane": "tool-latency-rebased",
+      "wall": 1837.293,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-26T00:21:48.102Z",
+      "log_id": "1792973707605-152196-8f34189c",
+      "lane": "fs-concurrency",
+      "wall": 400.497,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:25:47.444Z",
+      "log_id": "1792972516181-126549-311fe7ac",
+      "lane": "main-green",
+      "wall": 1831.262,
+      "rc": 124,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-26T00:30:40.796Z",
+      "log_id": "1792974256264-231784-16602ade",
+      "lane": "fs-concurrency",
+      "wall": 384.532,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:34:19.778Z",
+      "log_id": "1792974406413-241799-f4f94b2f",
+      "lane": "providers-final-20261025b",
+      "wall": 453.365,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:40:24.363Z",
+      "log_id": "1792974911491-244516-d82204c8",
+      "lane": "main-green-combined-authentication",
+      "wall": 312.872,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:43:12.325Z",
+      "log_id": "1792974957376-244967-9335d7c9",
+      "lane": "providers-final-20261025b",
+      "wall": 434.948,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:43:48.705Z",
+      "log_id": "1792974933338-244700-584dfbf8",
+      "lane": "fs-concurrency",
+      "wall": 495.366,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:44:47.946Z",
+      "log_id": "1792974911336-244498-be272d47",
+      "lane": "main-green",
+      "wall": 576.61,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:46:31.722Z",
+      "log_id": "1792975062154-245658-e579df59",
+      "lane": "approvals",
+      "wall": 529.567,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:46:32.518Z",
+      "log_id": "1792974831982-243943-210d192b",
+      "lane": "approvals",
+      "wall": 760.536,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:48:19.988Z",
+      "log_id": "1792975284728-246769-86cb155a",
+      "lane": "plugins",
+      "wall": 415.26,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:52:22.734Z",
+      "log_id": "1792975642071-253445-61f965cd",
+      "lane": "b-authority-p1-security",
+      "wall": 300.662,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:52:40.546Z",
+      "log_id": "1792975237373-246496-55103e31",
+      "lane": "approvals",
+      "wall": 723.173,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:54:28.056Z",
+      "log_id": "1792975632722-253352-300bcd15",
+      "lane": "b-runtime",
+      "wall": 435.333,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:56:09.864Z",
+      "log_id": "1792975592812-252957-b4c68d2d",
+      "lane": "approvals",
+      "wall": 577.052,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:10:05.740Z",
+      "log_id": "1792976400146-258163-612f48ee",
+      "lane": "approvals",
+      "wall": 605.594,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:10:49.802Z",
+      "log_id": "1792976618175-259703-251f7379",
+      "lane": "b-runtime",
+      "wall": 431.627,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:12:04.642Z",
+      "log_id": "1792975950533-255072-a777db04",
+      "lane": "plugins",
+      "wall": 1174.109,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:14:10.564Z",
+      "log_id": "1792972899589-128167-8108cb20",
+      "lane": "pr-gate",
+      "wall": 4350.975,
+      "rc": 224,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-26T01:15:00.392Z",
+      "log_id": "1792976674447-260239-6132f62d",
+      "lane": "approvals",
+      "wall": 625.944,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:16:26.213Z",
+      "log_id": "1792976471254-258665-62b0544a",
+      "lane": "providers-final-20261025b",
+      "wall": 914.958,
+      "rc": 1,
+      "termination": "command"
+    }
+  ],
+  "limits": [
+    "Terminal nonzero includes intended negative controls; root causes and discarded share require matching case oracles. Job wall is wrapper elapsed, not CPU or exclusive occupancy."
+  ]
+}

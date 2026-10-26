@@ -1,0 +1,199 @@
+{
+  "sources": {
+    "bb-job.py": {
+      "sha256": "b79a9b3aafe920a04998e484493ceed4067727ca54791cf257e9f016a5d6b53b",
+      "policy_lines": [
+        {
+          "line": 166,
+          "text": "def server_identity(endpoint):"
+        },
+        {
+          "line": 177,
+          "text": "def stop_server(server):"
+        },
+        {
+          "line": 182,
+          "text": "if ('SCCACHE_SERVER_UDS='+server['endpoint']).encode() not in env: return"
+        },
+        {
+          "line": 195,
+          "text": "env.update(SCCACHE_SERVER_UDS=str(endpoint),SCCACHE_DIR='/mnt/bb/sccache',SCCACHE_CACHE_SIZE='400G',SCCACHE_IDLE_TIMEOUT='0')"
+        },
+        {
+          "line": 199,
+          "text": "r=subprocess.run([SCCACHE,'--start-server'],env=env,capture_output=True,text=True,timeout=15)"
+        },
+        {
+          "line": 206,
+          "text": "try: return server_identity(endpoint),'ready'"
+        },
+        {
+          "line": 247,
+          "text": "peer=server_identity(alias)"
+        },
+        {
+          "line": 251,
+          "text": "env={**env,'SCCACHE_SERVER_UDS':str(alias)},capture_output=True,text=True,timeout=5)"
+        },
+        {
+          "line": 254,
+          "text": "def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):"
+        }
+      ]
+    },
+    "sccache-rustc": {
+      "sha256": "0cc0f42080c6059cb125264b3554db3810d75a80e6884c42e6664cfe9a2cf192",
+      "policy_lines": [
+        {
+          "line": 4,
+          "text": "export SCCACHE_DIR=/mnt/bb/sccache SCCACHE_CACHE_SIZE=400G"
+        },
+        {
+          "line": 5,
+          "text": "if [ -n \"${SCCACHE_SERVER_UDS:-}\" ]; then"
+        }
+      ]
+    }
+  },
+  "sccache_processes": 56,
+  "process_states": {
+    "Z": 14,
+    "S": 42
+  },
+  "process_parent_counts": {
+    "90857": 2,
+    "111468": 2,
+    "111460": 2,
+    "128785": 2,
+    "158841": 2,
+    "174325": 2,
+    "264507": 2,
+    "161673": 1,
+    "421192": 2,
+    "425435": 1,
+    "267634": 6,
+    "267653": 2,
+    "460862": 1,
+    "483739": 1,
+    "485078": 3,
+    "356230": 2,
+    "495753": 7,
+    "480010": 1,
+    "493183": 1,
+    "1180071": 2,
+    "1": 2,
+    "2373598": 2,
+    "3401902": 2,
+    "3883307": 2,
+    "4004798": 2,
+    "4082067": 2
+  },
+  "process_rss_kib": 557668,
+  "process_threads": 6655,
+  "listening_sockets": [
+    {
+      "path": "/mnt/bb/jobs/job-ixcoow_6/sccache.sock",
+      "owners": [
+        111793
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-wl1x_781/sccache.sock",
+      "owners": [
+        111792
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-gaj7e8ao/sccache.sock",
+      "owners": [
+        159319
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-gen1b3jv/sccache.sock",
+      "owners": [
+        2375957
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-u14o3jt9/sccache.sock",
+      "owners": [
+        174962
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-qo3zsnd8/sccache.sock",
+      "owners": [
+        264633
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-55fighke/sccache.sock",
+      "owners": [
+        90936
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-_eqz9y_f/sccache.sock",
+      "owners": [
+        2330406
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-t_b4lqav/sccache.sock",
+      "owners": [
+        3402681
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-8l4jovwd/sccache.sock",
+      "owners": [
+        4082120
+      ]
+    },
+    {
+      "path": "/tmp/sccache.sock",
+      "owners": [
+        1180205
+      ]
+    },
+    {
+      "path": "/tmp/sccache.sock",
+      "owners": [
+        128909
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-hudr0ht5/sccache.sock",
+      "owners": [
+        3883700
+      ]
+    },
+    {
+      "path": "/mnt/bb/jobs/job-uay37su4/sccache.sock",
+      "owners": [
+        4005304
+      ]
+    },
+    {
+      "path": "/tmp/sccache.sock",
+      "owners": [
+        421517
+      ]
+    }
+  ],
+  "disks": {
+    "/": {
+      "free_percent": 19.84562862044294,
+      "free_bytes": 20418789376
+    },
+    "/mnt/bb": {
+      "free_percent": 23.85158367992476,
+      "free_bytes": 393184325632
+    }
+  },
+  "note": "Processes are not equivalent to servers; listener owners may share descriptors. RSS is a point aggregate, not exclusive memory. No recursive du or cache server command.",
+  "author": "Codex",
+  "at": "2026-10-26T01:19:29.122449+00:00",
+  "bb2_jobs_started": 0
+}

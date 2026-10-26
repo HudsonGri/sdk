@@ -1,0 +1,116 @@
+{
+  "author": "Codex",
+  "cycle": 233,
+  "at": "2026-10-26T01:21:20.095340+00:00",
+  "anomalies": [
+    {
+      "kind": "LATE_FAILURE",
+      "key": "1792976400146-258163-612f48ee",
+      "evidence": "lane=approvals job=1792976400146-258163-612f48ee wrapper=605.594s rc=1; original-dispatch-reconciliation exit101 after core-build413.022s; semantic cause requires retained inner log; admission detectability unknown",
+      "suspected_cause": "source or proof-custody diagnosis required from owning lane; retained negative controls may intentionally return nonzero, not all wall is discarded"
+    },
+    {
+      "kind": "LATE_FAILURE",
+      "key": "1792976618175-259703-251f7379",
+      "evidence": "lane=b-runtime job=1792976618175-259703-251f7379 wrapper=431.627s rc=1; selected-source policy test selected_import_inspection_requires_the_original_live_owner_and_selection fails; semantic input admission detectability unknown",
+      "suspected_cause": "source or proof-custody diagnosis required from owning lane; retained negative controls may intentionally return nonzero, not all wall is discarded"
+    },
+    {
+      "kind": "LATE_FAILURE",
+      "key": "1792975950533-255072-a777db04",
+      "evidence": "lane=plugins job=1792975950533-255072-a777db04 wrapper=1174.109s rc=1; normal-and-scale-shipping exit1; outer log lacks inner failing step; admission detectability unknown",
+      "suspected_cause": "source or proof-custody diagnosis required from owning lane; retained negative controls may intentionally return nonzero, not all wall is discarded"
+    },
+    {
+      "kind": "LATE_FAILURE",
+      "key": "1792972899589-128167-8108cb20",
+      "evidence": "lane=pr-gate job=1792972899589-128167-8108cb20 wrapper=4350.975s rc=224; GATE_RUNNER_INFRA Clippy stream footer disagrees with executor; validate existing stream/step custody before full replay; catchability at admission unproved",
+      "suspected_cause": "source or proof-custody diagnosis required from owning lane; retained negative controls may intentionally return nonzero, not all wall is discarded"
+    },
+    {
+      "kind": "LATE_FAILURE",
+      "key": "1792976674447-260239-6132f62d",
+      "evidence": "lane=approvals job=1792976674447-260239-6132f62d wrapper=625.944s rc=1; scoped-clippy packages/fuzz compile core error; preserve exact diagnostic/input tree, no rerun before source diagnosis; admission detectability unknown",
+      "suspected_cause": "source or proof-custody diagnosis required from owning lane; retained negative controls may intentionally return nonzero, not all wall is discarded"
+    },
+    {
+      "kind": "LATE_FAILURE",
+      "key": "1792976471254-258665-62b0544a",
+      "evidence": "lane=providers-final-20261025b job=1792976471254-258665-62b0544a wrapper=914.958s rc=1; checkpoints filter rc101 but nonzero=false in shared integration proof; check exact executable/filter admission before broad compile, catchability unproved",
+      "suspected_cause": "source or proof-custody diagnosis required from owning lane; retained negative controls may intentionally return nonzero, not all wall is discarded"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "gate-speed:gate-speed-20261026T005542Z.md",
+      "evidence": "lane=gate-speed steer=gate-speed-20261026T005542Z.md sent=2026-10-26T00:59:14.6471778Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "main-green:main-green-20261026T005542Z.md",
+      "evidence": "lane=main-green steer=main-green-20261026T005542Z.md sent=2026-10-26T00:59:15.1764079Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "tool-latency:tool-latency-20261026T005542Z.md",
+      "evidence": "lane=tool-latency steer=tool-latency-20261026T005542Z.md sent=2026-10-26T00:59:15.8233497Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "plugins:plugins-20261026T004421Z.md",
+      "evidence": "lane=plugins steer=plugins-20261026T004421Z.md sent=2026-10-26T00:59:16.583143Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "gate-speed:queue-recovered-20261026T010200Z.md",
+      "evidence": "lane=gate-speed steer=queue-recovered-20261026T010200Z.md sent=2026-10-26T01:07:33.1550340Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "main-green:queue-recovered-20261026T010200Z.md",
+      "evidence": "lane=main-green steer=queue-recovered-20261026T010200Z.md sent=2026-10-26T01:07:34.0290063Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "streams:streams-schedule-20261026T005542Z.md",
+      "evidence": "lane=streams steer=streams-schedule-20261026T005542Z.md sent=2026-10-26T01:07:34.5278638Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "b-runtime:b-runtime-schedule-20261026T005542Z.md",
+      "evidence": "lane=b-runtime steer=b-runtime-schedule-20261026T005542Z.md sent=2026-10-26T01:07:35.4307148Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "fs-concurrency:fs-concurrency-schedule-20261026T005542Z.md",
+      "evidence": "lane=fs-concurrency steer=fs-concurrency-schedule-20261026T005542Z.md sent=2026-10-26T01:07:36.8339789Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "b-authority:b-authority-schedule-20261026T005542Z.md",
+      "evidence": "lane=b-authority steer=b-authority-schedule-20261026T005542Z.md sent=2026-10-26T01:07:38.3677171Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "STEER_UNAPPLIED",
+      "key": "client-perf:client-perf-schedule-20261026T005542Z.md",
+      "evidence": "lane=client-perf steer=client-perf-schedule-20261026T005542Z.md sent=2026-10-26T01:07:40.2959472Z; INDEX has no verified implementation marker at cycle233; ownership transfers to rx-efficiency via handover",
+      "suspected_cause": "canonical custody was confirmed but implementation/merge evidence has not arrived; relay is not application, inspect owner head/proof before duplicate work"
+    },
+    {
+      "kind": "CACHE_POLICY",
+      "key": "400G-233",
+      "evidence": "Passive01:19:29Z SDK launch sources still400G at bb-job.py:195 and sccache-rustc:4;15listeners/56processes are not server count",
+      "suspected_cause": "single qualified50G launch policy and actual-server refusal still unverified"
+    }
+  ],
+  "alert_lines_appended": 18
+}

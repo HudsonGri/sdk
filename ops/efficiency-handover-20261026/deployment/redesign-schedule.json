@@ -1,0 +1,278 @@
+{
+  "author": "Codex",
+  "as_of": "2026-10-26T01:17:54.197315Z",
+  "source": "Q:\\lanes\\design-audit\\REDESIGN.md",
+  "source_sha256": "b488f211f3b0d2cdb8be25aac0ab57b8fc28afddd3de121863bdb6b735b37408",
+  "observed_merges_per_day": 4,
+  "service_hours_per_merge": 6.0,
+  "critical_path": "exact-main input closure + gate-speed1509 -> Wave1 barrier (longest owner ETA unknown) -> Wave2 -> full release qualification/deletion lane",
+  "top_blocker": "Shared pre-dispatch input-closure admission and verified queue drain; owner readiness/PR identities not yet supplied.",
+  "nodes": [
+    {
+      "id": "SEC",
+      "lane": "b-authority",
+      "scope": "P1 security",
+      "depends_on": [],
+      "state": "owner activity unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1510,
+          "draft": null,
+          "title": "Add shared protected-secrets contract, clients and CLI"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-26T13:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "STREAMS",
+      "lane": "streams",
+      "scope": "A1+A2+A3",
+      "depends_on": [],
+      "state": "owner activity unverified",
+      "api_sketch_present": [
+        "streams"
+      ],
+      "pr": null,
+      "legacy_open_prs": [],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-26T19:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "ACTORS",
+      "lane": "b-runtime",
+      "scope": "A4",
+      "depends_on": [],
+      "state": "owner activity unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1512,
+          "draft": null,
+          "title": "Preserve filesystem error codes and explicit deployment secret selections"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-27T01:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "FS",
+      "lane": "fs-concurrency",
+      "scope": "A5",
+      "depends_on": [],
+      "state": "owner activity unverified",
+      "api_sketch_present": [
+        "fs-concurrency"
+      ],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1492,
+          "draft": null,
+          "title": "Batch independent filesystem commits through one shared volume publication path"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-27T07:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "AUTH",
+      "lane": "b-authority",
+      "scope": "A6",
+      "depends_on": [],
+      "state": "owner activity unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1510,
+          "draft": null,
+          "title": "Add shared protected-secrets contract, clients and CLI"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-27T13:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "WIRE",
+      "lane": "client-perf",
+      "scope": "A7",
+      "depends_on": [],
+      "state": "owners active; readiness unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1508,
+          "draft": null,
+          "title": "Complete P4 client rendering and native ownership (supersedes #1505)"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-27T19:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "AGENT",
+      "lane": "sessions+b-runtime",
+      "scope": "wave2 agent subtree/inbox",
+      "depends_on": [
+        "STREAMS",
+        "ACTORS",
+        "FS",
+        "AUTH",
+        "WIRE"
+      ],
+      "state": "owner activity unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1512,
+          "draft": null,
+          "title": "Preserve filesystem error codes and explicit deployment secret selections"
+        },
+        {
+          "pr": 1500,
+          "draft": null,
+          "title": "Complete shared lazy skill reads and sessions acceptance"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-28T01:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "APPROVALS",
+      "lane": "approvals",
+      "scope": "wave2 file approvals",
+      "depends_on": [
+        "STREAMS",
+        "ACTORS",
+        "FS",
+        "AUTH",
+        "WIRE"
+      ],
+      "state": "owners active; readiness unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1511,
+          "draft": null,
+          "title": "Complete authenticated approvals and shared checkout publication"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-28T07:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "PLUGINS",
+      "lane": "plugins",
+      "scope": "wave2 plugins/executor",
+      "depends_on": [
+        "STREAMS",
+        "ACTORS",
+        "FS",
+        "AUTH",
+        "WIRE"
+      ],
+      "state": "owners active; readiness unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1507,
+          "draft": null,
+          "title": "Thin native host plugins over canonical workspace and session APIs"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-28T13:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    },
+    {
+      "id": "CLIENTS",
+      "lane": "client-perf",
+      "scope": "wave2 GraphCoder/client deletions",
+      "depends_on": [
+        "STREAMS",
+        "ACTORS",
+        "FS",
+        "AUTH",
+        "WIRE"
+      ],
+      "state": "owners active; readiness unverified",
+      "api_sketch_present": [],
+      "pr": null,
+      "legacy_open_prs": [
+        {
+          "pr": 1508,
+          "draft": null,
+          "title": "Complete P4 client rendering and native ownership (supersedes #1505)"
+        }
+      ],
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-28T19:17:54.197315Z",
+      "top_blocker": "Owner must identify source PR, proof-ready checkpoint and remaining dependency work; legacy PRs are not assumed redesign delivery."
+    }
+  ],
+  "queued_prs": [
+    1509,
+    1495,
+    1504,
+    1508,
+    1512
+  ],
+  "queue_forecasts": [
+    {
+      "pr": 1509,
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-26T07:17:54.197315Z",
+      "top_blocker": "Full frozen-head gate/review proof and queue custody; inspect current held/baseline state."
+    },
+    {
+      "pr": 1495,
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-26T13:17:54.197315Z",
+      "top_blocker": "Full frozen-head gate/review proof and queue custody; inspect current held/baseline state."
+    },
+    {
+      "pr": 1504,
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-26T19:17:54.197315Z",
+      "top_blocker": "Full frozen-head gate/review proof and queue custody; inspect current held/baseline state."
+    },
+    {
+      "pr": 1508,
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-27T01:17:54.197315Z",
+      "top_blocker": "Full frozen-head gate/review proof and queue custody; inspect current held/baseline state."
+    },
+    {
+      "pr": 1512,
+      "forecast_merge": null,
+      "conditional_service_only_floor": "2026-10-27T07:17:54.197315Z",
+      "top_blocker": "Full frozen-head gate/review proof and queue custody; inspect current held/baseline state."
+    }
+  ],
+  "conditional_total_service_only_hours": 66.0,
+  "forecast_completion": null,
+  "limits": [
+    "No owner completion ETAs yet: unconditional merge dates and final delivery date are unknown.",
+    "Date floors assume proof-ready immediately, unchanged observed throughput and one gate prerequisite plus ten redesign PRs; coding, legacy predecessors, blocked reviews, security scope splits and final acceptance can add time.",
+    "Wave1 APIs are parallel as approved; Wave2 uses the full Wave1 barrier conservatively until owners prove narrower dependencies.",
+    "Legacy open PR ownership is branch-name metadata, not proof those PRs implement the new redesign scope."
+  ],
+  "cycle": 233,
+  "schedule_slips": []
+}

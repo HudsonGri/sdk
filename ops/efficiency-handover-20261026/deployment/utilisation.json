@@ -1,0 +1,18 @@
+{
+  "sample_seconds": 1.0006839479901828,
+  "cpu_busy_percent": 59.5774049692079,
+  "cpu_iowait_percent": 1.30600976852835,
+  "logical_cpus": 192,
+  "load": [
+    140.3583984375,
+    122.001953125,
+    121.55078125
+  ],
+  "mem_available_kib": 275662020,
+  "pressure": {
+    "cpu": "some avg10=2.74 avg60=5.36 avg300=4.10 total=9086359973\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    "memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=77570130\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=59850844",
+    "io": "some avg10=0.71 avg60=0.52 avg300=0.87 total=1755711650\nfull avg10=0.35 avg60=0.28 avg300=0.60 total=1087740880"
+  },
+  "at": "2026-10-26T01:19:30.889507+00:00"
+}

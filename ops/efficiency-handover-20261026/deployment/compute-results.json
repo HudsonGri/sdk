@@ -1,0 +1,575 @@
+{
+  "author": "Codex",
+  "at": "2026-10-23T21:58:02.252659+00:00",
+  "proof": [
+    {
+      "label": "baseline-0",
+      "incremental": 1,
+      "wall_seconds": 0.7183628960046917,
+      "waited_children_cpu_seconds": 0.6156919999999999,
+      "rc": 0,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\n    Finished `dev` profile [optimized] target(s) in 0.69s\n",
+      "log": "cache-before.log",
+      "hits": 0,
+      "misses": 0,
+      "compiler_executions": 0
+    },
+    {
+      "label": "baseline-1",
+      "incremental": 1,
+      "wall_seconds": 0.6553807220043382,
+      "waited_children_cpu_seconds": 0.660985,
+      "rc": 0,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\n    Finished `dev` profile [optimized] target(s) in 0.62s\n",
+      "log": "cache-before.log",
+      "hits": 0,
+      "misses": 0,
+      "compiler_executions": 0
+    },
+    {
+      "label": "cache-0",
+      "incremental": 0,
+      "wall_seconds": 0.8851874929969199,
+      "waited_children_cpu_seconds": 0.09419999999999984,
+      "rc": 0,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\n    Finished `dev` profile [optimized] target(s) in 0.85s\n",
+      "log": "cache-before.log",
+      "hits": 0,
+      "misses": 1,
+      "compiler_executions": 1
+    },
+    {
+      "label": "cache-1",
+      "incremental": 0,
+      "wall_seconds": 0.15762613600236364,
+      "waited_children_cpu_seconds": 0.08733700000000022,
+      "rc": 0,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\n    Finished `dev` profile [optimized] target(s) in 0.12s\n",
+      "log": "cache-before.log",
+      "hits": 1,
+      "misses": 0,
+      "compiler_executions": 0
+    },
+    {
+      "label": "deployed-0",
+      "incremental": null,
+      "wall_seconds": 0.45834068799740635,
+      "waited_children_cpu_seconds": 0.096238,
+      "rc": 0,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\n    Finished `dev` profile [optimized] target(s) in 0.42s\n",
+      "log": "cache-after-qualified.log",
+      "hits": 1,
+      "misses": 0,
+      "compiler_executions": 0
+    },
+    {
+      "label": "deployed-1",
+      "incremental": null,
+      "wall_seconds": 0.15577346700592898,
+      "waited_children_cpu_seconds": 0.09199800000000002,
+      "rc": 0,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\n    Finished `dev` profile [optimized] target(s) in 0.12s\n",
+      "log": "cache-after-qualified.log",
+      "hits": 1,
+      "misses": 0,
+      "compiler_executions": 0
+    },
+    {
+      "label": "feature-negative",
+      "incremental": null,
+      "wall_seconds": 0.1305958940065466,
+      "waited_children_cpu_seconds": 0.09099499999999999,
+      "rc": 101,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\nwarning: ignoring -C extra-filename flag due to -o flag\n\nerror: negative feature control\n    --> src/lib.rs:2401:26\n     |\n2401 | #[cfg(feature=\"broken\")] compile_error!(\"negative feature control\");\n     |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `efficiency-cache-proof-20261023` (lib) generated 1 warning\nerror: could not compile `efficiency-cache-proof-20261023` (lib) due to 1 previous error; 1 warning emitted\n",
+      "log": "cache-after-qualified.log",
+      "hits": 0,
+      "misses": 0,
+      "compiler_executions": 0
+    },
+    {
+      "label": "source-negative",
+      "incremental": null,
+      "wall_seconds": 0.1275312869984191,
+      "waited_children_cpu_seconds": 0.09153300000000003,
+      "rc": 101,
+      "cargo_tail": "   Compiling efficiency-cache-proof-20261023 v0.0.1 (/work/src/.bb-efficiency-cache-fixture)\nwarning: ignoring -C extra-filename flag due to -o flag\n\nerror: changed source negative control\n    --> src/lib.rs:2404:1\n     |\n2404 | compile_error!(\"changed source negative control\");\n     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n\nwarning: `efficiency-cache-proof-20261023` (lib) generated 1 warning\nerror: could not compile `efficiency-cache-proof-20261023` (lib) due to 1 previous error; 1 warning emitted\n",
+      "log": "cache-after-qualified.log",
+      "hits": 0,
+      "misses": 0,
+      "compiler_executions": 0
+    }
+  ],
+  "baseline_mean_seconds": 0.6868718090045149,
+  "cross_job_mean_seconds": 0.30705707750166766,
+  "cross_job_multiplier": 2.2369515615571,
+  "steady_repeat_multiplier": 4.207267993716757,
+  "duplicate_versions": [
+    {
+      "crate": "syn",
+      "versions": [
+        "2.0.119",
+        "3.0.6"
+      ],
+      "lockfile_dependency_edges": 77
+    },
+    {
+      "crate": "windows-sys",
+      "versions": [
+        "0.52.0",
+        "0.59.0",
+        "0.60.2",
+        "0.61.2"
+      ],
+      "lockfile_dependency_edges": 38
+    },
+    {
+      "crate": "thiserror",
+      "versions": [
+        "1.0.69",
+        "2.0.21"
+      ],
+      "lockfile_dependency_edges": 37
+    },
+    {
+      "crate": "bitflags",
+      "versions": [
+        "1.3.2",
+        "2.13.2"
+      ],
+      "lockfile_dependency_edges": 29
+    },
+    {
+      "crate": "rustix",
+      "versions": [
+        "0.38.44",
+        "1.1.5"
+      ],
+      "lockfile_dependency_edges": 22
+    },
+    {
+      "crate": "base64",
+      "versions": [
+        "0.22.1",
+        "0.23.1"
+      ],
+      "lockfile_dependency_edges": 20
+    },
+    {
+      "crate": "getrandom",
+      "versions": [
+        "0.2.17",
+        "0.3.4",
+        "0.4.3"
+      ],
+      "lockfile_dependency_edges": 18
+    },
+    {
+      "crate": "sha2",
+      "versions": [
+        "0.10.9",
+        "0.11.0"
+      ],
+      "lockfile_dependency_edges": 18
+    },
+    {
+      "crate": "reqwest",
+      "versions": [
+        "0.12.28",
+        "0.13.5"
+      ],
+      "lockfile_dependency_edges": 14
+    },
+    {
+      "crate": "rand_core",
+      "versions": [
+        "0.10.1",
+        "0.6.4",
+        "0.9.5"
+      ],
+      "lockfile_dependency_edges": 13
+    },
+    {
+      "crate": "hashbrown",
+      "versions": [
+        "0.15.5",
+        "0.16.1",
+        "0.17.1"
+      ],
+      "lockfile_dependency_edges": 10
+    },
+    {
+      "crate": "digest",
+      "versions": [
+        "0.10.7",
+        "0.11.3"
+      ],
+      "lockfile_dependency_edges": 9
+    },
+    {
+      "crate": "cpufeatures",
+      "versions": [
+        "0.2.17",
+        "0.3.1"
+      ],
+      "lockfile_dependency_edges": 8
+    },
+    {
+      "crate": "rand",
+      "versions": [
+        "0.10.3",
+        "0.8.8",
+        "0.9.5"
+      ],
+      "lockfile_dependency_edges": 7
+    },
+    {
+      "crate": "nom",
+      "versions": [
+        "7.1.3",
+        "8.0.0"
+      ],
+      "lockfile_dependency_edges": 6
+    },
+    {
+      "crate": "hmac",
+      "versions": [
+        "0.12.1",
+        "0.13.0"
+      ],
+      "lockfile_dependency_edges": 5
+    },
+    {
+      "crate": "io-lifetimes",
+      "versions": [
+        "2.0.4",
+        "3.0.1"
+      ],
+      "lockfile_dependency_edges": 5
+    },
+    {
+      "crate": "sealed",
+      "versions": [
+        "0.6.0",
+        "0.7.0"
+      ],
+      "lockfile_dependency_edges": 5
+    },
+    {
+      "crate": "sha1",
+      "versions": [
+        "0.10.7",
+        "0.11.0"
+      ],
+      "lockfile_dependency_edges": 5
+    },
+    {
+      "crate": "signal-hook",
+      "versions": [
+        "0.3.18",
+        "0.4.5"
+      ],
+      "lockfile_dependency_edges": 5
+    },
+    {
+      "crate": "macroific",
+      "versions": [
+        "2.0.0",
+        "3.1.0"
+      ],
+      "lockfile_dependency_edges": 4
+    },
+    {
+      "crate": "macroific_attr_parse",
+      "versions": [
+        "2.0.0",
+        "3.1.0"
+      ],
+      "lockfile_dependency_edges": 4
+    },
+    {
+      "crate": "macroific_core",
+      "versions": [
+        "2.0.0",
+        "3.1.0"
+      ],
+      "lockfile_dependency_edges": 4
+    },
+    {
+      "crate": "nix",
+      "versions": [
+        "0.29.0",
+        "0.31.3"
+      ],
+      "lockfile_dependency_edges": 4
+    },
+    {
+      "crate": "prettyplease",
+      "versions": [
+        "0.2.37",
+        "0.3.0"
+      ],
+      "lockfile_dependency_edges": 4
+    },
+    {
+      "crate": "security-framework",
+      "versions": [
+        "2.11.1",
+        "3.7.0"
+      ],
+      "lockfile_dependency_edges": 4
+    },
+    {
+      "crate": "wasm-streams",
+      "versions": [
+        "0.4.2",
+        "0.5.0",
+        "0.7.0"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "convert_case",
+      "versions": [
+        "0.10.0",
+        "0.12.0"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "core-foundation",
+      "versions": [
+        "0.10.1",
+        "0.9.4"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "crypto-common",
+      "versions": [
+        "0.1.7",
+        "0.2.2"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "foldhash",
+      "versions": [
+        "0.1.5",
+        "0.2.0"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "linux-raw-sys",
+      "versions": [
+        "0.12.1",
+        "0.4.15"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "rand_chacha",
+      "versions": [
+        "0.3.1",
+        "0.9.0"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "synstructure",
+      "versions": [
+        "0.13.2",
+        "0.14.0"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "windows-targets",
+      "versions": [
+        "0.52.6",
+        "0.53.5"
+      ],
+      "lockfile_dependency_edges": 3
+    },
+    {
+      "crate": "bit-vec",
+      "versions": [
+        "0.8.0",
+        "0.9.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "block-buffer",
+      "versions": [
+        "0.10.4",
+        "0.12.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "crossterm",
+      "versions": [
+        "0.28.1",
+        "0.29.0"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "fancy-regex",
+      "versions": [
+        "0.16.2",
+        "0.19.2"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "macroific_macro",
+      "versions": [
+        "2.0.0",
+        "3.1.0"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "r-efi",
+      "versions": [
+        "5.3.0",
+        "6.0.0"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "rand_pcg",
+      "versions": [
+        "0.10.2",
+        "0.3.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "serde_derive_internals",
+      "versions": [
+        "0.29.1",
+        "0.30.0"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "spin",
+      "versions": [
+        "0.10.1",
+        "0.9.9"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "thiserror-impl",
+      "versions": [
+        "1.0.69",
+        "2.0.21"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_aarch64_gnullvm",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_aarch64_msvc",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_i686_gnu",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_i686_gnullvm",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_i686_msvc",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_x86_64_gnu",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_x86_64_gnullvm",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    },
+    {
+      "crate": "windows_x86_64_msvc",
+      "versions": [
+        "0.52.6",
+        "0.53.1"
+      ],
+      "lockfile_dependency_edges": 2
+    }
+  ],
+  "host": {
+    "at": "2026-10-23T21:58:05.669960+00:00",
+    "logical_cpus": 192,
+    "load": [
+      123.19189453125,
+      139.57421875,
+      155.611328125
+    ],
+    "mem_kib": {
+      "MemTotal": 394208856,
+      "MemAvailable": 321796812
+    },
+    "pressure": {
+      "cpu": "some avg10=5.03 avg60=2.84 avg300=3.05 total=1441795321\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      "memory": "some avg10=0.00 avg60=0.01 avg300=0.00 total=24821343\nfull avg10=0.00 avg60=0.01 avg300=0.00 total=24346940\n",
+      "io": "some avg10=2.68 avg60=1.87 avg300=1.31 total=2042227333\nfull avg10=2.51 avg60=1.61 avg300=0.98 total=1632306318\n"
+    },
+    "admit": {
+      "limits": {
+        "compile": 40,
+        "other": 48,
+        "light": 256
+      },
+      "caps": {
+        "graphcoder": 16,
+        "cloud": 3
+      },
+      "source_sha256": "14384d84d89de5a0cbe4b584d3bf5dc712332020b6b588484a2efa55466c9f83"
+    }
+  },
+  "limitations": [
+    "Fixture is a2400-function library, not a production whole-build benchmark.",
+    "CPU telemetry covers waited payload children plus owned cache daemon/awaited descendants; preparation/export/unawaited children are not covered.",
+    "Existing ledgers cannot reconstruct historical CPU-hours, crate-feature duplicates, evictions or incremental hit rates.",
+    "Disk/cache contents and other worktrees are not inspected. No sizing/provider action."
+  ]
+}

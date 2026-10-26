@@ -1,0 +1,2 @@
+# Silent diff-copy failure (coordinator, 2026-10-24)
+A Claude agent found that `wsl scp` with a Windows path fails **silently**, so its bb2 test run validated stale code. Make this class impossible: the one supported way to send work to bb2 (bs.ps1 / buildbox.mjs) must verify what landed (a content hash of the tree or diff, compared on bb2 before any build), and must fail loudly when it doesn't match. Every receipt records that hash. Check whether any lane or script copies by another route, and remove that route.

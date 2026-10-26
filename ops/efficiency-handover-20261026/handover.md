@@ -1,0 +1,111 @@
+# Efficiency handover to rx-efficiency
+
+Author: Codex. User-directed retirement at cycle233 (resume2026-10-26T01:17:20Z). Endpoint2026-10-26T01:17:54.197315Z; handover prepared2026-10-26T01:26:37.451790+00:00.
+
+## Branch, worktree, ownership
+
+- SDK worktree: `Q:/wt/efficiency`; branch `codex/efficiency-20261022`; source parent HEAD `6f54a8e5d43074b90748f4b16053560bbbbb06e2`. Signed handover snapshot commit/push receipt will be recorded below and in `Q:/lanes/efficiency/handover-git.json`.
+- Operational deployment and all current evidence: `Q:/lanes/efficiency/`. This directory is outside Git. The signed branch preserves the bounded operational source/report snapshot; the complete history/log/cache inventory remains at its canonical shared paths.
+- No SDK product source edits are pending. Own worktree has only historical untracked `.bb-efficiency-*` drivers and `.bb-cow-fixture/`; deliberately excluded from Git by lane-rules. Preserve them for provenance, never commit `.bb-*` or replay experiments blindly.
+- Exact `gh pr list --repo acyclic-labs/sdk --head codex/efficiency-20261022 --state all --json number,state,headRefName,url,reviewDecision,statusCheckRollup` returned `[]`. No efficiency PR, no efficiency review threads, no product checks waiting. No new PR opened. Other lanes' frozen queued heads were left alone this cycle.
+- Efficiency has no Wave1 primitive API sketch: this is operations/measurement/cost ownership. `redesign-schedule.md/json` follows `Q:/lanes/design-audit/REDESIGN.md`; do not treat legacy PRs as redesign implementation. No approved owner completion ETAs have arrived.
+- This lane never accessed Cloud. `rx-efficiency` owns the user-authorized broader scope; all old Cloud requests went through the coordinator. Never read login/auth/aws.env bodies; do not read ~/.codex or copy credentials.
+
+## Done and not done
+
+Completed: reusable measurement/history, per-lane token and validation audits, anomaly append tooling, throughput and redesign schedule, strict receipt/counter guards, direct owner steering, passive CPU/cache/disk checks, qualified staged native controller/drainer, and hash-fenced atomic installation with rollback controls. Original shared-parent target experiment is REVERTED; current private target sharing remains ADJUSTED/incomplete, one historical hit, no demonstrated fleet ROI. Cache fixture2.24x/4.21x and target-sharing fixture4.00x are historical bounded fixtures, not production savings.
+
+**The requested60-second non-LLM watchdog from inbox/3 is NOT IMPLEMENTED OR INSTALLED.** Current `anomaly.py` runs once per LLM cycle. `loop2.sh` is an LLM resume loop, not the requested monitoring watchdog. The later inbox/4 retirement/handover instruction takes precedence over starting new implementation this turn. Successor must implement LONG_JOB/LATE_FAILURE/HOLD/DROUGHT/IDLE_CAPACITY/RECOMPILE, exact command/phase/cpu evidence or explicit unknown, actionable inbox notification, negative controls, atomic install and actual60s live smoke. Do not claim an INSTALLED entry until all of that exists.
+
+Cycle233:4merges/24h versus baseline9;0new merges/41jobs/4.804668jobh since cycle232;217.013536rollingjobh,54.253384jobh/merge. Lane validation186.697140h/1565jobs is86.03% of SDK wall exposure. Top levers: affected-crate/reverse-dependency scope with qualified warm artifacts; input closure/custody before dispatch; native fleet lifecycle and admission overhead. Cost ranking in findings.md is exposure, not known removable work.
+
+Hard targets/current values, all missed:
+
+|Metric|Target|Current|
+|---|---|---|
+|Queued-to-merged p50|<45min|558.02min /4 explicit pairs; p95757.97min|
+|Job wall p95|<10min|24.49min /1588completed SDK jobs|
+|Nonzero jobs >5min|0|301rolling24h candidates;6new alerted individually|
+|Jobh/merge|<3|54.253384|
+|Admission/job|<5s|p5046.978s /p9599.233s|
+|Merge drought with queue|<60min|189.79min at metric endpoint; longest rolling gap14.263h|
+
+Nonzero terminals include intentional negative controls.301 is not301 proven discarded jobs.943attributedcoreh has partial job/descendant coverage:943/(192*24) does NOT prove20% whole-box utilization. CPU59.58% at01:19:30Z is a point, not integrated saturation. Codex counters are deduplicated session high-water; newly observed tokens are not exact interval or account spend. Claude gross includes cache tokens, is not equal-price Codex spend. No assumptions about free capacity from a point sample.
+
+## Queue, owners, review and steers
+
+Current anomaly queue snapshot:1495,1504,1508,1509,1512; all remain unmerged at endpoint. Snapshot includes possibly stale queue membership: authoritative current queue files/SQLite receipt outrank alert inference. Five numbers were still present in pending during final passive read; active/baseline files empty or absent in that read. Do not mutate a frozen head or other lane's branch.
+
+- #1495: last cycle all three canonical exact b7333953cbd5d3b31adc05cf2f0851f049f6c16a tests/clippy/features selectors returned0. Published through existing `gate-queue.py baseline-ready`;1495moved from baseline-pending to pending. Leased gate drain returned BUSY and retained wakeup. This was actual queue recovery, not merger or reused PASS proof. Evidence baseline-admission-cycle-232.json /queue-wakeup-cycle-232.json.
+- #1509: new `GATE_INFRA`01:14:17Z, head5997eac113, job1792972899589-128167-8108cb20:4350.975wrapperseconds/4301.496executionseconds. `Clippy stream attestation step failed: reviewed payload footer disagrees with its executor`; recovery printed `python3 /work/src/.gate-clippy.py run bash .gate-pr-payload.sh`. Reproduce/correct existing executor/stream custody with actual-old control before full replay; do not synthesize a matching footer. Final direct gate-speed steer `Q:/lanes/steers/efficiency-to-gate-speed-20261026T011720Z.md` confirmed in canonical inbox. Sent-registry233, INDEX and global steers/LOG retain custody.
+- #1504/#1508/#1512: owner queue/review proof remains incomplete. Recent alert#1514 has2blockingthreads, unrelated to efficiency's nonexistent PR. Owner-specific current review thread bodies/status require fresh GitHub query; no thread was resolved or waived by efficiency.
+- Eleven earlier direct dispatches in `sent-steers-cycle-232.json` lack verified application markers: gate-speed/input-closure; main-green/main+watchdog evidence; tool-latency/graph-main; plugins/missing proof; gate-speed+main-green/publication split; streams,b-runtime,fs-concurrency,b-authority,client-perf readiness checkpoints. Each has STEER_UNAPPLIED follow-up alert this cycle. A queued steer or APPLIED-as-relay is not implemented/merged progress. Copy no more asks until checking actual successor owner/head/proof.
+- INDEX has no new APPLIED/DECLINED implementation after prior cycle.00:10:04APPLIED234704 and00:48APPLIEDplugins are explicitly RELAYED. Cache19:02APPLIED is also only relay. De-duplicate same-file steers sent to two owners when computing latency; iteration.py currently matches outcome by filename and can count a shared-file outcome for both dispatches. Fix accounting before claiming application-latency ROI.
+- Structural publication bug: legacy main-gate.sh:66-81 uses mkdir/cat/rm while canonical gate-drain uses gate-queue.py SQLite. Replace the legacy publisher with existing baseline-ready transaction/generation mechanism; preserve late-park/publication interleaving negative controls. Do not implement a second queue.
+- Existing gate input-closure selection still observed after remote dispatch before handover; gate-speed owns shared selector before any expensive preparation/dispatch. Preserve exact-base complete receipts, frozen head, typed refusal/recovery, negative transport controls and candidate proof custody.
+
+## Machinery, installation and runtime state
+
+Live fleet scripts are under `C:/Users/varun/AppData/Local/Temp/claude/Q--sdk/c4cf6543-01de-41fc-994d-e3b8096f4e8d/scratchpad/cx/`. User authorizes efficiency direct machinery fixes; no coordinator install approval is needed. Never modify a Bash file in place while it runs. Never kill active lanes/build jobs to get past publication.
+
+- Staged bundle: fleet_usage.py, fleet-supervisor.py, fleet-steer.py, lane-running.ps1, steer.sh, lane-supervisor2.sh. Other owned staged adapters: lane-busy.ps1, steer-now.sh, stop-lanes.ps1; diagnose-drainer.py. Full hashes/order/restart command: machinery/manifest.json. Self-test20PASS/5.141s rerun232, retained unchanged233; earlier12-test attempt FAIL10.797s is superseded. Native fake-Codex, fake lane, scratch alerts, actual inherited-pipe negatives and concurrency/owner birth controls; no account calls.
+- Cycle232 atomic publication hit WinError5 on active Windows steer.sh. First4files published, then all6before states restored/hash verified. Receipt machinery/installed-cycle-232/receipt.json statusROLLED_BACK_OPEN_SCRIPT_LOCK. Native bundle is NOT LIVE. All6live/stagedhash comparisonsfalse233. No restart/live native heartbeat+dispatch smoke happened.
+- install_machinery.py now automatically rolls back partial publication using generation hashes;4controls PASS/.048s. Controls include retained-open-reader/hardlink negative, changed source, stale destination and partial bundle rollback. Do not replay same --cycle232 directory, it intentionally refuses existing archive. After safe atomic install use a new attempt receipt then prove actual heartbeat and approved fixture dispatch/completion.
+- Coordinator heartbeat deployment is live: latest01:16:47Z `HEARTBEAT lanes=12 drainers=18`. Counts are not integrated utilization or proof that all roots are productive.122rollingreinvokes (81DIED,22IDLE,15GATE_RECHECK,1EVENT,3GATE_NEWS); do not call all122waste.
+- Usage-limit detector shared by anomaly.py and staged controller alerts if2terminal-refusal lanes; current bounded audit0refused. The token-footer regression is fixed. Staged provider-hold preserves batch and suppresses retries; no automatic account/model changes.
+- `loop2.sh` defaultINTERVAL1800; running launch may override it. `loop.sh` historical default7200; user earlier asked10min, neither source default proves actual interval. Both use RUN. This cycle removed ONLY Q:/lanes/efficiency/RUN so driver exits after current turn; no other process interrupted. Do not restart it for rx-efficiency. Legacy supervisor registry retirement should follow user topology; final RETIRED status is required. Shared machine may have other drainersâ€”do not broadly stop them.
+
+## Installed/historical tooling and complete inventory
+
+`Q:/lanes/redesign/efficiency/owned-files.json` lists EVERY file under the inherited efficiency directory (relative and absolute path, size, mtime, source hash where bounded), plus the external deployment surfaces below. It includes generated cycle evidence/history, shell/Python/JS helpers, original before copies, all steers and machinery receipts; it is the exhaustive file inventory. This document groups the operational entry points for quick use.
+
+Root source/driver files currently owned: `anomaly.py`, `anomaly_test.py`, `bb-job.before-20261023.py`, `bb-job.before-cow.py`, `bb-job.candidate.py`, `bb-job.cow-candidate.py`, `bb2_policy_audit.py`, `bb_cargo_cache.before-local-lock-fix.py`, `bb_cargo_cache.py`, `bb_target_store.py`, `buildbox.before-20261023.mjs`, `buildbox.before-cow.mjs`, `buildbox.cow-candidate.mjs`, `cache_audit.py`, `compute_report.py`, `cycle_appendix.py`, `cycle_report.py`, `deploy-cache-policy.py`, `deploy-native-cache-policy.py`, `incident_audit.py`, `install_machinery.py`, `install_target_store.py`, `iteration.py`, `iteration_test.py`, `job_exports.before-cow.py`, `job_exports.cow-candidate.py`, `lane_validation.py`, `lane_validation_test.py`, `live_audit.py`, `loop.sh`, `loop2.sh`, `measure.py`, `observed-20261024T004135Z-bb_cargo_cache.py`, `observed-20261024T004135Z-bb_target_store.py`, `observed-20261024T021836Z-bb_cargo_cache.py`, `observed-20261024T021836Z-bb_target_store.py`, `observed-20261024T130942Z-bb_target_store.py`, `observed-20261024T170042Z-bb_cargo_cache.py`, `observed-20261024T170042Z-bb_target_store.py`, `provider_audit.py`, `read_rules-cycle-190-before.py`, `read_rules.py`, `terminal_audit-cycle-187-before.py`, `terminal_audit-cycle-194-before.py`, `terminal_audit.py`, `test_measure.py`, `test_target_exports.py`, `test_target_store.py`, `throughput.py`, `token_audit.py`, `token_audit_test.py`, `utilisation.py`, `validate_compute.py`, `verify_cycle-cycle-193-before.py`, `verify_cycle.py`, `verify_fixes.py`.
+
+Core report/evidence files: measure.py, latest.json, metrics.md, metrics.jsonl; findings.md; throughput.py/md/json; iteration.py/json/test and redesign-schedule.md/json; anomaly.py/test and anomalies[-extra]-cycle-*.json; cache_audit.py/json and cycle_report.py; lane_validation.py/test and lane-validation.md/json; token_audit.py/test and token-audit.md/json; terminal_audit.py and terminal-audit-cycle-*.json; incident_audit.py and incidents-/long-commands-cycle-*.json; live_audit.py/live-*.json; utilisation.py/json; bb2_policy_audit.py/bb2-policy-audit.json; provider_audit.py; verify_cycle.py, verify_fixes.py and per-cycle receipts; read_rules.py; completion/reporting-control/retirement receipts; prompt.md, loop.sh, loop2.sh, lane.log, loop.out, inbox/ including delivered charters; steers/INDEX.md plus every steer packet; machinery/** and snapshot/rollback manifests. These are concrete deployed tools/reports or historical evidence, not all services.
+
+Historical efficiency installed surfaces (never overwrite newer owners' hashes): bb2 /home/var/bin/bb-job.py, /home/var/bin/build-slot, /home/var/bin/bb_target_store.py, /home/var/bin/bb_cargo_cache.py, /home/var/bin/bb-cargo/cargo, /home/var/bin/job_exports.py; WSL /home/var/bin/buildbox.mjs. No current claim of identical qualified deployment: latest target/cache hashes differ from cow-results.json.deployed. Existing no-incremental/sccache/proof guards retained on original controls. Current400G launch caps remain in bb-job.py:195/sccache-rustc:4; desired one50Gpolicy not installed,15listeners/56processes not actual server count. Qualification must reject wrong-sized/duplicate servers across all real launch paths.
+
+Fleet inherited surfaces: scratchpad/cx lane-supervisor2.sh, steer.sh, steer-now.sh, lane-running.ps1, active-lanes.txt, stop-lanes.ps1; original lane-rules.md is scratchpad/lane-rules.md. Installed coordinator heartbeat was NOT installed by efficiency. Gate/route scripts in Q:/lanes belong to gate-speed+efficiency; changes requested through actual direct steers. Never silently replace concurrent owner work. No new external infrastructure install233.
+
+Alert stream `C:/Users/varun/.codex-fleet/alerts.log`: append-only explicit authorization. Current cycle16primary+18supplemental =34lines; primary kinds MERGE_DROUGHT/GATE_FAILURE_RATE/CROSS_PR_FINDING/UNTOUCHED_FILE_FINDING/ROUTE_FAILURE/DISK_PRESSURE. Other implemented anomaly kinds include GATE_HOLD,CROSS_PR_TEST,SUPERVISOR_STALE,SUPERVISOR_HEARTBEAT,ZERO_LANES,LANE_<state>,USAGE_LIMIT,GATE_SLOW; see actual anomaly.py for exact dispatch. Supplemental use CACHE_POLICY/OBSERVABILITY/STEER_UNAPPLIED/MACHINERY_INSTALL_BLOCKED/QUEUE_PUBLICATION_SPLIT/LATE_FAILURE when evidence exists. New required60swatchdog kinds listed above are not all implemented. Alerts append uses boundedO_APPEND writes and per-observation fingerprints, reruns same snapshot deduplicate; different cycles can repeat unresolved incidents. Do not rewrite/truncate alert stream.
+
+## Failing checks / commands / proof gaps
+
+There is no failing efficiency product PR check. Original five receipt/source controls PASS233; immutable cycle verifier PASS with5negativecontrols rejected. Exact original qualifier `verify_cycle.py` SHA d12fd914d7d33f381b0dacc5502ef83b829eaab7354c00b12544ca3a63901ccb must stay unchanged. Existing fixture suites are retained and should rerun only after relevant edits:
+
+```
+python Q:/lanes/efficiency/measure.py --date 2026-10-26
+python Q:/lanes/efficiency/anomaly.py --cycle 234
+python Q:/lanes/efficiency/lane_validation.py
+python Q:/lanes/efficiency/token_audit.py --cycle 234
+python Q:/lanes/efficiency/verify_fixes.py --cycle 234
+python Q:/lanes/efficiency/verify_cycle.py --cycle 233 --negative-controls
+python Q:/lanes/efficiency/machinery/self-test.py
+python Q:/lanes/efficiency/install_machinery.py --self-test
+```
+
+Live blocked install reproduction: `python Q:/lanes/efficiency/install_machinery.py --apply --cycle <new-unused-cycle>` can hit the active-Windows-file lock; do not invoke only to reproduce, qualify a safe publication plan first. No forced in-place fallback. Original qualifier negative must continue to fail without actual custody.
+
+Two30minjobs: tool-latency1792972196370-124584-74f9e378 (1837.293wrapper/1798.889exec; graph-main1737.997exit1expected0), main-green1792972516181-126549-311fe7ac (1831.262wrapper/1799.047exec; lastcore-windows-matrix). Inner compile/test streams were redirected into job-private paths then cleaned. Receiptcompute/cpu_seconds/target_store/exports unavailable. Warm compile versus test split is UNKNOWN, not diagnosed as a test hang. Owners were directly asked to recover exported matching inner logs, otherwise retain/stream last-active stage before next necessary run. An EXIT trap alone cannot capture SIGKILL. Split/incremental graph only with unchanged required proof and ceilings.
+
+New late failures233: approvals original-dispatch-reconciliation, b-runtime selected-source policy, plugins normal-and-scale-shipping, gate1509streamattestation, approvals scoped-clippy core compile, providers checkpoint filter rc101/nonzero=false. Exact job IDs, wrapper/exec times and bounded diagnostics in terminal-audit-cycle-233.json, incidents-cycle-233.json, long-commands-cycle-233.json and anomalies-extra-cycle-233.json. Whether cheap input admission could catch them is mostly unknown; don't classify every semantic test failure as preflight-detectable. Owner must match exact source/fixture controls before equivalent rerun.
+
+## Next five actions for rx-efficiency
+
+1. Install the requested60s non-LLM watchdog with actual SDK-only job/queue/CPU/cold-compile evidence, all six kinds, per-job late-failure root causes, actionable inbox wakeup, retained negatives, atomic install and live cadence. Retire old efficiency driver/registry through topology, don't create two resume loops.
+2. Drive shared input-closure admission and the single canonical publication API through gate-speed to merged+installed outcome. Fix1509streamattestation from captured payload first; verify previous11steers against actual owner heads, successor lanes, gate proofs and application latency. Drain frozen queue through existing leased API, no forcedlocks/PASS.
+3. Enforce affected+reverse-dependency qualification at the existing build-slot choke point. Refuse raw full-workspace lane jobs before dispatch; include equivalent all-crate -p expansion and script-wrapper callers in the scope design. One shared warm-target mechanism with complete immutable compile inputs; no reduction in required final matrix/negative proof. Cache sync/probes by content to drive admission below5s without stale custody.
+4. Recover two watchdog-job inner evidence, split/incremental expensive producers, diagnose301late-terminal backlog and prioritize costs. Resolve current400Glaunchpolicymismatch with one50Gsource and actual-server checks. Ivar free8.0818% after recovery from2.05%; still needs capacity/owner cleanup to15%, recovery cause not attributed. APFS root/Data are same view, not additive. Never reclaim another owner's or Cloud's files.
+5. Obtain redesign owner PR identities/checkpoints, refresh Wave1/Wave2 critical path and conditional forecasts from actual delivery data. Current66h observed service-only floor is neither a coding estimate nor acceptable target; user explicitly demands hours, not days. Forecast unknown until owners supply readiness. Raise SCHEDULE_SLIP only when a real prior forecast moves by>1day. Keep hard target table each cycle and verify every intervention's effect, reverting ineffective fixes.
+
+## Gotchas
+
+- INDEX.md contains invalidUTF8 atbyte3619: read errors=replace, preserve original bytes, appendASCII through binary append. Never rewrite it with a default codec.
+- measure.py writes metrics.md/history; cycle_report.py overwrites metrics.md. Correct order measure -> audits/anomaly -> throughput -> cycle_report -> cycle_appendix -> iteration -> hard target append. A rerun of iteration truncates sections following its marker, including the manually appended hard-target table: reappend targets or move that table into the common writer before normal operations. cycle_appendix rewrites its appended findings section; retirement notes need reappend too.
+- verify_cycle.py fixes seven rank labels, including misleading legacy `cold compilation / gate target topology`. Keep the explicit all-lane exposure disclaimer; don't mutate verifier to make a change pass. The immutable negative controls and exact endpoint checks are part of the bar.
+- Anomalies snapshot can be later than metrics endpoint; probe timestamps matter. A future-to-metric sample is not actual-now telemetry; no stale healthy inference. All current sources SDK-only.
+- Local scratch only D:/lane-scratch/efficiency; no C:/temp. No local Cargo/compiles. No bb2 experiment jobs233. Archived4bounded experiments are not routine admissions.
+- CachedGitHubfields may omit isDraft/reviewDecision; null means unknown, not ready. Query own/current PR before queueing. HistoricallogsandclaimedAPPLIEDrelaysneverproveimplementation.
+- Snapshot operational scripts may use hard-coded canonicalQ:/lanes paths; Git snapshot is preservation, not a second live mechanism. Do not launch deployment scripts from the archive or replay old install scripts against changed predecessor hashes.
+
+Final state: handed off; no new PR, no force-push, no queued-head changes, no running-lane or job kills. End status will be `LANE_STATUS: RETIRED handover Q:/lanes/redesign/efficiency/handover.md`.

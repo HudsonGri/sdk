@@ -1,0 +1,52 @@
+{
+  "author": "Codex",
+  "status": "QUALIFIED_STAGED_AWAITING_ATOMIC_APPLY",
+  "before": {
+    "lane-running.ps1": "d0b16b0a3f0301b8263d5211af8c8580cd74db8762800d062d31b36e32e5a201",
+    "lane-supervisor2.sh": "99ee5a495ac40d503c5a1fa741d2501959ee416d046834cb41ecd780aae3d267",
+    "steer-now.sh": "55a1eb1487035f6a6a89d3983e10e3e4609725f4a74c7ca8c2cf3cca7c75db5f",
+    "steer.sh": "20e4226065bc11e5cefb0e9a4c2ccdeb266f6981459ed44b1e94d7988bd62189",
+    "stop-lanes.ps1": "28346cf488326eafadbb595d90e15d014014fa097d6aa1ba239e6f1eb420bd6a"
+  },
+  "note": "20tests PASS under10s; shared two-lane USAGE_LIMIT alert, cumulative-footer refusal detection and batch-preserving hold. Staged only; coordinator atomic apply/restart and actual heartbeat/dispatch smoke required.",
+  "cycle": 229,
+  "test_result": {
+    "author": "Codex",
+    "tests": 20,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 5.546999999991385,
+    "status": "PASS",
+    "bb2_jobs_started": 0,
+    "live_files_changed": false,
+    "scope": "controller integration and OS descriptor regression; staged Bash source contract; deployment smoke still required"
+  },
+  "staged": {
+    "fleet-supervisor.py": "37e4f7564e18256b126ffaa4bac6e6302222be0cb2e77cc4e692695e813f43f1",
+    "fleet-steer.py": "656540e3c71152cd84b6c19ac6f728f10a1855bf486f493c00efc759c39dacd3",
+    "lane-supervisor2.sh": "a54f61a1616cb355c702fc2d4c357b1d6a13e14ce539a018890af2a77824de28",
+    "steer.sh": "901342fc77d378cb49a356ae1358188c60164755d7a5090010ecbce41e568274",
+    "lane-running.ps1": "42a65198e4a3078fc1e297e8c9541863587934c33e8f9e16aad2b40b5592081c",
+    "fleet_usage.py": "6c42cebae4358d3e373e7d93570ac799f76bb0120b0aab1b25bfd4f7b721ab6b"
+  },
+  "live_unchanged": {
+    "lane-running.ps1": true,
+    "lane-supervisor2.sh": false,
+    "steer-now.sh": true,
+    "steer.sh": true,
+    "stop-lanes.ps1": true
+  },
+  "restart_command": "Start-Process -FilePath \"C:/Program Files/Git/usr/bin/bash.exe\" -ArgumentList \"C:/Users/varun/AppData/Local/Temp/claude/Q--sdk/c4cf6543-01de-41fc-994d-e3b8096f4e8d/scratchpad/cx/lane-supervisor2.sh\" -WindowStyle Hidden -RedirectStandardOutput \"C:/Users/varun/AppData/Local/Temp/claude/Q--sdk/c4cf6543-01de-41fc-994d-e3b8096f4e8d/scratchpad/cx/lane-supervisor-native.out\" -RedirectStandardError \"C:/Users/varun/AppData/Local/Temp/claude/Q--sdk/c4cf6543-01de-41fc-994d-e3b8096f4e8d/scratchpad/cx/lane-supervisor-native.err\"",
+  "live_mutations_by_efficiency": false,
+  "self_test_sha256": "687b715afa34641124f0e2ecf0c05d82606e00e5f1549427648498e19e9dcce3",
+  "install_order": [
+    "fleet_usage.py",
+    "fleet-supervisor.py",
+    "fleet-steer.py",
+    "lane-running.ps1",
+    "steer.sh",
+    "lane-supervisor2.sh"
+  ],
+  "activation_authority": "Efficiency authorized directly by user2026-10-26; no coordinator approval required",
+  "latest_install_attempt": "installed-cycle-232/receipt.json; rolled back on active Windows script lock"
+}

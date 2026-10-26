@@ -1,0 +1,3543 @@
+{
+  "author": "Codex",
+  "since": "2026-10-26T00:56:24.167664Z",
+  "until": "2026-10-26T01:17:54.197315Z",
+  "rows": [
+    {
+      "at": "2026-10-26T00:57:09.044Z",
+      "log_id": "1792975990113-255601-9ffa0e3e",
+      "lane": "providers-final-20261025b",
+      "wall": 238.93,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:57:17.666Z",
+      "log_id": "1792976196850-256763-4af1ef17",
+      "lane": "redesign-verify",
+      "wall": 40.816,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:58:07.977Z",
+      "log_id": "1792976116344-256363-6c43816c",
+      "lane": "approvals",
+      "wall": 171.632,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:58:23.795Z",
+      "log_id": "1792976244828-257202-e4e27987",
+      "lane": "gate-speed",
+      "wall": 58.966,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:58:47.639Z",
+      "log_id": "1792976021255-255894-66aadb5b",
+      "lane": "tool-latency-rebased",
+      "wall": 306.384,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:58:53.054Z",
+      "log_id": "1792974085881-214140-12590f67",
+      "lane": "win-qual",
+      "wall": 2247.172,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T00:59:04.859Z",
+      "log_id": "1792976163751-256557-f1261d47",
+      "lane": "b-authority-p1-security",
+      "wall": 181.108,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:00:39.332Z",
+      "log_id": "1792976369786-257779-b48d4a37",
+      "lane": "b-authority-p1-security",
+      "wall": 69.545,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:01:07.437Z",
+      "log_id": "1792976379961-257868-cc8b7306",
+      "lane": "redesign-verify",
+      "wall": 87.476,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:01:07.640Z",
+      "log_id": "1792976382328-257986-dcb131ee",
+      "lane": "gate-speed",
+      "wall": 85.312,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:02:24.492Z",
+      "log_id": "1792976472557-258705-7e078ef8",
+      "lane": "gate-speed",
+      "wall": 71.935,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:02:26.553Z",
+      "log_id": "1792976380243-257886-c18b8d80",
+      "lane": "client-perf",
+      "wall": 166.31,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:02:47.402Z",
+      "log_id": "1792976311318-257489-3fd12716",
+      "lane": "b-runtime",
+      "wall": 256.084,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:03:52.162Z",
+      "log_id": "1792976560517-259312-8952e71d",
+      "lane": "rb-sdk-up",
+      "wall": 71.644,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:04:18.430Z",
+      "log_id": "1792976602317-259595-3c0e3317",
+      "lane": "b-authority-p1-security",
+      "wall": 56.113,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:04:21.508Z",
+      "log_id": "1792976585664-259475-309b36a6",
+      "lane": "redesign-verify",
+      "wall": 75.843,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:05:28.088Z",
+      "log_id": "1792976639358-259874-17b47479",
+      "lane": "client-perf",
+      "wall": 88.73,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:05:28.259Z",
+      "log_id": "1792976672648-260194-036f3341",
+      "lane": "gate-speed",
+      "wall": 55.611,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:06:21.106Z",
+      "log_id": "1792976480670-258924-cb9a2d11",
+      "lane": "tool-latency-rebased",
+      "wall": 300.435,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:06:26.986Z",
+      "log_id": "1792975949164-255035-d394838f",
+      "lane": "main-green",
+      "wall": 837.822,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:06:37.600Z",
+      "log_id": "1792976743846-260652-e6ee9eec",
+      "lane": "b-authority-p1-security",
+      "wall": 53.754,
+      "rc": 101,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:06:51.505Z",
+      "log_id": "1792976769692-260768-e778f1da",
+      "lane": "redesign-verify",
+      "wall": 41.813,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:08:29.282Z",
+      "log_id": "1792975493250-252126-9f75ca8d",
+      "lane": "rb-sdk-up",
+      "wall": 1416.032,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:08:56.675Z",
+      "log_id": "1792976380969-257944-35546bb4",
+      "lane": "rust",
+      "wall": 555.705,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:10:05.740Z",
+      "log_id": "1792976400146-258163-612f48ee",
+      "lane": "approvals",
+      "wall": 605.594,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:10:42.353Z",
+      "log_id": "1792977002688-328-17e56984",
+      "lane": "gate-speed-integration",
+      "wall": 39.665,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:10:49.802Z",
+      "log_id": "1792976618175-259703-251f7379",
+      "lane": "b-runtime",
+      "wall": 431.627,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:11:29.323Z",
+      "log_id": "1792976814089-261145-7bc015d2",
+      "lane": "plugins",
+      "wall": 275.234,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:11:35.189Z",
+      "log_id": "1792977031129-496-a963401e",
+      "lane": "b-authority-p1-security",
+      "wall": 64.06,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:11:48.978Z",
+      "log_id": "1792976482512-258980-33265849",
+      "lane": "client-perf",
+      "wall": 626.466,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:12:04.642Z",
+      "log_id": "1792975950533-255072-a777db04",
+      "lane": "plugins",
+      "wall": 1174.109,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:12:07.129Z",
+      "log_id": "1792977050637-643-80f57b93",
+      "lane": "gate-speed-integration",
+      "wall": 76.492,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:13:08.947Z",
+      "log_id": "1792976955224-261824-aeb57a8b",
+      "lane": "approvals",
+      "wall": 233.722,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:14:10.564Z",
+      "log_id": "1792972899589-128167-8108cb20",
+      "lane": "pr-gate",
+      "wall": 4350.975,
+      "rc": 224,
+      "termination": "infra"
+    },
+    {
+      "at": "2026-10-26T01:14:11.936Z",
+      "log_id": "1792977188167-5119-a6409d00",
+      "lane": "gate-speed-integration",
+      "wall": 63.769,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:15:00.392Z",
+      "log_id": "1792976674447-260239-6132f62d",
+      "lane": "approvals",
+      "wall": 625.944,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:15:04.835Z",
+      "log_id": "1792977271938-5582-867b14df",
+      "lane": "pr-gate",
+      "wall": 32.896,
+      "rc": 0,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:15:06.416Z",
+      "log_id": "1792977150936-4750-c5517206",
+      "lane": "win-qual",
+      "wall": 155.479,
+      "rc": 127,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:15:39.474Z",
+      "log_id": "1792977293679-5758-d43d24fd",
+      "lane": "gate-speed-integration",
+      "wall": 45.794,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:16:26.213Z",
+      "log_id": "1792976471254-258665-62b0544a",
+      "lane": "providers-final-20261025b",
+      "wall": 914.958,
+      "rc": 1,
+      "termination": "command"
+    },
+    {
+      "at": "2026-10-26T01:16:39.054Z",
+      "log_id": "1792977354203-6117-9300caaa",
+      "lane": "gate-speed-integration",
+      "wall": 44.85,
+      "rc": 0,
+      "termination": "command"
+    }
+  ],
+  "logs": [
+    {
+      "log_id": "1792975990113-255601-9ffa0e3e",
+      "lines": 11,
+      "matches": 1,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=281343ac9cf11ccbd89db0689c6161590261cb8d 44bac082125cd0f14afd48da54adc30d0105cda5 8cb807509eb4d3f31df009a23a7084ae5da2055b5b39b5d74822740f5e5d0b67",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 2,
+          "text": "GATE_HOME_GUARD {\"mechanism\": \"private-read-only-mount\", \"real_home\": \"/home/var\", \"writable\": false, \"recursive\": true, \"private_proc\": true}",
+          "clipped": false
+        },
+        {
+          "line": 3,
+          "text": "[buildbox] sccache startup: sccache: Starting the server...",
+          "clipped": false
+        },
+        {
+          "line": 4,
+          "text": "sccache: Listening on address /mnt/bb/jobs/job-29rmc1gn/sccache.sock",
+          "clipped": false
+        },
+        {
+          "line": 5,
+          "text": "[buildbox] node_modules ensured for tracked lockfiles in 1.2s",
+          "clipped": false
+        },
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=281343ac9cf11ccbd89db0689c6161590261cb8d 44bac082125cd0f14afd48da54adc30d0105cda5 8cb807509eb4d3f31df009a23a7084ae5da2055b5b39b5d74822740f5e5d0b67",
+          "clipped": false
+        },
+        {
+          "line": 7,
+          "text": "[buildbox] source clock: exact-content private targets",
+          "clipped": false
+        },
+        {
+          "line": 8,
+          "text": "BUILD_SLOT_EXEC={\"exec_start\":\"2026-10-26T00:54:06.081Z\",\"toolchain\":{\"rustc_vv_sha256\":\"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37\",\"rustc_vv\":\"rustc 1.98.1 (48a229cea 2026-09-01)\\nbinary: rustc\\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\\ncommit-date: 2026-09-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.98.1\\nLLVM version: 22.1.8\\n\",\"target\":[\"x86_64-unknown-linux-gnu\"],\"probe_error\":null}}",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "STEP candidate scoped Clippy failed; recovery: inspect .bb-clippy-fixes-99/workspace.out and fix its exact diagnostic before dispatching .bb-clippy-fixes-99.sh",
+          "clipped": false
+        },
+        {
+          "line": 11,
+          "text": "workspace 101",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976196850-256763-4af1ef17",
+      "lines": 687,
+      "matches": 41,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 5,
+          "text": "BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe afbd53a7aa1307a4fce61e74d777cf0fe1002c569e726aa8667f1d834293b2b0",
+          "clipped": false
+        },
+        {
+          "line": 251,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 266,
+          "text": "error: redundant clone",
+          "clipped": false
+        },
+        {
+          "line": 281,
+          "text": "error: slicing may panic",
+          "clipped": false
+        },
+        {
+          "line": 292,
+          "text": "error: slicing may panic",
+          "clipped": false
+        },
+        {
+          "line": 301,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 310,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 323,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 336,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 349,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 362,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 375,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 388,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 401,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 414,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 427,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 440,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 453,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 466,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 479,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 492,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 501,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 510,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 519,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 528,
+          "text": "error: indexing into a string may panic if the index is within a UTF-8 character",
+          "clipped": false
+        },
+        {
+          "line": 538,
+          "text": "error: indexing into a string may panic if the index is within a UTF-8 character",
+          "clipped": false
+        },
+        {
+          "line": 546,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 559,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 568,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 577,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 586,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 595,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 604,
+          "text": "error: consider adding a `;` to the last statement for consistent formatting",
+          "clipped": false
+        },
+        {
+          "line": 614,
+          "text": "error: consider adding a `;` to the last statement for consistent formatting",
+          "clipped": false
+        },
+        {
+          "line": 622,
+          "text": "error: consider adding a `;` to the last statement for consistent formatting",
+          "clipped": false
+        },
+        {
+          "line": 630,
+          "text": "error: consider adding a `;` to the last statement for consistent formatting",
+          "clipped": false
+        },
+        {
+          "line": 638,
+          "text": "error: this function has too many lines (130/100)",
+          "clipped": false
+        },
+        {
+          "line": 652,
+          "text": "error: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 661,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 674,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 687,
+          "text": "error: could not compile `acyclic-auth` (lib) due to 39 previous errors",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 678,
+          "text": "   |                                                        ^^^^^^^^^^^^^^^",
+          "clipped": false
+        },
+        {
+          "line": 679,
+          "text": "   |",
+          "clipped": false
+        },
+        {
+          "line": 680,
+          "text": "   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_markdown",
+          "clipped": false
+        },
+        {
+          "line": 681,
+          "text": "help: try",
+          "clipped": false
+        },
+        {
+          "line": 682,
+          "text": "   |",
+          "clipped": false
+        },
+        {
+          "line": 683,
+          "text": "36 - /// that the supplied 32-byte secret derives the tip's next_public_key.",
+          "clipped": false
+        },
+        {
+          "line": 684,
+          "text": "36 + /// that the supplied 32-byte secret derives the tip's `next_public_key`.",
+          "clipped": false
+        },
+        {
+          "line": 685,
+          "text": "   |",
+          "clipped": false
+        },
+        {
+          "line": 686,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 687,
+          "text": "error: could not compile `acyclic-auth` (lib) due to 39 previous errors",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976244828-257202-e4e27987",
+      "lines": 59,
+      "matches": 3,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=332987568f1d6b85f8d0192eccce354b36251638 2184bc9e24a30caee66f79a9ee79e5fccdb57483 5a9f982349e1d309f459f02428b1912414756d24a6b0e9d5a8705459d85b1416",
+          "clipped": false
+        },
+        {
+          "line": 37,
+          "text": "AssertionError: 5 != 0 : bash: line 28: python: command not found",
+          "clipped": false
+        },
+        {
+          "line": 46,
+          "text": "AssertionError: Tuples differ: (5, 0) != (0, 1)",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 50,
+          "text": "0",
+          "clipped": false
+        },
+        {
+          "line": 51,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 52,
+          "text": "- (5, 0)",
+          "clipped": false
+        },
+        {
+          "line": 53,
+          "text": "+ (0, 1) : bash: line 28: python: command not found",
+          "clipped": false
+        },
+        {
+          "line": 54,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 55,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 56,
+          "text": "----------------------------------------------------------------------",
+          "clipped": false
+        },
+        {
+          "line": 57,
+          "text": "Ran 5 tests in 1.871s",
+          "clipped": false
+        },
+        {
+          "line": 58,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 59,
+          "text": "FAILED (failures=2)",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792974085881-214140-12590f67",
+      "lines": 42,
+      "matches": 20,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=065e85518181894b9fc0e30d1caee00de3f93e95 dd5d2f43892fb6e22a09448421f3e2cf7dde415e bb1dfe5a9f9f757c0385cfbe909ed0256dfcd0cd4aa356a7ef119269c8b2c5ea",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "{\"name\": \"filesystem-msvc\", \"exit\": 0, \"seconds\": 523.413067187008}",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "{\"name\": \"stage-filesystem\", \"exit\": 0, \"seconds\": 0.3739883920061402}",
+          "clipped": false
+        },
+        {
+          "line": 16,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"filesystem\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-filesystem.tar.gz\", \"sha256\": \"671346a1232ff18dc06fd07a3cd99bc25111d0c3d1650f52206bec82c734658a\", \"bytes\": 140830465}, \"manifest_sha256\": \"9a782427032e097dc9e015d0fe0431f937cc3d4303d415ca26e5cbcaf63d0b8b\", \"artifacts\": {\"filesystem.exe\": {\"sha256\": \"53971f91047a3b87f1e806e379f155c5328e2625cc886ce86aed7f893becd841\", \"bytes\": 255463424}, \"filesystem-integration.exe\": {\"sha256\": \"f471ea7abda910ca715c63ca5fb26dc1e3c9abcdbe2190a2336251709c4c2dc4\", \"bytes\": 71114240}, \"filesystem-ntfs.exe\": {\"sha256\": \"6d757b8cd1be8779f1fa167c822798c12ac3da74d3d21a96eee948806cdba209\", \"bytes\": 29974528}}}",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "{\"name\": \"runtime-msvc\", \"exit\": 0, \"seconds\": 26.32522477101884}",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "{\"name\": \"stage-runtime\", \"exit\": 0, \"seconds\": 0.11047010100446641}",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"runtime\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-runtime.tar.gz\", \"sha256\": \"c65fe8f45ba876bc04f530869b234c95dfc982c593a5197934862621794f3b0b\", \"bytes\": 30536364}, \"manifest_sha256\": \"c7d42d2752253eea2e11f0c98126443c7b4efc5d8bce61a17cc3e05130f73329\", \"artifacts\": {\"runtime.exe\": {\"sha256\": \"a819dbdf627414f674e0430a8f6d1f57b1c8269dc8ad4338aa61d02ad867da40\", \"bytes\": 52611584}}}",
+          "clipped": false
+        },
+        {
+          "line": 23,
+          "text": "{\"name\": \"core-msvc\", \"exit\": 0, \"seconds\": 369.42581146600423}",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": "{\"name\": \"stage-core\", \"exit\": 0, \"seconds\": 0.24426430999301374}",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"core\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-core.tar.gz\", \"sha256\": \"fc49006582adada8e0d5e13cb48a7ecf781691b11e99cd16a668dd11d91c2380\", \"bytes\": 91699473}, \"manifest_sha256\": \"d34f6b90bf7469e34f78553c0e415ea323183eb9327b1328ab1c6ba409a6cf20\", \"artifacts\": {\"harness-core.exe\": {\"sha256\": \"22739965c7aa762d89ff7a2e9f3313d9eaa420242e55c5c457bf2408471c5d9e\", \"bytes\": 212387840}}}",
+          "clipped": false
+        },
+        {
+          "line": 28,
+          "text": "{\"name\": \"harness-msvc\", \"exit\": 0, \"seconds\": 349.14014262199635}",
+          "clipped": false
+        },
+        {
+          "line": 30,
+          "text": "{\"name\": \"stage-harness\", \"exit\": 0, \"seconds\": 0.28574042397667654}",
+          "clipped": false
+        },
+        {
+          "line": 31,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"harness\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-harness.tar.gz\", \"sha256\": \"77b553116f6bfa10d641d8a0b71abd045e638951733f5240e9ecb79e2c16f60b\", \"bytes\": 96991198}, \"manifest_sha256\": \"b5d2f46fe2917afb38287ef4e331269e2247e0c7af45e60fd5440f4ec0069839\", \"artifacts\": {\"harness.exe\": {\"sha256\": \"1113757eb6a7319284a901340b1654d706fc5a5a12f13571e5cfe927a3554072\", \"bytes\": 231267328}}}",
+          "clipped": false
+        },
+        {
+          "line": 33,
+          "text": "{\"name\": \"plugin-msvc\", \"exit\": 0, \"seconds\": 407.33385045599425}",
+          "clipped": false
+        },
+        {
+          "line": 35,
+          "text": "{\"name\": \"stage-plugin\", \"exit\": 0, \"seconds\": 0.30604565699468367}",
+          "clipped": false
+        },
+        {
+          "line": 36,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"plugin\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-plugin.tar.gz\", \"sha256\": \"f5d2635ad3f382f7e94b20242f0c046566f7b4673019d3adaf1f104bb468b6ac\", \"bytes\": 104768340}, \"manifest_sha256\": \"4805ae39a964fce6c20143c988d123d343d6d7228d96d92535807f066d0bc3a1\", \"artifacts\": {\"plugin.exe\": {\"sha256\": \"4cf7532492a4c1fe832fe611d5666cacea0fcc064d4a17219443ad1956998d20\", \"bytes\": 213618688}, \"plugin-e2e.exe\": {\"sha256\": \"034c56209084e071931c94f63076ef82bc69cf3da344fc9d63b1ab8ca3d97a79\", \"bytes\": 22584832}}}",
+          "clipped": false
+        },
+        {
+          "line": 38,
+          "text": "{\"name\": \"providers-msvc\", \"exit\": 0, \"seconds\": 341.0875313510187}",
+          "clipped": false
+        },
+        {
+          "line": 40,
+          "text": "{\"name\": \"stage-providers\", \"exit\": 0, \"seconds\": 0.17012820101808757}",
+          "clipped": false
+        },
+        {
+          "line": 41,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"providers\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-providers.tar.gz\", \"sha256\": \"088ba6eaaa114fc748554e226c4e94d6e22cae674ca29b68f7ef65abc1e7cbc3\", \"bytes\": 52861377}, \"manifest_sha256\": \"404a3f79b54a5c63154d016eb28867ad0bc0c2001cb4e160218b3ed4cdb7e6fa\", \"artifacts\": {\"providers.exe\": {\"sha256\": \"b0af10a96490b9f3c37597e6bdd182b86250c1fd05940dbc55a5d4e23718731e\", \"bytes\": 99813888}}}",
+          "clipped": false
+        },
+        {
+          "line": 42,
+          "text": "{\"exit\": 0, \"seconds\": 2039.867694916}",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 33,
+          "text": "WINDOWS_BUILD_COMMAND {\"name\": \"plugin-msvc\", \"argv\": [\"cargo\", \"xwin\", \"test\", \"--no-run\", \"--release\", \"--locked\", \"--target\", \"x86_64-pc-windows-msvc\", \"--all-features\", \"--message-format=json-render-diagnostics\", \"-p\", \"acyclic-plugin\", \"--bin\", \"acyclic\", \"--test\", \"e2e\"], \"exit\": 0, \"seconds\": 407.33385045599425, \"stdout\": \".bb-win-shipping-r2315-logs/plugin-msvc.jsonl\", \"stderr\": \".bb-win-shipping-r2315-logs/plugin-msvc.err\"}",
+          "clipped": false
+        },
+        {
+          "line": 34,
+          "text": "WINDOWS_BUILD_START stage-plugin",
+          "clipped": false
+        },
+        {
+          "line": 35,
+          "text": "WINDOWS_BUILD_COMMAND {\"name\": \"stage-plugin\", \"argv\": [\"node\", \"scripts/graphcoder-e2e/artifacts.mjs\", \".bb-win-shipping-r2315-logs/plugin-selectors.json\", \"/work/src/.bb-win-shipping-r2315-plugin\"], \"exit\": 0, \"seconds\": 0.30604565699468367, \"stdout\": \".bb-win-shipping-r2315-logs/stage-plugin.jsonl\", \"stderr\": \".bb-win-shipping-r2315-logs/stage-plugin.err\"}",
+          "clipped": false
+        },
+        {
+          "line": 36,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"plugin\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-plugin.tar.gz\", \"sha256\": \"f5d2635ad3f382f7e94b20242f0c046566f7b4673019d3adaf1f104bb468b6ac\", \"bytes\": 104768340}, \"manifest_sha256\": \"4805ae39a964fce6c20143c988d123d343d6d7228d96d92535807f066d0bc3a1\", \"artifacts\": {\"plugin.exe\": {\"sha256\": \"4cf7532492a4c1fe832fe611d5666cacea0fcc064d4a17219443ad1956998d20\", \"bytes\": 213618688}, \"plugin-e2e.exe\": {\"sha256\": \"034c56209084e071931c94f63076ef82bc69cf3da344fc9d63b1ab8ca3d97a79\", \"bytes\": 22584832}}}",
+          "clipped": false
+        },
+        {
+          "line": 37,
+          "text": "WINDOWS_BUILD_START providers-msvc",
+          "clipped": false
+        },
+        {
+          "line": 38,
+          "text": "WINDOWS_BUILD_COMMAND {\"name\": \"providers-msvc\", \"argv\": [\"cargo\", \"xwin\", \"test\", \"--no-run\", \"--release\", \"--locked\", \"--target\", \"x86_64-pc-windows-msvc\", \"--all-features\", \"--message-format=json-render-diagnostics\", \"-p\", \"acyclic-harness-providers\", \"--lib\"], \"exit\": 0, \"seconds\": 341.0875313510187, \"stdout\": \".bb-win-shipping-r2315-logs/providers-msvc.jsonl\", \"stderr\": \".bb-win-shipping-r2315-logs/providers-msvc.err\"}",
+          "clipped": false
+        },
+        {
+          "line": 39,
+          "text": "WINDOWS_BUILD_START stage-providers",
+          "clipped": false
+        },
+        {
+          "line": 40,
+          "text": "WINDOWS_BUILD_COMMAND {\"name\": \"stage-providers\", \"argv\": [\"node\", \"scripts/graphcoder-e2e/artifacts.mjs\", \".bb-win-shipping-r2315-logs/providers-selectors.json\", \"/work/src/.bb-win-shipping-r2315-providers\"], \"exit\": 0, \"seconds\": 0.17012820101808757, \"stdout\": \".bb-win-shipping-r2315-logs/stage-providers.jsonl\", \"stderr\": \".bb-win-shipping-r2315-logs/stage-providers.err\"}",
+          "clipped": false
+        },
+        {
+          "line": 41,
+          "text": "WINDOWS_EXPORT {\"attribution\": \"Codex\", \"name\": \"providers\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"archive\": {\"path\": \"/work/src/.bb-win-shipping-r2315-providers.tar.gz\", \"sha256\": \"088ba6eaaa114fc748554e226c4e94d6e22cae674ca29b68f7ef65abc1e7cbc3\", \"bytes\": 52861377}, \"manifest_sha256\": \"404a3f79b54a5c63154d016eb28867ad0bc0c2001cb4e160218b3ed4cdb7e6fa\", \"artifacts\": {\"providers.exe\": {\"sha256\": \"b0af10a96490b9f3c37597e6bdd182b86250c1fd05940dbc55a5d4e23718731e\", \"bytes\": 99813888}}}",
+          "clipped": false
+        },
+        {
+          "line": 42,
+          "text": "WINDOWS_BUILD_TERMINAL {\"attribution\": \"Codex\", \"head\": \"065e85518181894b9fc0e30d1caee00de3f93e95\", \"main\": \"b7333953cbd5d3b31adc05cf2f0851f049f6c16a\", \"compiled_tree\": \"2c6837e3531d036e9ffa75f568f705156b0cb708\", \"exit\": 0, \"seconds\": 2039.867694916, \"commands\": [{\"name\": \"filesystem-msvc\", \"argv\": [\"cargo\", \"xwin\", \"test\", \"--no-run\", \"--release\", \"--locked\", \"--target\", \"x86_64-pc-windows-msvc\", \"--all-features\", \"--message-format=json-render-diagnostics\", \"-p\", \"acyclic-fs\", \"--lib\", \"--test\", \"main\", \"--test\", \"windows_ntfs_perf\"], \"exit\": 0, \"seconds\": 523.413067187008, \"stdout\": \".bb-win-shipping-r2315-logs/filesystem-msvc.jsonl\", \"stderr\": \".bb-win-shipping-r2315-logs/filesystem-msvc.err\"}, {\"name\": \"stage-filesystem\", \"argv\": [\"node\", \"scripts/graphcoder-e2e/artifacts.mjs\", \".bb-win-shipping-r2315-logs/filesystem-selectors.json\", \"/work/src/.bb-win-shipping-r2315-filesystem\"], \"exit\": 0, \"seconds\": 0.3739883920061402, \"stdout\": \".bb-win-shipping-r2315-logs/stage-filesystem.jsonl\", \"stderr\": \".bb-win-shipping-r2315-logs/stage-filesystem.err\"}, {\"name\": \"runtime-msvc\", \"argv\": [\"cargo\", \"xwin\", \"test\", \"--no-run\", \"--release\", \"--locked\", \"--target\", \"x86_64-pc-windows-msvc\", \"--all-features\", \"--message-format=json-render-diagnostics\", \"-p\", \"acyclic-native-runtime\", \"--lib\"], \"exit\": 0, \"seconds\": 26.32522477101884, \"stdout\": \".bb-win-shipping-r2315-logs/runtime-msvc.jsonl\", \"stderr\": \".bb-win-shipping-r2315-logs/runtime-msvc.err\"}, {\"name\": \"stage-runtime\", \"argv\": [\"node\", \"scripts/graphcoder-e2e/artifacts.mjs\", \".bb-win-shipping-r2315-logs/runtime-selectors.json\"",
+          "clipped": true
+        }
+      ]
+    },
+    {
+      "log_id": "1792976163751-256557-f1261d47",
+      "lines": 480,
+      "matches": 3,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe a0199ea1afe2edb4b3503779e738bd2cc54bbc2e88f3a95271ee081302fcdc57",
+          "clipped": false
+        },
+        {
+          "line": 455,
+          "text": "error[E0631]: type mismatch in function arguments",
+          "clipped": false
+        },
+        {
+          "line": 479,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 471,
+          "text": "  --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/result.rs:960:4",
+          "clipped": false
+        },
+        {
+          "line": 472,
+          "text": "help: consider wrapping the function in a closure",
+          "clipped": false
+        },
+        {
+          "line": 473,
+          "text": "   |",
+          "clipped": false
+        },
+        {
+          "line": 474,
+          "text": "12 |             .map_err(|arg0: LocalCoreStateStoreError| super::errors::compat_error(/* GitCompatError<LocalCoreStateStoreError> */))?",
+          "clipped": false
+        },
+        {
+          "line": 475,
+          "text": "   |                      ++++++++++++++++++++++++++++++++                            ++++++++++++++++++++++++++++++++++++++++++++++++",
+          "clipped": false
+        },
+        {
+          "line": 476,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 477,
+          "text": "warning: `acyclic-fs` (lib) generated 4 warnings",
+          "clipped": false
+        },
+        {
+          "line": 478,
+          "text": "For more information about this error, try `rustc --explain E0631`.",
+          "clipped": false
+        },
+        {
+          "line": 479,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error",
+          "clipped": false
+        },
+        {
+          "line": 480,
+          "text": "P1 step=git-access rc=101; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-p1-access.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976379961-257868-cc8b7306",
+      "lines": 320,
+      "matches": 7,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 5,
+          "text": "BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe 4e988884f971c659627b6be9f48405f807f09a6a96f141a7a8eaf2939f5c719d",
+          "clipped": false
+        },
+        {
+          "line": 251,
+          "text": "error: item in documentation is missing backticks",
+          "clipped": false
+        },
+        {
+          "line": 266,
+          "text": "error: this function has too many lines (143/100)",
+          "clipped": false
+        },
+        {
+          "line": 280,
+          "text": "error: consider adding a `;` to the last statement for consistent formatting",
+          "clipped": false
+        },
+        {
+          "line": 290,
+          "text": "error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers",
+          "clipped": false
+        },
+        {
+          "line": 306,
+          "text": "error: casting `u64` to `usize` may truncate the value on targets with 32-bit wide pointers",
+          "clipped": false
+        },
+        {
+          "line": 320,
+          "text": "error: could not compile `acyclic-stream` (lib) due to 5 previous errors",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 311,
+          "text": "    |",
+          "clipped": false
+        },
+        {
+          "line": 312,
+          "text": "    = help: if this is intentional allow the lint with `#[allow(clippy::cast_possible_truncation)]` ...",
+          "clipped": false
+        },
+        {
+          "line": 313,
+          "text": "    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#cast_possible_truncation",
+          "clipped": false
+        },
+        {
+          "line": 314,
+          "text": "help: ... or use `try_from` and handle the error accordingly",
+          "clipped": false
+        },
+        {
+          "line": 315,
+          "text": "    |",
+          "clipped": false
+        },
+        {
+          "line": 316,
+          "text": "156 -         let metadata = ReadAllocation::new(meter, Self::vec_guard_header_bytes::<G>() as usize)?;",
+          "clipped": false
+        },
+        {
+          "line": 317,
+          "text": "156 +         let metadata = ReadAllocation::new(meter, usize::try_from(Self::vec_guard_header_bytes::<G>()))?;",
+          "clipped": false
+        },
+        {
+          "line": 318,
+          "text": "    |",
+          "clipped": false
+        },
+        {
+          "line": 319,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 320,
+          "text": "error: could not compile `acyclic-stream` (lib) due to 5 previous errors",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976380243-257886-c18b8d80",
+      "lines": 15,
+      "matches": 3,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=cef1e415194397155569bee6b40d6b3dd48020c8 a9b6f572f3ee78098f988570b541cee5acdbfbb2 6f4d076f575447c6748a1bd5046f91c4e8b180dd5522570555894f52aacc0762",
+          "clipped": false
+        },
+        {
+          "line": 11,
+          "text": "AssertionError: ('metrics', 1, 0.00870177400065586)",
+          "clipped": false
+        },
+        {
+          "line": 12,
+          "text": "error: Cannot find module '../generated/proto/stream/v1/stream_pb.js' from '/work/src/typescript/packages/stream/src/types.ts'",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=cef1e415194397155569bee6b40d6b3dd48020c8 a9b6f572f3ee78098f988570b541cee5acdbfbb2 6f4d076f575447c6748a1bd5046f91c4e8b180dd5522570555894f52aacc0762",
+          "clipped": false
+        },
+        {
+          "line": 7,
+          "text": "[buildbox] source clock: exact-content private targets",
+          "clipped": false
+        },
+        {
+          "line": 8,
+          "text": "BUILD_SLOT_EXEC={\"exec_start\":\"2026-10-26T01:02:19.108Z\",\"toolchain\":{\"rustc_vv_sha256\":\"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37\",\"rustc_vv\":\"rustc 1.98.1 (48a229cea 2026-09-01)\\nbinary: rustc\\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\\ncommit-date: 2026-09-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.98.1\\nLLVM version: 22.1.8\\n\",\"target\":[\"x86_64-unknown-linux-gnu\"],\"probe_error\":null}}",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "  File \"<stdin>\", line 12, in <module>",
+          "clipped": false
+        },
+        {
+          "line": 11,
+          "text": "AssertionError: ('metrics', 1, 0.00870177400065586)",
+          "clipped": false
+        },
+        {
+          "line": 12,
+          "text": "error: Cannot find module '../generated/proto/stream/v1/stream_pb.js' from '/work/src/typescript/packages/stream/src/types.ts'",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "Bun v1.4.2 (Linux x64)",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976311318-257489-3fd12716",
+      "lines": 150,
+      "matches": 24,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=9eaee221d5cc5604a1c9e1a46cb2568c5d6f6e81 623a3f21046528df04f0871d4fa760e945acab1a ab40bae154a4c70310c4d90414c67bc80c09edd0a3d4fde0cb06a23296a3503f",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "{\"exit\": 0, \"seconds\": 0.030620028992416337}",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "{\"exit\": 0, \"seconds\": 0.03251286500017159}",
+          "clipped": false
+        },
+        {
+          "line": 11,
+          "text": "{\"exit\": 0, \"seconds\": 0.0319975400052499}",
+          "clipped": false
+        },
+        {
+          "line": 12,
+          "text": "{\"exit\": 0, \"seconds\": 0.033198211021954194}",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "{\"exit\": 0, \"seconds\": 0.030226055008824915}",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "{\"exit\": 0, \"seconds\": 0.03182640898739919}",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "{\"exit\": 0, \"seconds\": 0.029975543991895393}",
+          "clipped": false
+        },
+        {
+          "line": 16,
+          "text": "{\"exit\": 0, \"seconds\": 0.030004573025507852}",
+          "clipped": false
+        },
+        {
+          "line": 17,
+          "text": "{\"exit\": 0, \"seconds\": 0.03646094899158925}",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "{\"exit\": 0, \"seconds\": 0.04369379999116063}",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "{\"exit\": 0, \"seconds\": 0.032374074013205245}",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "{\"exit\": 0, \"seconds\": 0.03165543801151216}",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "{\"exit\": 0, \"seconds\": 0.03407392799272202}",
+          "clipped": false
+        },
+        {
+          "line": 22,
+          "text": "{\"exit\": 0, \"seconds\": 0.03651724799419753}",
+          "clipped": false
+        },
+        {
+          "line": 23,
+          "text": "{\"exit\": 0, \"seconds\": 0.04031973102246411}",
+          "clipped": false
+        },
+        {
+          "line": 24,
+          "text": "{\"exit\": 0, \"seconds\": 0.03688264198717661}",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": "{\"exit\": 0, \"seconds\": 0.03549390999251045}",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "{\"exit\": 0, \"seconds\": 0.03415108899935149}",
+          "clipped": false
+        },
+        {
+          "line": 27,
+          "text": "{\"exit\": 0, \"seconds\": 0.0349644260131754}",
+          "clipped": false
+        },
+        {
+          "line": 28,
+          "text": "{\"exit\": 101, \"seconds\": 198.01585190798505}",
+          "clipped": false
+        },
+        {
+          "line": 35,
+          "text": "RuntimeError: STEP core-harness-build failed: :false},\"features\":[\"client\",\"client-legacy\",\"client-proxy\",\"default\",\"http1\",\"http2\",\"server\",\"server-auto\",\"service\",\"tokio\"],\"filenames\":[\"/work/target/debug/deps/libhyper_util-e078b63a52dab583.rlib\",\"/work/target/debug/deps/libhyper_util-e078b63a52dab583.rmeta\"],\"executable\":null,\"fresh\":false}",
+          "clipped": false
+        },
+        {
+          "line": 131,
+          "text": "error[E0502]: cannot borrow `source` as mutable because it is also borrowed as immutable",
+          "clipped": false
+        },
+        {
+          "line": 144,
+          "text": "error: could not compile `acyclic-harness-core` (lib test) due to 1 previous error",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 141,
+          "text": "    |                 ---------- immutable borrow later used here",
+          "clipped": false
+        },
+        {
+          "line": 142,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 143,
+          "text": "For more information about this error, try `rustc --explain E0502`.",
+          "clipped": false
+        },
+        {
+          "line": 144,
+          "text": "error: could not compile `acyclic-harness-core` (lib test) due to 1 previous error",
+          "clipped": false
+        },
+        {
+          "line": 145,
+          "text": "warning: build failed, waiting for other jobs to finish...",
+          "clipped": false
+        },
+        {
+          "line": 146,
+          "text": "{\"reason\":\"compiler-artifact\",\"package_id\":\"path+file:///work/src/rust/crates/harness-core#acyclic-harness-core@0.2.0\",\"manifest_path\":\"/work/src/rust/crates/harness-core/Cargo.toml\",\"target\":{\"kind\":[\"lib\"],\"crate_types\":[\"lib\"],\"name\":\"acyclic_harness_core\",\"src_path\":\"/work/src/rust/crates/harness-core/src/lib.rs\",\"edition\":\"2024\",\"doc\":true,\"doctest\":true,\"test\":true},\"profile\":{\"opt_level\":\"1\",\"debuginfo\":0,\"debug_assertions\":true,\"overflow_checks\":true,\"test\":false},\"features\":[\"browser\",\"filesystem\",\"filesystem-local\",\"grpc\",\"hooks\",\"machines\",\"mcp-http\",\"mcp-oauth\",\"mcp-stdio\",\"model-checking\",\"native-execution\",\"objects\",\"search-http\",\"terminal\",\"test-support\",\"tui\",\"wasm\"],\"filenames\":[\"/work/target/debug/deps/libacyclic_harness_core-86e442716c1ac509.rlib\",\"/work/target/debug/deps/libacyclic_harness_core-86e442716c1ac509.rmeta\"],\"executable\":null,\"fresh\":false}",
+          "clipped": false
+        },
+        {
+          "line": 147,
+          "text": "warning: `acyclic-harness-core` (lib) generated 1 warning (run `cargo fix --lib -p acyclic-harness-core` to apply 1 suggestion)",
+          "clipped": false
+        },
+        {
+          "line": 148,
+          "text": "{\"reason\":\"build-finished\",\"success\":false}",
+          "clipped": false
+        },
+        {
+          "line": 149,
+          "text": "; recovery command: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-runtime-resume.sh",
+          "clipped": false
+        },
+        {
+          "line": 150,
+          "text": "STEP runtime-resume-producer failed (1); recovery command: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-runtime-resume.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976602317-259595-3c0e3317",
+      "lines": 15,
+      "matches": 2,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe ad8fc2d5adaed28f27c2ea306ebc807c045a038809af3e4e38008225217813c6",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.secrets was not provided by any .service files",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe ad8fc2d5adaed28f27c2ea306ebc807c045a038809af3e4e38008225217813c6",
+          "clipped": false
+        },
+        {
+          "line": 7,
+          "text": "[buildbox] source clock: exact-content private targets",
+          "clipped": false
+        },
+        {
+          "line": 8,
+          "text": "BUILD_SLOT_EXEC={\"exec_start\":\"2026-10-26T01:04:11.818Z\",\"toolchain\":{\"rustc_vv_sha256\":\"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37\",\"rustc_vv\":\"rustc 1.98.1 (48a229cea 2026-09-01)\\nbinary: rustc\\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\\ncommit-date: 2026-09-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.98.1\\nLLVM version: 22.1.8\\n\",\"target\":[\"x86_64-unknown-linux-gnu\"],\"probe_error\":null}}",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "Get:1 http://us-west-2.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libgck-1-0 amd64 3.41.2-1build3 [79.9 kB]",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "Get:2 http://us-west-2.ec2.archive.ubuntu.com/ubuntu noble/main amd64 libgcr-base-3-1 amd64 3.41.2-1build3 [202 kB]",
+          "clipped": false
+        },
+        {
+          "line": 11,
+          "text": "Get:3 http://us-west-2.ec2.archive.ubuntu.com/ubuntu noble-updates/main amd64 gnome-keyring amd64 46.1-2ubuntu0.2 [640 kB]",
+          "clipped": false
+        },
+        {
+          "line": 12,
+          "text": "Fetched 922 kB in 0s (23.7 MB/s)",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "Error: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.secrets was not provided by any .service files",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "owner-keychain fixture step=command rc=1; recovery: scripts/with-owner-keychain.sh <original command>",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "P1 custody step=keychain-service rc=1; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-p1-keychain.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976585664-259475-309b36a6",
+      "lines": 291,
+      "matches": 11,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 5,
+          "text": "BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe cd2a84990299355da319d0e5677a0573167b2a93ecc8fdb80fe28d01f3cc3914",
+          "clipped": false
+        },
+        {
+          "line": 263,
+          "text": "Error: \"wave1 case=AbsentZeroTail step=absent_tail_zero invariant=ZeroTailAbsence; recovery: build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance\"",
+          "clipped": false
+        },
+        {
+          "line": 264,
+          "text": "Error: \"wave1 case=AppendRetry step=inspect_conflict invariant=RejectedKeyUnspent; recovery: build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance\"",
+          "clipped": false
+        },
+        {
+          "line": 265,
+          "text": "Error: \"wave1 case=CommitRetry step=inspect_conflict invariant=RejectedKeyUnspent; recovery: build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance\"",
+          "clipped": false
+        },
+        {
+          "line": 266,
+          "text": "Error: \"wave1 case=ComposedFork step=read_inherited_path invariant=PreCommitCut; recovery: build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance\"",
+          "clipped": false
+        },
+        {
+          "line": 268,
+          "text": "test memory_absent_zero_tail ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 269,
+          "text": "test memory_append_retry ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 270,
+          "text": "test memory_commit_retry ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 273,
+          "text": "test memory_subtree_fork ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 289,
+          "text": "test result: FAILED. 0 passed; 10 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s",
+          "clipped": false
+        },
+        {
+          "line": 291,
+          "text": "error: test failed, to rerun pass `-p acyclic-stream --test wave1_keys`",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 282,
+          "text": "    local_subtree_fork",
+          "clipped": false
+        },
+        {
+          "line": 283,
+          "text": "    memory_absent_zero_tail",
+          "clipped": false
+        },
+        {
+          "line": 284,
+          "text": "    memory_append_retry",
+          "clipped": false
+        },
+        {
+          "line": 285,
+          "text": "    memory_commit_retry",
+          "clipped": false
+        },
+        {
+          "line": 286,
+          "text": "    memory_composed_fork",
+          "clipped": false
+        },
+        {
+          "line": 287,
+          "text": "    memory_subtree_fork",
+          "clipped": false
+        },
+        {
+          "line": 288,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 289,
+          "text": "test result: FAILED. 0 passed; 10 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s",
+          "clipped": false
+        },
+        {
+          "line": 290,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 291,
+          "text": "error: test failed, to rerun pass `-p acyclic-stream --test wave1_keys`",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792975949164-255035-d394838f",
+      "lines": 1934,
+      "matches": 9,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=ec236e1d5c13fd24576f106861546de604b7ab14 f420dcb3a26fdf22d68faf37edefed8ce9d85534 35aaee68806ed81cc2cc9a98acb4bc070809d9c975031a969ba65e0c24861811",
+          "clipped": false
+        },
+        {
+          "line": 1798,
+          "text": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1458 filtered out; finished in 0.02s",
+          "clipped": false
+        },
+        {
+          "line": 1806,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1459 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 1814,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1459 filtered out; finished in 0.06s",
+          "clipped": false
+        },
+        {
+          "line": 1823,
+          "text": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1458 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 1900,
+          "text": "test filesystem::default_tools::tests::parent_authentication_tests::parent_operations_recheck_retained_evidence_without_reauthenticating ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 1914,
+          "text": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1461 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 1918,
+          "text": "test filesystem::default_tools::tests::parent_authentication_tests::native_publication_owner_releases_every_partial_allocation ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 1932,
+          "text": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1461 filtered out; finished in 0.02s",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 1925,
+          "text": "native publication metadata charges leaked: [(5, 17, 2502), (6, 17, 2524), (7, 17, 2534), (8, 17, 2535), (9, 17, 2560), (10, 17, 3206)]",
+          "clipped": false
+        },
+        {
+          "line": 1926,
+          "text": "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+          "clipped": false
+        },
+        {
+          "line": 1927,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 1928,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 1929,
+          "text": "failures:",
+          "clipped": false
+        },
+        {
+          "line": 1930,
+          "text": "    filesystem::default_tools::tests::parent_authentication_tests::native_publication_owner_releases_every_partial_allocation",
+          "clipped": false
+        },
+        {
+          "line": 1931,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 1932,
+          "text": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1461 filtered out; finished in 0.02s",
+          "clipped": false
+        },
+        {
+          "line": 1933,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 1934,
+          "text": "AUTH_PARENT_PROOF {\"qualified\":true,\"tests\":[{\"regression\":\"filesystem::default_tools::tests::parent_authentication_tests::parent_operations_recheck_retained_evidence_without_reauthenticating\",\"tests\":[\"filesystem::default_tools::tests::parent_authentication_tests::parent_operations_recheck_retained_evidence_without_reauthenticating\",\"filesystem::default_tools::tests::parent_authentication_tests::native_publication_owner_releases_every_partial_allocation\",\"filesystem::default_tools::tests::parent_authentication_tests::native_publication_owner_rechecks_trust_cancellation_and_original_custody\",\"filesystem::default_tools::tests::parent_authentication_tests::parent_revocation_rejects_pending_fork_import_and_merge\"],\"seconds\":0.02},{\"regression\":\"filesystem::pinned_read_tests::authenticated::content_readers_recheck_shared_evidence_without_reauthenticating\",\"tests\":[\"filesystem::pinned_read_tests::authenticated::revoked_content_readers_reject_pending_and_shared_entry_points\",\"filesystem::default_tools::tests::merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes\",\"filesystem::pinned_read_tests::authenticated::content_readers_recheck_shared_evidence_without_reauthenticating\"],\"seconds\":0.01},{\"regression\":\"filesystem::default_tools::tests::aggregate_custody_tests::failed_aggregate_constructors_release_every_allocation_boundary\",\"tests\":[\"filesystem::tests::native_verifier_copies_authentic_scope_and_keeps_custody_until_drop\",\"filesystem::tests::staged_content_is_version_pinned_and_requires_exact_grants\",\"filesystem::default_tools::tests::aggregate_custody_tests::failed_aggr",
+          "clipped": true
+        }
+      ]
+    },
+    {
+      "log_id": "1792976743846-260652-e6ee9eec",
+      "lines": 21,
+      "matches": 1,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe c2e6360fb6fd25a526c0f2be1b3b06d21528b3d5458e1665ab495d6d14d098fe",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 12,
+          "text": "Fetched 922 kB in 0s (8748 kB/s)",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "GNOME_KEYRING_CONTROL=/mnt/bb/jobs/job-w6hheav8/tmp/acyclic-owner-keychain.dGXEhZQU/control",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "** Message: 01:06:17.717: couldn't access control socket: /mnt/bb/jobs/job-w6hheav8/tmp/acyclic-owner-keychain.dGXEhZQU/runtime/keyring/control: No such file or directory",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "discover_other_daemon: 0GNOME_KEYRING_CONTROL=/mnt/bb/jobs/job-w6hheav8/tmp/acyclic-owner-keychain.dGXEhZQU/control",
+          "clipped": false
+        },
+        {
+          "line": 16,
+          "text": "GNOME_KEYRING_CONTROL=/mnt/bb/jobs/job-w6hheav8/tmp/acyclic-owner-keychain.Jp5aPaNa/control",
+          "clipped": false
+        },
+        {
+          "line": 17,
+          "text": "** Message: 01:06:29.310: couldn't access control socket: /mnt/bb/jobs/job-w6hheav8/tmp/acyclic-owner-keychain.Jp5aPaNa/runtime/keyring/control: No such file or directory",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "discover_other_daemon: 0error: cannot update the lock file /work/src/Cargo.lock because --locked was passed to prevent this",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "help: to generate the lock file without accessing the network, remove the --locked flag and use --offline instead.",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "owner-keychain fixture step=command rc=101; recovery: scripts/with-owner-keychain.sh <original command>",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "P1 custody step=key-custody rc=101; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-p1-keychain.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792975493250-252126-9f75ca8d",
+      "lines": 5205,
+      "matches": 22,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=4200a6ae568e3616fed5337dc29f7c06baf83fee 0497932e377437a67c3d1dc1655f0aada0d5d2af a8398cebb8da6d7cc45d9a47f8641ae77c1afa5883bb0dabce2198e241745a44",
+          "clipped": false
+        },
+        {
+          "line": 911,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2099 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2124,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2099 filtered out; finished in 0.02s",
+          "clipped": false
+        },
+        {
+          "line": 2128,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2099 filtered out; finished in 0.03s",
+          "clipped": false
+        },
+        {
+          "line": 2830,
+          "text": "test result: ok. 2080 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 7.95s",
+          "clipped": false
+        },
+        {
+          "line": 2967,
+          "text": "test result: ok. 121 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 0.33s",
+          "clipped": false
+        },
+        {
+          "line": 2976,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2982,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2988,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2996,
+          "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3751,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3757,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3763,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3769,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3775,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3781,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3791,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3804,
+          "text": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+          "clipped": false
+        },
+        {
+          "line": 5175,
+          "text": "GATE_WALL seconds=534 test_rc=0",
+          "clipped": false
+        },
+        {
+          "line": 5184,
+          "text": "{\"status\": \"changed-input\"}",
+          "clipped": false
+        },
+        {
+          "line": 5202,
+          "text": "{\"status\": \"changed-input\"}",
+          "clipped": false
+        },
+        {
+          "line": 5205,
+          "text": "GATE_DONE rc=0",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 5196,
+          "text": "feature check: worker=0 seconds=89.1 rebuilt=58 manifest=/work/src/rust/crates/filesystem/Cargo.toml flags=--no-default-features --features native-watch",
+          "clipped": false
+        },
+        {
+          "line": 5197,
+          "text": "feature check: worker=0 seconds=82.2 rebuilt=30 manifest=/work/src/rust/crates/filesystem/Cargo.toml flags=--no-default-features --features s3-http",
+          "clipped": false
+        },
+        {
+          "line": 5198,
+          "text": "feature check: worker=0 seconds=68.9 rebuilt=7 manifest=/work/src/rust/crates/filesystem/Cargo.toml flags=--no-default-features --features session",
+          "clipped": false
+        },
+        {
+          "line": 5199,
+          "text": "feature check: worker=0 seconds=62.6 rebuilt=17 manifest=/work/src/rust/crates/filesystem/Cargo.toml flags=--no-default-features --features test-support",
+          "clipped": false
+        },
+        {
+          "line": 5200,
+          "text": "feature check: worker=0 seconds=56.5 rebuilt=2 manifest=/work/src/rust/crates/filesystem/Cargo.toml flags=--no-default-features --features typescript",
+          "clipped": false
+        },
+        {
+          "line": 5201,
+          "text": "feature matrix: 16/16 sets ok in 803.1s",
+          "clipped": false
+        },
+        {
+          "line": 5202,
+          "text": "GATE_FEATURE_SNAPSHOT {\"key\": \"4846e704ea604100d6bcd6439a245142be9ed313c25939e0714589d617f3bd75\", \"matrix_rc\": 0, \"status\": \"changed-input\", \"version\": \"sdk-target-reflink-v4-input-namespace\"}",
+          "clipped": false
+        },
+        {
+          "line": 5203,
+          "text": "GATE_FEATURES_WALL seconds=803 rc=0 target=/work/target/.gate-features-windows-msvc lock_wait_seconds=0",
+          "clipped": false
+        },
+        {
+          "line": 5204,
+          "text": "GATE_WINDOWS_FEATURES rc=0",
+          "clipped": false
+        },
+        {
+          "line": 5205,
+          "text": "GATE_DONE rc=0",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976400146-258163-612f48ee",
+      "lines": 26,
+      "matches": 6,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=f308e30101d98b38811f4d4cdca97aa5256f790e 2dfcf93467bd6acf3e92eef21193b2820f588eb6 ed190bf19d40ff97084a3ff09a1d861b91c5473f8d7d3b32cb6166335f738d20",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "{\"name\": \"core-build\", \"exit\": 0, \"seconds\": 413.022247195011}",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "{\"name\": \"recorded-tool-and-approval-owner\", \"exit\": 0, \"seconds\": 0.42682489901199006}",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "{\"name\": \"original-dispatch-reconciliation\", \"exit\": 101, \"seconds\": 1.1315388639923185}",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": "RuntimeError: step=original-dispatch-reconciliation failed; recovery: cat /work/src/.bb-approvals-mainb733-host-command-qualification/original-dispatch-reconciliation.log",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "AUTH_WIRE_EXPORT 9a9c6e3a721dbceec14f186b29e5fa72a7888f5b02c14ed72a3fa5bf47c9dfb2",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 17,
+          "text": "    }",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "  }",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "}",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "AUTH_WIRE_COMMAND {\"name\": \"recorded-tool-and-approval-owner\", \"argv\": [\"/work/src/.bb-approvals-mainb733-host-command-qualification/core-artifacts/core\", \"filesystem::task_runtime::tests::approvals::\", \"--nocapture\", \"--test-threads=4\"], \"exit\": 0, \"seconds\": 0.42682489901199006, \"log_sha256\": \"e9e2226a7d34b7dd03270c8ab84321c4cfe563d93f117e7864f143f4f50556fd\", \"stderr_sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "AUTH_WIRE_COMMAND {\"name\": \"original-dispatch-reconciliation\", \"argv\": [\"/work/src/.bb-approvals-mainb733-host-command-qualification/core-artifacts/core\", \"filesystem::task_runtime::tests::settlement::\", \"--nocapture\", \"--test-threads=4\"], \"exit\": 101, \"seconds\": 1.1315388639923185, \"log_sha256\": \"c3aa0832ad3292a201b21f85989f5f7a9d6de039d6cd912f84df2855bd3be582\", \"stderr_sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}",
+          "clipped": false
+        },
+        {
+          "line": 22,
+          "text": "Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 23,
+          "text": "  File \"/work/src/.bb-approvals-mainb733-host-command-qualification.py\", line 27, in <module>",
+          "clipped": false
+        },
+        {
+          "line": 24,
+          "text": "    raise RuntimeError('step='+name+' failed; recovery: cat '+str(records/(name+'.log')))",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": "RuntimeError: step=original-dispatch-reconciliation failed; recovery: cat /work/src/.bb-approvals-mainb733-host-command-qualification/original-dispatch-reconciliation.log",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "AUTH_WIRE_EXPORT 9a9c6e3a721dbceec14f186b29e5fa72a7888f5b02c14ed72a3fa5bf47c9dfb2",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976618175-259703-251f7379",
+      "lines": 63,
+      "matches": 29,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=9eaee221d5cc5604a1c9e1a46cb2568c5d6f6e81 623a3f21046528df04f0871d4fa760e945acab1a b1d87caa48acdcfdf00f773e0117d270482ed9746b350266fd501d4808c453e4",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "{\"exit\": 0, \"seconds\": 0.03508905798662454}",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "{\"exit\": 0, \"seconds\": 0.03445938299410045}",
+          "clipped": false
+        },
+        {
+          "line": 11,
+          "text": "{\"exit\": 0, \"seconds\": 0.034511952981119975}",
+          "clipped": false
+        },
+        {
+          "line": 12,
+          "text": "{\"exit\": 0, \"seconds\": 0.03554031200474128}",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "{\"exit\": 0, \"seconds\": 0.03179440999520011}",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "{\"exit\": 0, \"seconds\": 0.029818023002007976}",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "{\"exit\": 0, \"seconds\": 0.033909407997271046}",
+          "clipped": false
+        },
+        {
+          "line": 16,
+          "text": "{\"exit\": 0, \"seconds\": 0.0321267330145929}",
+          "clipped": false
+        },
+        {
+          "line": 17,
+          "text": "{\"exit\": 0, \"seconds\": 0.036800792993744835}",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "{\"exit\": 0, \"seconds\": 0.0442996259953361}",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "{\"exit\": 0, \"seconds\": 0.0316639989905525}",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "{\"exit\": 0, \"seconds\": 0.030234837002353743}",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "{\"exit\": 0, \"seconds\": 0.037072403996717185}",
+          "clipped": false
+        },
+        {
+          "line": 22,
+          "text": "{\"exit\": 0, \"seconds\": 0.04355535001377575}",
+          "clipped": false
+        },
+        {
+          "line": 23,
+          "text": "{\"exit\": 0, \"seconds\": 0.03877615899546072}",
+          "clipped": false
+        },
+        {
+          "line": 24,
+          "text": "{\"exit\": 0, \"seconds\": 0.041787674999795854}",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": "{\"exit\": 0, \"seconds\": 0.03628932798164897}",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "{\"exit\": 0, \"seconds\": 0.036817943007918075}",
+          "clipped": false
+        },
+        {
+          "line": 27,
+          "text": "{\"exit\": 0, \"seconds\": 0.041440751985646784}",
+          "clipped": false
+        },
+        {
+          "line": 28,
+          "text": "{\"exit\": 0, \"seconds\": 387.64788519998547}",
+          "clipped": false
+        },
+        {
+          "line": 29,
+          "text": "{\"exit\": 0, \"seconds\": 0.1051431919913739}",
+          "clipped": false
+        },
+        {
+          "line": 30,
+          "text": "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 1495 filtered out; finished in 0.10s",
+          "clipped": false
+        },
+        {
+          "line": 31,
+          "text": "{\"exit\": 101, \"seconds\": 0.09563042101217434}",
+          "clipped": false
+        },
+        {
+          "line": 34,
+          "text": "test filesystem::task_runtime::inspection::project::policy_tests::selected_import_inspection_requires_the_original_live_owner_and_selection ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 35,
+          "text": "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1504 filtered out; finished in 0.09s",
+          "clipped": false
+        },
+        {
+          "line": 41,
+          "text": "RuntimeError: STEP selected-source failed: ",
+          "clipped": false
+        },
+        {
+          "line": 52,
+          "text": "test filesystem::task_runtime::inspection::project::policy_tests::selected_import_inspection_requires_the_original_live_owner_and_selection ... FAILED",
+          "clipped": false
+        },
+        {
+          "line": 60,
+          "text": "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1504 filtered out; finished in 0.09s",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 54,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 55,
+          "text": "failures:",
+          "clipped": false
+        },
+        {
+          "line": 56,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 57,
+          "text": "failures:",
+          "clipped": false
+        },
+        {
+          "line": 58,
+          "text": "    filesystem::task_runtime::inspection::project::policy_tests::selected_import_inspection_requires_the_original_live_owner_and_selection",
+          "clipped": false
+        },
+        {
+          "line": 59,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 60,
+          "text": "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1504 filtered out; finished in 0.09s",
+          "clipped": false
+        },
+        {
+          "line": 61,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 62,
+          "text": "; recovery command: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-runtime-resume.sh",
+          "clipped": false
+        },
+        {
+          "line": 63,
+          "text": "STEP runtime-resume-producer failed (1); recovery command: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-runtime-resume.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976814089-261145-7bc015d2",
+      "lines": 10,
+      "matches": 1,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=dd003190d90e9836609fa1c414532b542accc9e7 b5d74917af40b06826fd14c5882a67070810263c 699939b0c263a1683cb7df579692b9034b303a45c6c4a60dd2dca153ef43d987",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 1,
+          "text": "BB_DISK_FREE [{\"path\": \"/\", \"free_percent\": 19.955680053683317, \"free_bytes\": 20532019200}, {\"path\": \"/mnt/bb\", \"free_percent\": 22.47366359346058, \"free_bytes\": 370469834752}]",
+          "clipped": false
+        },
+        {
+          "line": 2,
+          "text": "GATE_HOME_GUARD {\"mechanism\": \"private-read-only-mount\", \"real_home\": \"/home/var\", \"writable\": false, \"recursive\": true, \"private_proc\": true}",
+          "clipped": false
+        },
+        {
+          "line": 3,
+          "text": "[buildbox] sccache startup: sccache: Starting the server...",
+          "clipped": false
+        },
+        {
+          "line": 4,
+          "text": "sccache: Listening on address /mnt/bb/jobs/job-ropzjba2/sccache.sock",
+          "clipped": false
+        },
+        {
+          "line": 5,
+          "text": "[buildbox] node_modules ensured for tracked lockfiles in 1.0s",
+          "clipped": false
+        },
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=dd003190d90e9836609fa1c414532b542accc9e7 b5d74917af40b06826fd14c5882a67070810263c 699939b0c263a1683cb7df579692b9034b303a45c6c4a60dd2dca153ef43d987",
+          "clipped": false
+        },
+        {
+          "line": 7,
+          "text": "[buildbox] source clock: exact-content private targets",
+          "clipped": false
+        },
+        {
+          "line": 8,
+          "text": "BUILD_SLOT_EXEC={\"exec_start\":\"2026-10-26T01:07:44.266Z\",\"toolchain\":{\"rustc_vv_sha256\":\"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37\",\"rustc_vv\":\"rustc 1.98.1 (48a229cea 2026-09-01)\\nbinary: rustc\\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\\ncommit-date: 2026-09-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.98.1\\nLLVM version: 22.1.8\\n\",\"target\":[\"x86_64-unknown-linux-gnu\"],\"probe_error\":null}}",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "/work/target /dev/nvme1n1[/jobs/1792976841151-261145-0d19ad7d.targets] /jobs/1792976841151-261145-0d19ad7d.targets",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "step=run-final-oracles failed(1); recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=core.excludesFile --env GIT_CONFIG_VALUE_0=/mnt/d/lane-scratch/plugins/build-source-excludes.txt bash .bb-plugins-review-current.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976482512-258980-33265849",
+      "lines": 28,
+      "matches": 1,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=cef1e415194397155569bee6b40d6b3dd48020c8 a9b6f572f3ee78098f988570b541cee5acdbfbb2 c1bdd1d773f3725c47bfd3793e79b095a646e3c950a55d425b83c118f957b986",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 19,
+          "text": "(pass) Rust rejects invalid swarm admission before following: layout_bytes [0.06ms]",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "(pass) Rust rejects invalid swarm admission before following: extra [0.07ms]",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "(pass) shared status keys preserve opaque bytes and separate agent namespaces [0.85ms]",
+          "clipped": false
+        },
+        {
+          "line": 22,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 23,
+          "text": " 8 pass",
+          "clipped": false
+        },
+        {
+          "line": 24,
+          "text": " 0 fail",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": " 14 expect() calls",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "Ran 8 tests across 1 file. [476.00ms]",
+          "clipped": false
+        },
+        {
+          "line": 27,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 28,
+          "text": "CLIENT_CURRENT_NODE_WASM_ADMITTED",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792975950533-255072-a777db04",
+      "lines": 10,
+      "matches": 1,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=dd003190d90e9836609fa1c414532b542accc9e7 b5d74917af40b06826fd14c5882a67070810263c 806806ceacbb994c2f6d526df7cc0888aa9ec1a00d06d94f1ebd98adfbbf87dc",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 1,
+          "text": "BB_DISK_FREE [{\"path\": \"/\", \"free_percent\": 19.835787528597688, \"free_bytes\": 20408664064}, {\"path\": \"/mnt/bb\", \"free_percent\": 26.57613849003178, \"free_bytes\": 438097580032}]",
+          "clipped": false
+        },
+        {
+          "line": 2,
+          "text": "GATE_HOME_GUARD {\"mechanism\": \"private-read-only-mount\", \"real_home\": \"/home/var\", \"writable\": false, \"recursive\": true, \"private_proc\": true}",
+          "clipped": false
+        },
+        {
+          "line": 3,
+          "text": "[buildbox] sccache startup: sccache: Starting the server...",
+          "clipped": false
+        },
+        {
+          "line": 4,
+          "text": "sccache: Listening on address /mnt/bb/jobs/job-llqu0p1q/sccache.sock",
+          "clipped": false
+        },
+        {
+          "line": 5,
+          "text": "[buildbox] node_modules ensured for tracked lockfiles in 1.8s",
+          "clipped": false
+        },
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=dd003190d90e9836609fa1c414532b542accc9e7 b5d74917af40b06826fd14c5882a67070810263c 806806ceacbb994c2f6d526df7cc0888aa9ec1a00d06d94f1ebd98adfbbf87dc",
+          "clipped": false
+        },
+        {
+          "line": 7,
+          "text": "[buildbox] source clock: exact-content private targets",
+          "clipped": false
+        },
+        {
+          "line": 8,
+          "text": "BUILD_SLOT_EXEC={\"exec_start\":\"2026-10-26T00:53:46.782Z\",\"toolchain\":{\"rustc_vv_sha256\":\"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37\",\"rustc_vv\":\"rustc 1.98.1 (48a229cea 2026-09-01)\\nbinary: rustc\\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\\ncommit-date: 2026-09-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.98.1\\nLLVM version: 22.1.8\\n\",\"target\":[\"x86_64-unknown-linux-gnu\"],\"probe_error\":null}}",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "/work/target /dev/nvme1n1[/jobs/1792975964425-255072-04797cbb.targets] /jobs/1792975964425-255072-04797cbb.targets",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "step=normal-and-scale-shipping failed(1); recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=core.excludesFile --env GIT_CONFIG_VALUE_0=/mnt/d/lane-scratch/plugins/build-source-excludes.txt bash .bb-plugins-review-final.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792977050637-643-80f57b93",
+      "lines": 100,
+      "matches": 4,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=332987568f1d6b85f8d0192eccce354b36251638 2184bc9e24a30caee66f79a9ee79e5fccdb57483 8a3a8c24f7876c11802bb037cd5df63e33e95aacb6e53747cc7208d8759c3ee3",
+          "clipped": false
+        },
+        {
+          "line": 80,
+          "text": "AssertionError: 1 != 0 : Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 82,
+          "text": "AssertionError: b'Traceback (most recent call last):\\n  File \"/mnt/bb/tmp/tmp4c9wotn6/bb-admit.py\", line 26, in <module>\\n    import input_closure\\nModuleNotFoundError: No module named \\'input_closure\\'\\n'",
+          "clipped": false
+        },
+        {
+          "line": 91,
+          "text": "AssertionError: 1 != 0 : Traceback (most recent call last):",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 91,
+          "text": "AssertionError: 1 != 0 : Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 92,
+          "text": "  File \"/mnt/bb/tmp/tmppituja5l/bb-admit.py\", line 26, in <module>",
+          "clipped": false
+        },
+        {
+          "line": 93,
+          "text": "    import input_closure",
+          "clipped": false
+        },
+        {
+          "line": 94,
+          "text": "ModuleNotFoundError: No module named 'input_closure'",
+          "clipped": false
+        },
+        {
+          "line": 95,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 96,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 97,
+          "text": "----------------------------------------------------------------------",
+          "clipped": false
+        },
+        {
+          "line": 98,
+          "text": "Ran 5 tests in 1.584s",
+          "clipped": false
+        },
+        {
+          "line": 99,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 100,
+          "text": "FAILED (failures=2)",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976955224-261824-aeb57a8b",
+      "lines": 14,
+      "matches": 4,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=f308e30101d98b38811f4d4cdca97aa5256f790e 2dfcf93467bd6acf3e92eef21193b2820f588eb6 a8e6c6fa0b0560ee87dbaeaa98fb733039aa87cb8ab2b9371d3b8cb57d2b4e11",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "{\"name\": \"fuzz-build\", \"exit\": 101, \"seconds\": 116.70972978099599}",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "RuntimeError: step=journal fuzz build failed; recovery: cat /work/src/.bb-approvals-mainb733-journal-fuzz-qualification/fuzz-build.stderr.log",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "AUTH_WIRE_EXPORT 0f929ae1a5d95ef016fb63fba3a8a467a36a8837574f933fd199eb6b9b4207b1",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 5,
+          "text": "[buildbox] node_modules ensured for tracked lockfiles in 0.1s",
+          "clipped": false
+        },
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=f308e30101d98b38811f4d4cdca97aa5256f790e 2dfcf93467bd6acf3e92eef21193b2820f588eb6 a8e6c6fa0b0560ee87dbaeaa98fb733039aa87cb8ab2b9371d3b8cb57d2b4e11",
+          "clipped": false
+        },
+        {
+          "line": 7,
+          "text": "[buildbox] source clock: exact-content private targets",
+          "clipped": false
+        },
+        {
+          "line": 8,
+          "text": "BUILD_SLOT_EXEC={\"exec_start\":\"2026-10-26T01:11:05.777Z\",\"toolchain\":{\"rustc_vv_sha256\":\"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37\",\"rustc_vv\":\"rustc 1.98.1 (48a229cea 2026-09-01)\\nbinary: rustc\\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\\ncommit-date: 2026-09-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.98.1\\nLLVM version: 22.1.8\\n\",\"target\":[\"x86_64-unknown-linux-gnu\"],\"probe_error\":null}}",
+          "clipped": false
+        },
+        {
+          "line": 9,
+          "text": "AUTH_WIRE_COMMAND {\"name\": \"fuzz-build\", \"argv\": [\"cargo\", \"build\", \"--locked\", \"--manifest-path\", \"rust/crates/harness/fuzz-native-journal/Cargo.toml\", \"--bin\", \"native_journal\", \"--message-format=json-render-diagnostics\"], \"exit\": 101, \"seconds\": 116.70972978099599, \"log_sha256\": \"12e452672a1b4c0b13ce33686d4b332da794c8c0dcaf3b20972d07db4c194ae4\", \"stderr_sha256\": \"9a0a708fe5272ad64264050e7bdde2bb3795e71e24e0e98aee2a2a0005e849c6\"}",
+          "clipped": false
+        },
+        {
+          "line": 10,
+          "text": "Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 11,
+          "text": "  File \"/work/src/.bb-approvals-mainb733-journal-fuzz-qualification.py\", line 13, in <module>",
+          "clipped": false
+        },
+        {
+          "line": 12,
+          "text": "    raise RuntimeError('step=journal fuzz build failed; recovery: cat '+str(records/'fuzz-build.stderr.log'))",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "RuntimeError: step=journal fuzz build failed; recovery: cat /work/src/.bb-approvals-mainb733-journal-fuzz-qualification/fuzz-build.stderr.log",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "AUTH_WIRE_EXPORT 0f929ae1a5d95ef016fb63fba3a8a467a36a8837574f933fd199eb6b9b4207b1",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792972899589-128167-8108cb20",
+      "lines": 15337,
+      "matches": 249,
+      "omitted": 149,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=5997eac11315bf4afbb03f0e1bb6e5c92efb41cc adc797c1ea068145ac1a125c7e2417880e5dfcd9 a3cf5a35aa0446354ee855ceddfadb867848dec3e8f7b13f7ce472c414323605",
+          "clipped": false
+        },
+        {
+          "line": 2336,
+          "text": "test result: ok. 44 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.27s",
+          "clipped": false
+        },
+        {
+          "line": 2354,
+          "text": "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s",
+          "clipped": false
+        },
+        {
+          "line": 2363,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2387,
+          "text": "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+          "clipped": false
+        },
+        {
+          "line": 2393,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2404,
+          "text": "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2418,
+          "text": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2424,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2430,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2436,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2442,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2448,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2457,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2463,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2495,
+          "text": "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s",
+          "clipped": false
+        },
+        {
+          "line": 2506,
+          "text": "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 2514,
+          "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
+          "clipped": false
+        },
+        {
+          "line": 2531,
+          "text": "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2543,
+          "text": "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2552,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 2561,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2570,
+          "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+          "clipped": false
+        },
+        {
+          "line": 2578,
+          "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+          "clipped": false
+        },
+        {
+          "line": 2597,
+          "text": "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 2611,
+          "text": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2638,
+          "text": "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.23s",
+          "clipped": false
+        },
+        {
+          "line": 2648,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2654,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2664,
+          "text": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 2694,
+          "text": "test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s",
+          "clipped": false
+        },
+        {
+          "line": 2701,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2707,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2713,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2724,
+          "text": "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+          "clipped": false
+        },
+        {
+          "line": 2731,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 2737,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2743,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2749,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2755,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2761,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2958,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2971,
+          "text": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 2977,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 3115,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1906 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 4375,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1906 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 4421,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1906 filtered out; finished in 0.04s",
+          "clipped": false
+        },
+        {
+          "line": 4910,
+          "text": "test result: ok. 1887 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 4.10s",
+          "clipped": false
+        },
+        {
+          "line": 5047,
+          "text": "test result: ok. 121 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 0.34s",
+          "clipped": false
+        },
+        {
+          "line": 5056,
+          "text": "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5062,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5068,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5076,
+          "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5831,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5837,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5843,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5849,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5855,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5861,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 5872,
+          "text": "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 6004,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 6019,
+          "text": "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s",
+          "clipped": false
+        },
+        {
+          "line": 6025,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 6033,
+          "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 6049,
+          "text": "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 6664,
+          "text": "test result: ok. 608 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 52.40s",
+          "clipped": false
+        },
+        {
+          "line": 6670,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 6691,
+          "text": "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.86s",
+          "clipped": false
+        },
+        {
+          "line": 6697,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 6763,
+          "text": "test result: ok. 60 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s",
+          "clipped": false
+        },
+        {
+          "line": 7458,
+          "text": "test result: ok. 683 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 36.77s",
+          "clipped": false
+        },
+        {
+          "line": 7464,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7478,
+          "text": "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s",
+          "clipped": false
+        },
+        {
+          "line": 7509,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7515,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7521,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7527,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7533,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7539,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7545,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7551,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7557,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7563,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7569,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7575,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7581,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7594,
+          "text": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.43s",
+          "clipped": false
+        },
+        {
+          "line": 7607,
+          "text": "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "clipped": false
+        },
+        {
+          "line": 7613,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7619,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7627,
+          "text": "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s",
+          "clipped": false
+        },
+        {
+          "line": 7634,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 7651,
+          "text": "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.69s",
+          "clipped": false
+        },
+        {
+          "line": 7657,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 9119,
+          "text": "test result: ok. 1456 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.21s",
+          "clipped": false
+        },
+        {
+          "line": 9145,
+          "text": "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s",
+          "clipped": false
+        },
+        {
+          "line": 9151,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 9157,
+          "text": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 9164,
+          "text": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "clipped": false
+        },
+        {
+          "line": 15336,
+          "text": "error: GATE_RUNNER_INFRA Clippy stream attestation step failed: reviewed payload footer disagrees with its executor; recovery command: python3 /work/src/.gate-clippy.py run bash .gate-pr-payload.sh",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 15328,
+          "text": "GATE_CLIPPY_RAW rust/crates/harness-core/tests/git_executor.rs:378:14: warning: used `unwrap()` on a `Result` value",
+          "clipped": false
+        },
+        {
+          "line": 15329,
+          "text": "GATE_CLIPPY_RAW rust/crates/harness-core/tests/git_executor.rs:381:17: warning: used `unwrap()` on a `Result` value",
+          "clipped": false
+        },
+        {
+          "line": 15330,
+          "text": "GATE_CLIPPY_RAW rust/crates/harness-core/tests/git_executor.rs:384:18: warning: used `unwrap()` on a `Result` value",
+          "clipped": false
+        },
+        {
+          "line": 15331,
+          "text": "GATE_CLIPPY_RAW rust/crates/harness-core/tests/git_executor.rs:397:21: warning: used `unwrap()` on a `Result` value",
+          "clipped": false
+        },
+        {
+          "line": 15332,
+          "text": "GATE_CLIPPY_RAW rust/crates/harness-core/tests/git_executor.rs:876:16: warning: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 15333,
+          "text": "GATE_CLIPPY_RAW rust/crates/harness-core/tests/git_executor.rs:899:9: warning: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 15334,
+          "text": "GATE_CLIPPY_RAW rust/crates/harness-search/src/url_fetch/http.rs:209:23: warning: you seem to be tryGATE_CLIPPY_FINDING 2 plugin/src/pi_builtin/native_io.rs: indexing may panic",
+          "clipped": false
+        },
+        {
+          "line": 15335,
+          "text": "ucer_properties.rs: casting `usize` to `u8` may truncate the value",
+          "clipped": false
+        },
+        {
+          "line": 15336,
+          "text": "error: GATE_RUNNER_INFRA Clippy stream attestation step failed: reviewed payload footer disagrees with its executor; recovery command: python3 /work/src/.gate-clippy.py run bash .gate-pr-payload.sh",
+          "clipped": false
+        },
+        {
+          "line": 15337,
+          "text": "GATE_DONE rc=224",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792977188167-5119-a6409d00",
+      "lines": 141,
+      "matches": 1,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=332987568f1d6b85f8d0192eccce354b36251638 2184bc9e24a30caee66f79a9ee79e5fccdb57483 ceddf31b1102334eaccd0f26ece63f5e232cc4ff622967b2faabdacf05cf0297",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 132,
+          "text": "         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+          "clipped": false
+        },
+        {
+          "line": 133,
+          "text": "  File \"/usr/lib/python3.12/pathlib.py\", line 1015, in open",
+          "clipped": false
+        },
+        {
+          "line": 134,
+          "text": "    return io.open(self, mode, buffering, encoding, errors, newline)",
+          "clipped": false
+        },
+        {
+          "line": 135,
+          "text": "           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+          "clipped": false
+        },
+        {
+          "line": 136,
+          "text": "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/bb/tmp/command-custody-42fyp_0l/fixture.receipt-meta.v2.json.runtime'",
+          "clipped": false
+        },
+        {
+          "line": 137,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 138,
+          "text": "----------------------------------------------------------------------",
+          "clipped": false
+        },
+        {
+          "line": 139,
+          "text": "Ran 10 tests in 4.080s",
+          "clipped": false
+        },
+        {
+          "line": 140,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 141,
+          "text": "FAILED (errors=3)",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976674447-260239-6132f62d",
+      "lines": 47,
+      "matches": 19,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=f308e30101d98b38811f4d4cdca97aa5256f790e 2dfcf93467bd6acf3e92eef21193b2820f588eb6 ed190bf19d40ff97084a3ff09a1d861b91c5473f8d7d3b32cb6166335f738d20",
+          "clipped": false
+        },
+        {
+          "line": 12,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error",
+          "clipped": false
+        },
+        {
+          "line": 13,
+          "text": "{\"label\": \"packages\", \"exit\": 101}",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "{\"label\": \"0\", \"exit\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 17,
+          "text": "{\"label\": \"1\", \"exit\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "{\"label\": \"2\", \"exit\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 22,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error; 1 warning emitted",
+          "clipped": false
+        },
+        {
+          "line": 23,
+          "text": "{\"label\": \"3\", \"exit\": 101}",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error",
+          "clipped": false
+        },
+        {
+          "line": 27,
+          "text": "{\"label\": \"4\", \"exit\": 101}",
+          "clipped": false
+        },
+        {
+          "line": 30,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error",
+          "clipped": false
+        },
+        {
+          "line": 31,
+          "text": "{\"label\": \"5\", \"exit\": 101}",
+          "clipped": false
+        },
+        {
+          "line": 33,
+          "text": "{\"label\": \"6\", \"exit\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 35,
+          "text": "{\"label\": \"7\", \"exit\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 37,
+          "text": "{\"label\": \"8\", \"exit\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 39,
+          "text": "{\"label\": \"9\", \"exit\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 42,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error; 2 warnings emitted",
+          "clipped": false
+        },
+        {
+          "line": 43,
+          "text": "{\"label\": \"10\", \"exit\": 101}",
+          "clipped": false
+        },
+        {
+          "line": 45,
+          "text": "{\"label\": \"11\", \"exit\": 0}",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 38,
+          "text": "ECD0_CLIPPY_COMMAND [\"cargo\", \"clippy\", \"--manifest-path\", \"rust/crates/stream/publication-models/Cargo.toml\", \"--locked\", \"--keep-going\", \"--all-targets\", \"--all-features\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"]",
+          "clipped": false
+        },
+        {
+          "line": 39,
+          "text": "ECD0_CLIPPY_RESULT {\"label\": \"9\", \"command\": [\"cargo\", \"clippy\", \"--manifest-path\", \"rust/crates/stream/publication-models/Cargo.toml\", \"--locked\", \"--keep-going\", \"--all-targets\", \"--all-features\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"], \"exit\": 0, \"diagnostics_exit\": 0, \"diagnostics_log_sha256\": \"ce7be6e3f5ba94c77ae087a970d8d3e5cbc4ee5cbcd68888d7d6e9bb249bc5c1\"}",
+          "clipped": false
+        },
+        {
+          "line": 40,
+          "text": "ECD0_CLIPPY_COMMAND [\"cargo\", \"clippy\", \"--manifest-path\", \"rust/fuzz/task-volume/Cargo.toml\", \"--locked\", \"--keep-going\", \"--all-targets\", \"--all-features\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"]",
+          "clipped": false
+        },
+        {
+          "line": 41,
+          "text": "/work/src/rust/crates/harness-core/src/executor/json/admission.rs:565:5: error[E0425]: cannot find function `admit_json_layout` in this scope",
+          "clipped": false
+        },
+        {
+          "line": 42,
+          "text": "error: could not compile `acyclic-harness-core` (lib) due to 1 previous error; 2 warnings emitted",
+          "clipped": false
+        },
+        {
+          "line": 43,
+          "text": "ECD0_CLIPPY_RESULT {\"label\": \"10\", \"command\": [\"cargo\", \"clippy\", \"--manifest-path\", \"rust/fuzz/task-volume/Cargo.toml\", \"--locked\", \"--keep-going\", \"--all-targets\", \"--all-features\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"], \"exit\": 101, \"diagnostics_exit\": 0, \"diagnostics_log_sha256\": \"5c631e86777af517f1378b30634fa1f1978d19bd5e11fe957817c588b8bda5c3\"}",
+          "clipped": false
+        },
+        {
+          "line": 44,
+          "text": "ECD0_CLIPPY_COMMAND [\"cargo\", \"clippy\", \"--manifest-path\", \"typescript/packages/stream/fuzz/Cargo.toml\", \"--locked\", \"--keep-going\", \"--all-targets\", \"--all-features\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"]",
+          "clipped": false
+        },
+        {
+          "line": 45,
+          "text": "ECD0_CLIPPY_RESULT {\"label\": \"11\", \"command\": [\"cargo\", \"clippy\", \"--manifest-path\", \"typescript/packages/stream/fuzz/Cargo.toml\", \"--locked\", \"--keep-going\", \"--all-targets\", \"--all-features\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"], \"exit\": 0, \"diagnostics_exit\": 0, \"diagnostics_log_sha256\": \"abd8679bdd784964a7e122cc5f5e3b2b1fbe38e76c960d4b0e1f4257e23859ab\"}",
+          "clipped": false
+        },
+        {
+          "line": 46,
+          "text": "step=scoped-clippy failed=[{\"label\": \"packages\", \"command\": [\"cargo\", \"clippy\", \"--locked\", \"--keep-going\", \"-p\", \"acyclic-actors\", \"-p\", \"acyclic-actors-napi\", \"-p\", \"acyclic-actors-wasm\", \"-p\", \"acyclic-auth\", \"-p\", \"acyclic-auth-wasm\", \"-p\", \"acyclic-conformance\", \"-p\", \"acyclic-fs\", \"-p\", \"acyclic-fs-fuzz\", \"-p\", \"acyclic-fs-napi\", \"-p\", \"acyclic-fs-wasm\", \"-p\", \"acyclic-fs-wire\", \"-p\", \"acyclic-harness\", \"-p\", \"acyclic-harness-conformance\", \"-p\", \"acyclic-harness-core\", \"-p\", \"acyclic-harness-fuzz\", \"-p\", \"acyclic-harness-providers\", \"-p\", \"acyclic-harness-search\", \"-p\", \"acyclic-inference\", \"-p\", \"acyclic-inference-wasm\", \"-p\", \"acyclic-machines\", \"-p\", \"acyclic-machines-daytona\", \"-p\", \"acyclic-machines-wasm\", \"-p\", \"acyclic-manifest\", \"-p\", \"acyclic-objects\", \"-p\", \"acyclic-objects-wasm\", \"-p\", \"acyclic-plugin\", \"-p\", \"acyclic-proto-build\", \"-p\", \"acyclic-sdk-fuzz\", \"-p\", \"acyclic-stream\", \"-p\", \"acyclic-stream-napi\", \"-p\", \"acyclic-workers\", \"-p\", \"graphcoder\", \"-p\", \"harness-mock-model\", \"-p\", \"sdk-proto-codegen\", \"-p\", \"sdk-service-examples\", \"--all-targets\", \"--all-features\", \"--features\", \"acyclic-fs/session\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"], \"exit\": 101, \"diagnostics_exit\": 0, \"diagnostics_log_sha256\": \"6b80ded5da0d1a2d97f6f9751ad04715a7320a6e13d2650c1790068018c101bd\"}, {\"label\": \"3\", \"command\": [\"cargo\", \"clippy\", \"--manifest-path\", \"rust/crates/harness-providers/fuzz/Cargo.toml\", \"--locked\", \"--keep-going\", \"--all-targets\", \"--all-features\", \"--message-format=short\", \"--\", \"--cap-lints\", \"warn\"], \"exit\": 101, \"diagnostics_exit\": 0, \"di",
+          "clipped": true
+        },
+        {
+          "line": 47,
+          "text": "ECD0_CLIPPY_EXPORT 74bef055aae547f5054b67e73baba7e67d4d802cc718b1347ec828b130531f40",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792977150936-4750-c5517206",
+      "lines": 26,
+      "matches": 1,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=065e85518181894b9fc0e30d1caee00de3f93e95 dd5d2f43892fb6e22a09448421f3e2cf7dde415e 61bde7c89659a00bbb96ab5c68809fe869a3c502858c1115fe3a60e5338ad2a6",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 17,
+          "text": "Ran 23 tests in 0.030s",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "OK",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": ".....",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "----------------------------------------------------------------------",
+          "clipped": false
+        },
+        {
+          "line": 22,
+          "text": "Ran 5 tests in 0.013s",
+          "clipped": false
+        },
+        {
+          "line": 23,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 24,
+          "text": "OK",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": ".bb-win-transfer-r2350.sh: line 14: rg: command not found",
+          "clipped": false
+        },
+        {
+          "line": 26,
+          "text": "WINDOWS_STEP_REFUSED step=actual-old-transfer-negative; recovery=pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BUILD_SLOT_BUILDBOX_HOST=bb2 --env BUILD_SLOT_TIER=qual bash .bb-win-transfer-r2350.sh",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792977293679-5758-d43d24fd",
+      "lines": 106,
+      "matches": 7,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=332987568f1d6b85f8d0192eccce354b36251638 2184bc9e24a30caee66f79a9ee79e5fccdb57483 3feb9d8de2f897487d6eae3b3f1c824e51575a93db501e344b06b35b19ab9382",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "AssertionError: False is not true : Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 25,
+          "text": "ValueError: '/sys/fs/cgroup/bbjobs.slice/bb-cpu-test-50e2d8f9cc0b4e4c9141d837b49fb1d0/slot-0/run-dc09520e91ad4712865d067c8070c00a/work/job' is not in the subpath of '/sys/fs/cgroup/bbjobs.slice/buildbox-cpu'",
+          "clipped": false
+        },
+        {
+          "line": 50,
+          "text": "AssertionError: False is not true : Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 56,
+          "text": "ValueError: '/sys/fs/cgroup/bbjobs.slice/bb-cpu-test-50e2d8f9cc0b4e4c9141d837b49fb1d0/slot-0/run-dc09520e91ad4712865d067c8070c00a/work/job' is not in the subpath of '/sys/fs/cgroup/bbjobs.slice/buildbox-cpu'",
+          "clipped": false
+        },
+        {
+          "line": 81,
+          "text": "AssertionError: False is not true : Traceback (most recent call last):",
+          "clipped": false
+        },
+        {
+          "line": 87,
+          "text": "ValueError: '/sys/fs/cgroup/bbjobs.slice/bb-cpu-test-50e2d8f9cc0b4e4c9141d837b49fb1d0/slot-0/run-dc09520e91ad4712865d067c8070c00a/work/job' is not in the subpath of '/sys/fs/cgroup/bbjobs.slice/buildbox-cpu'",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 97,
+          "text": "              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+          "clipped": false
+        },
+        {
+          "line": 98,
+          "text": "  File \"/mnt/bb/tmp/command-custody-bqz1q3jg/cpu_leases.py\", line 157, in current",
+          "clipped": false
+        },
+        {
+          "line": 99,
+          "text": "    raise LeaseError('current-lease', 'process is not in an admitted lease')",
+          "clipped": false
+        },
+        {
+          "line": 100,
+          "text": "cpu_leases.LeaseError: kind=CPU_LEASE step=current-lease owner=gate-speed recovery='sudo -n /usr/bin/python3 -B /home/var/bin/bb-cache.py recover' detail='process is not in an admitted lease'",
+          "clipped": false
+        },
+        {
+          "line": 101,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 102,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 103,
+          "text": "----------------------------------------------------------------------",
+          "clipped": false
+        },
+        {
+          "line": 104,
+          "text": "Ran 10 tests in 3.976s",
+          "clipped": false
+        },
+        {
+          "line": 105,
+          "text": "",
+          "clipped": false
+        },
+        {
+          "line": 106,
+          "text": "FAILED (failures=3)",
+          "clipped": false
+        }
+      ]
+    },
+    {
+      "log_id": "1792976471254-258665-62b0544a",
+      "lines": 22,
+      "matches": 8,
+      "omitted": 0,
+      "selected": [
+        {
+          "line": 6,
+          "text": "BUILD_SLOT_TREE=281343ac9cf11ccbd89db0689c6161590261cb8d 44bac082125cd0f14afd48da54adc30d0105cda5 39600d6cfa955ff72a99757af5c791b3d0e5f52b5536fe166d252ec25c61aa17",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "{\"rc\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 16,
+          "text": "{\"rc\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 17,
+          "text": "{\"rc\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "{\"rc\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "{\"label\": \"outbox\", \"rc\": 0}",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "{\"label\": \"checkpoints\", \"rc\": 101}",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "{\"label\": \"journal\", \"rc\": 0}",
+          "clipped": false
+        }
+      ],
+      "tail": [
+        {
+          "line": 13,
+          "text": "fuzz-settings 0",
+          "clipped": false
+        },
+        {
+          "line": 14,
+          "text": "task-volume 0",
+          "clipped": false
+        },
+        {
+          "line": 15,
+          "text": "{\"target\": \"acyclic_harness_providers\", \"filters\": [\"accounting_properties::\", \"protocol_tests::\", \"counting::admission_tests::\", \"http::recording::tests::\", \"credential_snapshot::\"], \"rc\": 0, \"wall\": 0.1779867100121919, \"nonzero\": true, \"sha256\": \"2d2fb3bc53b03c7503a8c19415aaf9245be2b4181f207b84854289e247ccf34c\"}",
+          "clipped": false
+        },
+        {
+          "line": 16,
+          "text": "{\"target\": \"acyclic_harness_core\", \"filters\": [\"workflow_commit_frames_stay_bounded\", \"shared_git_dispatch_frame_stays_bounded\", \"canonical_append_dispatch_frame_stays_bounded\"], \"rc\": 0, \"wall\": 0.004568668984575197, \"nonzero\": true, \"sha256\": \"c04087efd59aada73cf63a7ec1a104667676b8d7ff8e48299f3c961101724e5b\"}",
+          "clipped": false
+        },
+        {
+          "line": 17,
+          "text": "{\"target\": \"acyclic_harness\", \"filters\": [\"checkout_dispatch_frame_stays_bounded\", \"child_preparation_dispatch_frame_stays_bounded\"], \"rc\": 0, \"wall\": 0.006137711985502392, \"nonzero\": true, \"sha256\": \"40ccbd12cec52bfc4156b7aec46c25dbdb4e89230ca858438c94f9bf6586b5d1\"}",
+          "clipped": false
+        },
+        {
+          "line": 18,
+          "text": "{\"target\": \"acyclic_fs\", \"filters\": [\"materializer::work_normalization_tests::\", \"materializer::window::tests::\", \"access::trie::uniform_preparation_tests::\"], \"rc\": 0, \"wall\": 0.08733067099819891, \"nonzero\": true, \"sha256\": \"5445e154ee766cae8d3eb0b44ecc3c45cd64de594cd3a5dcb8b0f39deffab49d\"}",
+          "clipped": false
+        },
+        {
+          "line": 19,
+          "text": "{\"label\": \"outbox\", \"filters\": [\"client_file_submit::\"], \"rc\": 0, \"wall\": 1.0832201059965882, \"nonzero\": true, \"sha256\": \"648540a95ff27e334226dbdcb9880df3f5d5e1b0352ce36e838961d5361b3971\"}",
+          "clipped": false
+        },
+        {
+          "line": 20,
+          "text": "{\"label\": \"checkpoints\", \"filters\": [\"default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_or_stage_replay\", \"canonical_publication_rejects_fabricated_source_and_summary_then_recovers\", \"local_journal_admits_compaction_only_after_one_settled_summary\"], \"rc\": 101, \"wall\": 3.6711831070133485, \"nonzero\": false, \"sha256\": \"648540a95ff27e334226dbdcb9880df3f5d5e1b0352ce36e838961d5361b3971\"}",
+          "clipped": false
+        },
+        {
+          "line": 21,
+          "text": "{\"label\": \"journal\", \"filters\": [\"execution_journal::tools::\"], \"rc\": 0, \"wall\": 0.16989906897651963, \"nonzero\": true, \"sha256\": \"648540a95ff27e334226dbdcb9880df3f5d5e1b0352ce36e838961d5361b3971\"}",
+          "clipped": false
+        },
+        {
+          "line": 22,
+          "text": "STEP shared integration proof failed; recovery: inspect .bb-clippy-fixes-100/integration-results.json and its named suite before fixing its cause",
+          "clipped": false
+        }
+      ]
+    }
+  ],
+  "runtime_seconds": 0.5470000000204891
+}

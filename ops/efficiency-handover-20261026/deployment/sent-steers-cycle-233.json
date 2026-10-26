@@ -1,0 +1,12 @@
+[
+  {
+    "at": "2026-10-26T01:21:21.2712931Z",
+    "pid": 68464,
+    "file": "Q:/lanes/steers/efficiency-to-gate-speed-20261026T011720Z.md",
+    "lane": "gate-speed",
+    "state": "queued in canonical inbox/batch",
+    "custody_matches": [
+      "gate-speed.md"
+    ]
+  }
+]

@@ -1,0 +1,40 @@
+{
+  "author": "Codex",
+  "cycle": 232,
+  "before": {
+    "fleet_usage.py": null,
+    "fleet-supervisor.py": null,
+    "fleet-steer.py": null,
+    "lane-running.ps1": "d0b16b0a3f0301b8263d5211af8c8580cd74db8762800d062d31b36e32e5a201",
+    "steer.sh": "20e4226065bc11e5cefb0e9a4c2ccdeb266f6981459ed44b1e94d7988bd62189",
+    "lane-supervisor2.sh": "3255a522455bdaa6202b70dd106aaaea78ad0cdf1728f095d0375dffe0374bec"
+  },
+  "installed": {
+    "fleet_usage.py": "6c42cebae4358d3e373e7d93570ac799f76bb0120b0aab1b25bfd4f7b721ab6b",
+    "fleet-supervisor.py": "37e4f7564e18256b126ffaa4bac6e6302222be0cb2e77cc4e692695e813f43f1",
+    "fleet-steer.py": "656540e3c71152cd84b6c19ac6f728f10a1855bf486f493c00efc759c39dacd3",
+    "lane-running.ps1": "42a65198e4a3078fc1e297e8c9541863587934c33e8f9e16aad2b40b5592081c"
+  },
+  "self_test": {
+    "author": "Codex",
+    "tests": 20,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 5.14100000000326,
+    "status": "PASS",
+    "bb2_jobs_started": 0,
+    "live_files_changed": false,
+    "scope": "controller integration and OS descriptor regression; staged Bash source contract; deployment smoke still required"
+  },
+  "status": "ROLLED_BACK_OPEN_SCRIPT_LOCK",
+  "activation": "pending supervisor restart and heartbeat/dispatch proof",
+  "reason": "Windows denied atomic replacement of active steer.sh. Preserved running drainers and restored every published file; no in-place edit or process interruption.",
+  "rollback_verified": {
+    "fleet_usage.py": true,
+    "fleet-supervisor.py": true,
+    "fleet-steer.py": true,
+    "lane-running.ps1": true,
+    "steer.sh": true,
+    "lane-supervisor2.sh": true
+  }
+}

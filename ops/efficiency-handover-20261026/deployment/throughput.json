@@ -1,0 +1,1787 @@
+{
+  "author": "Codex",
+  "as_of": "2026-10-26T01:17:54.197315Z",
+  "anomaly_at": "2026-10-26T01:19:25.141445+00:00",
+  "merged_per_day": 4,
+  "baseline_merges": 9,
+  "baseline_gate_runs": 34,
+  "gate_outcomes": {
+    "GATE_FAIL": 11,
+    "GATE_PASS": 2,
+    "GATE_PREPARATION_INFRA": 1,
+    "GATE_CONFLICT": 7,
+    "GATE_INFRA": 1
+  },
+  "gate_runs": 22,
+  "pass_fraction": 0.09090909090909091,
+  "observed_route_to_merge": [
+    {
+      "pr": 1489,
+      "first_observed_route": "2026-10-25T00:16:27+00:00",
+      "merged": "2026-10-25T07:52:14.295887+00:00",
+      "route_to_merge_hours": 7.596471079722222
+    }
+  ],
+  "queue_wait_seconds": null,
+  "queue_wait_gap": "No authoritative admission/start pair in current alert schema; no inferred ready time.",
+  "queued": [
+    1495,
+    1504,
+    1508,
+    1509,
+    1512
+  ],
+  "lane_snapshot": {
+    "RUNNING": 10,
+    "WAITING_LANE": 1,
+    "WAITING_GATE": 1
+  },
+  "lanes": [
+    {
+      "lane": "main-green",
+      "state": "RUNNING",
+      "detail": " #1501",
+      "age_seconds": 16153.499924182892
+    },
+    {
+      "lane": "gate-speed",
+      "state": "RUNNING",
+      "detail": " pr-gate .*(#|\\+)1509([+: ]|$)|main-gate MAIN_(GATE|WIDE)",
+      "age_seconds": 2085.098355770111
+    },
+    {
+      "lane": "plugins",
+      "state": "RUNNING",
+      "detail": " #1506",
+      "age_seconds": 13968.438534975052
+    },
+    {
+      "lane": "windows",
+      "state": "RUNNING",
+      "detail": "no final status",
+      "age_seconds": 237923.91869568825
+    },
+    {
+      "lane": "mac-live",
+      "state": "RUNNING",
+      "detail": " macOS proof needs renewed ivar authentication confirmation from the user",
+      "age_seconds": 1957.8558449745178
+    },
+    {
+      "lane": "e2e-gate",
+      "state": "WAITING_LANE",
+      "detail": " windows Q:/lanes/steers/e2e-gate-to-windows-20261026T011403Z.md",
+      "age_seconds": 202.80439925193787
+    },
+    {
+      "lane": "approvals",
+      "state": "RUNNING",
+      "detail": "",
+      "age_seconds": 14266.173730611801
+    },
+    {
+      "lane": "providers",
+      "state": "RUNNING",
+      "detail": " b-runtime/heap/Windows owners must release qualified retry and custody fixes; coordinator must restore ivar access and artifact-capacity ownership",
+      "age_seconds": 63436.82001185417
+    },
+    {
+      "lane": "sessions",
+      "state": "RUNNING",
+      "detail": " providers Q:/lanes/steers/sessions-to-providers-20261026T010422Z.md",
+      "age_seconds": 445.61478090286255
+    },
+    {
+      "lane": "tool-latency",
+      "state": "WAITING_GATE",
+      "detail": " #1514",
+      "age_seconds": 102.69774460792542
+    },
+    {
+      "lane": "verify",
+      "state": "RUNNING",
+      "detail": "",
+      "age_seconds": 119.76903581619263
+    },
+    {
+      "lane": "client-perf",
+      "state": "RUNNING",
+      "detail": "no final status",
+      "age_seconds": 20142.715563058853
+    }
+  ],
+  "supervisor_reinvokes": {
+    "main-green": 17,
+    "sessions": 1,
+    "providers": 9,
+    "b-authority": 16,
+    "e2e-gate": 6,
+    "gate-speed": 15,
+    "plugins": 10,
+    "approvals": 8,
+    "fs-concurrency": 11,
+    "mac-live": 9,
+    "windows": 6,
+    "b-runtime": 6,
+    "tool-latency": 6,
+    "verify": 2
+  },
+  "supervisor_reasons": {
+    "DIED": 81,
+    "IDLE": 22,
+    "GATE_RECHECK": 15,
+    "EVENT": 1,
+    "GATE_NEWS": 3
+  },
+  "quick_reinvoke_candidates": [],
+  "heartbeat_count": 94,
+  "heartbeat_last": {
+    "at": "2026-10-26T01:16:47+00:00",
+    "source": "lane-supervisor",
+    "body": "HEARTBEAT lanes=12 drainers=18"
+  },
+  "alert_lines_appended": 16,
+  "disks": [
+    {
+      "host": "bb2",
+      "path": "/",
+      "total": 102888095744,
+      "free": 20418785280,
+      "free_pct": 19.845624639418734
+    },
+    {
+      "host": "bb2",
+      "path": "/mnt/bb",
+      "total": 1648462135296,
+      "free": 393176793088,
+      "free_pct": 23.851126736217125
+    },
+    {
+      "host": "ivar",
+      "path": "/",
+      "total": 245107195904,
+      "free": 19809177600,
+      "free_pct": 8.081842528914805
+    },
+    {
+      "host": "ivar",
+      "path": "/System/Volumes/Data",
+      "total": 245107195904,
+      "free": 19809177600,
+      "free_pct": 8.081842528914805
+    }
+  ],
+  "cache_policy": {
+    "sources": {
+      "bb-job.py": {
+        "sha256": "b79a9b3aafe920a04998e484493ceed4067727ca54791cf257e9f016a5d6b53b",
+        "policy_lines": [
+          {
+            "line": 166,
+            "text": "def server_identity(endpoint):"
+          },
+          {
+            "line": 177,
+            "text": "def stop_server(server):"
+          },
+          {
+            "line": 182,
+            "text": "if ('SCCACHE_SERVER_UDS='+server['endpoint']).encode() not in env: return"
+          },
+          {
+            "line": 195,
+            "text": "env.update(SCCACHE_SERVER_UDS=str(endpoint),SCCACHE_DIR='/mnt/bb/sccache',SCCACHE_CACHE_SIZE='400G',SCCACHE_IDLE_TIMEOUT='0')"
+          },
+          {
+            "line": 199,
+            "text": "r=subprocess.run([SCCACHE,'--start-server'],env=env,capture_output=True,text=True,timeout=15)"
+          },
+          {
+            "line": 206,
+            "text": "try: return server_identity(endpoint),'ready'"
+          },
+          {
+            "line": 247,
+            "text": "peer=server_identity(alias)"
+          },
+          {
+            "line": 251,
+            "text": "env={**env,'SCCACHE_SERVER_UDS':str(alias)},capture_output=True,text=True,timeout=5)"
+          },
+          {
+            "line": 254,
+            "text": "def cost_receipt(env,server,started_cpu,started_cache_cpu,started_wall):"
+          }
+        ]
+      },
+      "sccache-rustc": {
+        "sha256": "0cc0f42080c6059cb125264b3554db3810d75a80e6884c42e6664cfe9a2cf192",
+        "policy_lines": [
+          {
+            "line": 4,
+            "text": "export SCCACHE_DIR=/mnt/bb/sccache SCCACHE_CACHE_SIZE=400G"
+          },
+          {
+            "line": 5,
+            "text": "if [ -n \"${SCCACHE_SERVER_UDS:-}\" ]; then"
+          }
+        ]
+      }
+    },
+    "sccache_processes": 56,
+    "process_states": {
+      "Z": 14,
+      "S": 42
+    },
+    "process_parent_counts": {
+      "90857": 2,
+      "111468": 2,
+      "111460": 2,
+      "128785": 2,
+      "158841": 2,
+      "174325": 2,
+      "264507": 2,
+      "161673": 1,
+      "421192": 2,
+      "425435": 1,
+      "267634": 6,
+      "267653": 2,
+      "460862": 1,
+      "483739": 1,
+      "485078": 3,
+      "356230": 2,
+      "495753": 7,
+      "480010": 1,
+      "493183": 1,
+      "1180071": 2,
+      "1": 2,
+      "2373598": 2,
+      "3401902": 2,
+      "3883307": 2,
+      "4004798": 2,
+      "4082067": 2
+    },
+    "process_rss_kib": 557668,
+    "process_threads": 6655,
+    "listening_sockets": [
+      {
+        "path": "/mnt/bb/jobs/job-ixcoow_6/sccache.sock",
+        "owners": [
+          111793
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-wl1x_781/sccache.sock",
+        "owners": [
+          111792
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-gaj7e8ao/sccache.sock",
+        "owners": [
+          159319
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-gen1b3jv/sccache.sock",
+        "owners": [
+          2375957
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-u14o3jt9/sccache.sock",
+        "owners": [
+          174962
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-qo3zsnd8/sccache.sock",
+        "owners": [
+          264633
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-55fighke/sccache.sock",
+        "owners": [
+          90936
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-_eqz9y_f/sccache.sock",
+        "owners": [
+          2330406
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-t_b4lqav/sccache.sock",
+        "owners": [
+          3402681
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-8l4jovwd/sccache.sock",
+        "owners": [
+          4082120
+        ]
+      },
+      {
+        "path": "/tmp/sccache.sock",
+        "owners": [
+          1180205
+        ]
+      },
+      {
+        "path": "/tmp/sccache.sock",
+        "owners": [
+          128909
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-hudr0ht5/sccache.sock",
+        "owners": [
+          3883700
+        ]
+      },
+      {
+        "path": "/mnt/bb/jobs/job-uay37su4/sccache.sock",
+        "owners": [
+          4005304
+        ]
+      },
+      {
+        "path": "/tmp/sccache.sock",
+        "owners": [
+          421517
+        ]
+      }
+    ],
+    "disks": {
+      "/": {
+        "free_percent": 19.84562862044294,
+        "free_bytes": 20418789376
+      },
+      "/mnt/bb": {
+        "free_percent": 23.85158367992476,
+        "free_bytes": 393184325632
+      }
+    },
+    "note": "Processes are not equivalent to servers; listener owners may share descriptors. RSS is a point aggregate, not exclusive memory. No recursive du or cache server command.",
+    "author": "Codex",
+    "at": "2026-10-26T01:19:29.122449+00:00",
+    "bb2_jobs_started": 0
+  },
+  "anomalies": [
+    {
+      "kind": "MERGE_DROUGHT",
+      "key": "queued",
+      "evidence": "last successful merge=2026-10-25 22:08:06.867643+00:00; queued=[1495, 1504, 1508, 1509, 1512]",
+      "suspected_cause": "baseline misattribution/holds or gate dispatch blocked; preserve exact main/candidate proof"
+    },
+    {
+      "kind": "GATE_FAILURE_RATE",
+      "key": "last6",
+      "evidence": "5/6 nonpassing outcomes; GATE_PASS [1499, 1501]; GATE_CONFLICT [1505]; GATE_CONFLICT [1475]; GATE_CONFLICT [1504]; GATE_CONFLICT [1506]; GATE_INFRA [1509]",
+      "suspected_cause": "inspect baseline custody, conflicts and actual candidate errors; no verification waiver"
+    },
+    {
+      "kind": "CROSS_PR_FINDING",
+      "key": "ddbb456ecec58da7",
+      "evidence": "PRs [1495] and [1497]: rust/crates/harness/tests/execution_journal.rs: `expect` used in a function that returns a `Result`",
+      "suspected_cause": "likely inherited main finding or comparator custody/scope mismatch; not proof of innocence"
+    },
+    {
+      "kind": "CROSS_PR_FINDING",
+      "key": "b9dfb5af1533575f",
+      "evidence": "PRs [1495] and [1497]: rust/crates/harness/tests/cases/../context_continuation/recovery.rs: this expression creates a reference which is immediately dereferenced by the compiler: help: change this to: `\"no-summary\"`",
+      "suspected_cause": "likely inherited main finding or comparator custody/scope mismatch; not proof of innocence"
+    },
+    {
+      "kind": "CROSS_PR_FINDING",
+      "key": "e96c60a8a474aba4",
+      "evidence": "PRs [1495] and [1497]: rust/crates/harness/src/client/headless.rs: this `if` statement can be collapsed",
+      "suspected_cause": "likely inherited main finding or comparator custody/scope mismatch; not proof of innocence"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1495:rust/crates/harness/tests/execution_journal.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"0240c0d854927fb680d09e3890e9ff2079231218\", \"path\": \"rust/crates/harness/tests/execution_journal.rs\", \"pr\": 1495, \"touched_count\": 9}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1495:rust/crates/harness/tests/context_continuation/recovery.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"0240c0d854927fb680d09e3890e9ff2079231218\", \"path\": \"rust/crates/harness/tests/context_continuation/recovery.rs\", \"pr\": 1495, \"touched_count\": 9}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1495:rust/crates/harness/src/client/headless.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"0240c0d854927fb680d09e3890e9ff2079231218\", \"path\": \"rust/crates/harness/src/client/headless.rs\", \"pr\": 1495, \"touched_count\": 9}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1495:rust/crates/harness/src/client/file_submit.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"0240c0d854927fb680d09e3890e9ff2079231218\", \"path\": \"rust/crates/harness/src/client/file_submit.rs\", \"pr\": 1495, \"touched_count\": 9}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1497:rust/crates/harness/tests/execution_journal.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"cfde26421037519b831e6c70ea046960d82a8450\", \"path\": \"rust/crates/harness/tests/execution_journal.rs\", \"pr\": 1497, \"touched_count\": 45}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1497:rust/crates/harness/tests/context_continuation/recovery.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"cfde26421037519b831e6c70ea046960d82a8450\", \"path\": \"rust/crates/harness/tests/context_continuation/recovery.rs\", \"pr\": 1497, \"touched_count\": 45}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1497:rust/crates/harness/src/client/headless.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"cfde26421037519b831e6c70ea046960d82a8450\", \"path\": \"rust/crates/harness/src/client/headless.rs\", \"pr\": 1497, \"touched_count\": 45}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "UNTOUCHED_FILE_FINDING",
+      "key": "1497:rust/crates/harness/src/client/file_submit.rs",
+      "evidence": "{\"base\": \"32b79969bc504e875bb6e9f65611bf0d02ea45e9\", \"head\": \"cfde26421037519b831e6c70ea046960d82a8450\", \"path\": \"rust/crates/harness/src/client/file_submit.rs\", \"pr\": 1497, \"touched_count\": 45}",
+      "suspected_cause": "possible inherited main finding or legitimate reverse-dependency regression; qualify comparison"
+    },
+    {
+      "kind": "ROUTE_FAILURE",
+      "key": "1504:GATE_FAIL",
+      "evidence": "2026-10-25T20:30:34+00:00 ROUTE_ERROR #1504 GATE_FAIL clippy verdict extraction failed: ",
+      "suspected_cause": "failure dispatch/parser rejected the verdict; preserve the original failing step and deliver typed owner recovery before equivalent requeue"
+    },
+    {
+      "kind": "DISK_PRESSURE",
+      "key": "ivar:/",
+      "evidence": "{\"host\": \"ivar\", \"path\": \"/\", \"total\": 245107195904, \"free\": 19809177600, \"free_pct\": 8.081842528914805}",
+      "suspected_cause": "cache/targets/job lifecycle may consume disk; inspect bounded category sizes before admission"
+    },
+    {
+      "kind": "DISK_PRESSURE",
+      "key": "ivar:/System/Volumes/Data",
+      "evidence": "{\"host\": \"ivar\", \"path\": \"/System/Volumes/Data\", \"total\": 245107195904, \"free\": 19809177600, \"free_pct\": 8.081842528914805}",
+      "suspected_cause": "cache/targets/job lifecycle may consume disk; inspect bounded category sizes before admission"
+    }
+  ],
+  "coverage": [
+    "Snapshot RUNNING may include completed roots; no live ownership controller yet.",
+    "No full time-integrated idle/blocked/gate-wait state before heartbeat deployment.",
+    "Waste-specific token and CPU allocation unknown."
+  ],
+  "bb2": {
+    "lane_validation": 186.69714,
+    "gate": 26.371666111111114,
+    "main_gate": 3.9447294444444445
+  },
+  "total_job_hours": 217.01353555555556,
+  "cpu_point": {
+    "sample_seconds": 1.0006839479901828,
+    "cpu_busy_percent": 59.5774049692079,
+    "cpu_iowait_percent": 1.30600976852835,
+    "logical_cpus": 192,
+    "load": [
+      140.3583984375,
+      122.001953125,
+      121.55078125
+    ],
+    "mem_available_kib": 275662020,
+    "pressure": {
+      "cpu": "some avg10=2.74 avg60=5.36 avg300=4.10 total=9086359973\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+      "memory": "some avg10=0.00 avg60=0.00 avg300=0.00 total=77570130\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=59850844",
+      "io": "some avg10=0.71 avg60=0.52 avg300=0.87 total=1755711650\nfull avg10=0.35 avg60=0.28 avg300=0.60 total=1087740880"
+    },
+    "at": "2026-10-26T01:19:30.889507+00:00"
+  },
+  "machinery_test": {
+    "author": "Codex",
+    "tests": 20,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 5.14100000000326,
+    "status": "PASS",
+    "bb2_jobs_started": 0,
+    "live_files_changed": false,
+    "scope": "controller integration and OS descriptor regression; staged Bash source contract; deployment smoke still required"
+  },
+  "cycle": 233,
+  "lane_validation": {
+    "author": "Codex",
+    "start": "2026-10-25T01:17:54.197315Z",
+    "as_of": "2026-10-26T01:17:54.197315Z",
+    "total_sdk_job_hours": 217.01353555555556,
+    "lane_validation": {
+      "jobs": 1565,
+      "hours": 186.69714,
+      "failed_jobs": 706,
+      "failed_hours": 78.52193527777777
+    },
+    "per_lane": {
+      "approvals": {
+        "jobs": 197,
+        "hours": 30.61841666666667,
+        "failed_jobs": 72,
+        "failed_hours": 11.73920611111111
+      },
+      "b-runtime": {
+        "jobs": 158,
+        "hours": 27.98971388888889,
+        "failed_jobs": 98,
+        "failed_hours": 16.782014166666666
+      },
+      "fs-concurrency": {
+        "jobs": 238,
+        "hours": 19.31445888888889,
+        "failed_jobs": 116,
+        "failed_hours": 7.301002777777778
+      },
+      "mac-live": {
+        "jobs": 67,
+        "hours": 17.009809722222222,
+        "failed_jobs": 32,
+        "failed_hours": 7.415405
+      },
+      "providers-final-20261025b": {
+        "jobs": 194,
+        "hours": 16.870696111111112,
+        "failed_jobs": 120,
+        "failed_hours": 10.200791111111112
+      },
+      "plugins": {
+        "jobs": 196,
+        "hours": 16.558304166666666,
+        "failed_jobs": 95,
+        "failed_hours": 9.492282777777778
+      },
+      "win-qual": {
+        "jobs": 61,
+        "hours": 14.245708333333333,
+        "failed_jobs": 26,
+        "failed_hours": 2.8084466666666668
+      },
+      "sessions": {
+        "jobs": 55,
+        "hours": 8.294895,
+        "failed_jobs": 27,
+        "failed_hours": 3.639973888888889
+      },
+      "tool-latency-rebased": {
+        "jobs": 33,
+        "hours": 5.743156944444444,
+        "failed_jobs": 2,
+        "failed_hours": 0.5239347222222221
+      },
+      "main-green": {
+        "jobs": 48,
+        "hours": 4.7779774999999995,
+        "failed_jobs": 26,
+        "failed_hours": 2.615599722222222
+      },
+      "scale-fds5": {
+        "jobs": 30,
+        "hours": 4.008030555555555,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "main-rebase": {
+        "jobs": 23,
+        "hours": 3.204043888888889,
+        "failed_jobs": 12,
+        "failed_hours": 1.5730905555555557
+      },
+      "scale-fds6": {
+        "jobs": 29,
+        "hours": 3.0577341666666666,
+        "failed_jobs": 5,
+        "failed_hours": 0.2849230555555555
+      },
+      "providers-final-20261025a": {
+        "jobs": 30,
+        "hours": 2.802830277777778,
+        "failed_jobs": 8,
+        "failed_hours": 0.7776513888888889
+      },
+      "client-perf": {
+        "jobs": 20,
+        "hours": 2.6711869444444445,
+        "failed_jobs": 7,
+        "failed_hours": 1.0504933333333333
+      },
+      "e2e-gate": {
+        "jobs": 33,
+        "hours": 2.303990277777778,
+        "failed_jobs": 15,
+        "failed_hours": 1.3156963888888888
+      },
+      "scale-fds5-diag": {
+        "jobs": 18,
+        "hours": 1.5650369444444445,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "import-main-proof": {
+        "jobs": 8,
+        "hours": 1.2619572222222222,
+        "failed_jobs": 1,
+        "failed_hours": 0.02518388888888889
+      },
+      "rb-sdk-up": {
+        "jobs": 10,
+        "hours": 0.8758708333333333,
+        "failed_jobs": 1,
+        "failed_hours": 0.0276175
+      },
+      "b-authority-secrets": {
+        "jobs": 14,
+        "hours": 0.5376675,
+        "failed_jobs": 7,
+        "failed_hours": 0.1811486111111111
+      },
+      "gate-speed-windows-full": {
+        "jobs": 2,
+        "hours": 0.5270113888888888,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed": {
+        "jobs": 26,
+        "hours": 0.4614961111111111,
+        "failed_jobs": 8,
+        "failed_hours": 0.16378527777777777
+      },
+      "b-authority-p1-security": {
+        "jobs": 8,
+        "hours": 0.3883652777777778,
+        "failed_jobs": 5,
+        "failed_hours": 0.18756666666666666
+      },
+      "gate-speed-cpu-controls": {
+        "jobs": 14,
+        "hours": 0.24105694444444445,
+        "failed_jobs": 6,
+        "failed_hours": 0.07774694444444445
+      },
+      "rust": {
+        "jobs": 2,
+        "hours": 0.23758444444444446,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "live-b733": {
+        "jobs": 1,
+        "hours": 0.19927277777777777,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-integration": {
+        "jobs": 11,
+        "hours": 0.18420611111111113,
+        "failed_jobs": 4,
+        "failed_hours": 0.06915444444444445
+      },
+      "redesign-verify": {
+        "jobs": 6,
+        "hours": 0.10731944444444444,
+        "failed_jobs": 4,
+        "failed_hours": 0.07847861111111111
+      },
+      "main-green-combined-authentication": {
+        "jobs": 1,
+        "hours": 0.0869088888888889,
+        "failed_jobs": 1,
+        "failed_hours": 0.0869088888888889
+      },
+      "gate-speed-rebase": {
+        "jobs": 6,
+        "hours": 0.08036166666666666,
+        "failed_jobs": 4,
+        "failed_hours": 0.05345388888888889
+      },
+      "gate-speed-main-clippy-b733": {
+        "jobs": 1,
+        "hours": 0.07077416666666667,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-clippy-baseline": {
+        "jobs": 1,
+        "hours": 0.060561944444444446,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-review": {
+        "jobs": 2,
+        "hours": 0.038579166666666664,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-clippy-diagnostics": {
+        "jobs": 3,
+        "hours": 0.03486222222222222,
+        "failed_jobs": 1,
+        "failed_hours": 0.01350361111111111
+      },
+      "windows-legacy-negative": {
+        "jobs": 1,
+        "hours": 0.02907527777777778,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-exact-wide": {
+        "jobs": 2,
+        "hours": 0.028443055555555555,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-channel": {
+        "jobs": 1,
+        "hours": 0.019391666666666668,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-full-v2": {
+        "jobs": 1,
+        "hours": 0.01615138888888889,
+        "failed_jobs": 1,
+        "failed_hours": 0.01615138888888889
+      },
+      "gate-speed-prep-route": {
+        "jobs": 1,
+        "hours": 0.015522777777777778,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-policy": {
+        "jobs": 1,
+        "hours": 0.014527222222222223,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-signed-source": {
+        "jobs": 1,
+        "hours": 0.013992777777777778,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-qualified-generation": {
+        "jobs": 1,
+        "hours": 0.013863055555555554,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-canonical": {
+        "jobs": 1,
+        "hours": 0.013560833333333334,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-final": {
+        "jobs": 1,
+        "hours": 0.01353,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-generation": {
+        "jobs": 1,
+        "hours": 0.012620833333333335,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-full-v3": {
+        "jobs": 1,
+        "hours": 0.012275555555555555,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-qualified": {
+        "jobs": 1,
+        "hours": 0.012258333333333335,
+        "failed_jobs": 1,
+        "failed_hours": 0.012258333333333335
+      },
+      "gate-speed-output-custody": {
+        "jobs": 1,
+        "hours": 0.011874166666666667,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-accepted": {
+        "jobs": 1,
+        "hours": 0.01135111111111111,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-migration": {
+        "jobs": 1,
+        "hours": 0.01112888888888889,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-host": {
+        "jobs": 1,
+        "hours": 0.009261111111111112,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      },
+      "gate-speed-cache-full": {
+        "jobs": 1,
+        "hours": 0.008465555555555556,
+        "failed_jobs": 1,
+        "failed_hours": 0.008465555555555556
+      }
+    },
+    "exclusive_kinds": {
+      "all_features": {
+        "jobs": 46,
+        "hours": 4.377242777777778,
+        "failed_jobs": 6,
+        "failed_hours": 0.31254055555555554
+      },
+      "opaque_or_focused": {
+        "jobs": 1297,
+        "hours": 156.2808725,
+        "failed_jobs": 596,
+        "failed_hours": 65.40680861111112
+      },
+      "platform": {
+        "jobs": 20,
+        "hours": 4.301244722222222,
+        "failed_jobs": 5,
+        "failed_hours": 1.005406388888889
+      },
+      "qualification": {
+        "jobs": 202,
+        "hours": 21.73778,
+        "failed_jobs": 99,
+        "failed_hours": 11.797179722222221
+      }
+    },
+    "overlapping_tags": {
+      "all_features_command": {
+        "jobs": 46,
+        "hours": 4.377242777777778,
+        "failed_jobs": 6,
+        "failed_hours": 0.31254055555555554
+      },
+      "all_features_log": {
+        "jobs": 307,
+        "hours": 53.176274166666666,
+        "failed_jobs": 124,
+        "failed_hours": 17.670953611111113
+      },
+      "all_targets_command": {
+        "jobs": 6,
+        "hours": 0.7065658333333333,
+        "failed_jobs": 3,
+        "failed_hours": 0.07569555555555556
+      },
+      "all_targets_log": {
+        "jobs": 113,
+        "hours": 23.973783333333333,
+        "failed_jobs": 38,
+        "failed_hours": 5.4146930555555555
+      },
+      "qualification_script_name": {
+        "jobs": 202,
+        "hours": 21.73778,
+        "failed_jobs": 99,
+        "failed_hours": 11.797179722222221
+      },
+      "reference_script_name": {
+        "jobs": 139,
+        "hours": 16.296724166666667,
+        "failed_jobs": 52,
+        "failed_hours": 4.760839166666667
+      },
+      "windows_script_name": {
+        "jobs": 21,
+        "hours": 4.320471111111111,
+        "failed_jobs": 5,
+        "failed_hours": 1.005406388888889
+      },
+      "workspace_log": {
+        "jobs": 1,
+        "hours": 0.020618611111111112,
+        "failed_jobs": 0,
+        "failed_hours": 0
+      }
+    },
+    "repeated_failed_tests": [
+      {
+        "lane": "b-runtime",
+        "finding": "test filesystem::default_tools::tests::aggregate_custody_tests::publisher_custody_covers_its_complete_physical_allocation ... FAILED",
+        "jobs": 3,
+        "hours": 1.1196877777777776,
+        "failed_jobs": 3,
+        "failed_hours": 1.1196877777777776,
+        "distinct_input_identities": 3,
+        "log_ids": [
+          "1792941459582-1072023-aec750ef",
+          "1792942473088-1076851-7e3e9851",
+          "1792943777831-1085140-ebe8b74e"
+        ],
+        "hours_after_two": 0.5224505555555555
+      },
+      {
+        "lane": "plugins",
+        "finding": "test local::host_files::tests::every_host_observes_live_files_without_journaling_queries ... FAILED",
+        "jobs": 3,
+        "hours": 0.6022852777777778,
+        "failed_jobs": 3,
+        "failed_hours": 0.6022852777777778,
+        "distinct_input_identities": 3,
+        "log_ids": [
+          "1792910645170-828856-dfa35c1f",
+          "1792911559250-834134-c91c06f6",
+          "1792912564373-843149-c5701743"
+        ],
+        "hours_after_two": 0.2058888888888889
+      },
+      {
+        "lane": "plugins",
+        "finding": "test local::host_files::tests::workspace_projection_uses_shared_results_without_client_state ... FAILED",
+        "jobs": 3,
+        "hours": 0.6022852777777778,
+        "failed_jobs": 3,
+        "failed_hours": 0.6022852777777778,
+        "distinct_input_identities": 3,
+        "log_ids": [
+          "1792910645170-828856-dfa35c1f",
+          "1792911559250-834134-c91c06f6",
+          "1792912564373-843149-c5701743"
+        ],
+        "hours_after_two": 0.2058888888888889
+      },
+      {
+        "lane": "plugins",
+        "finding": "test local::host_owner::tests::claude_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation ... FAILED",
+        "jobs": 3,
+        "hours": 0.6022852777777778,
+        "failed_jobs": 3,
+        "failed_hours": 0.6022852777777778,
+        "distinct_input_identities": 3,
+        "log_ids": [
+          "1792910645170-828856-dfa35c1f",
+          "1792911559250-834134-c91c06f6",
+          "1792912564373-843149-c5701743"
+        ],
+        "hours_after_two": 0.2058888888888889
+      },
+      {
+        "lane": "plugins",
+        "finding": "test local::host_owner::tests::codex_sessions_use_shared_ordered_mailboxes_and_resume_after_recreation ... FAILED",
+        "jobs": 3,
+        "hours": 0.6022852777777778,
+        "failed_jobs": 3,
+        "failed_hours": 0.6022852777777778,
+        "distinct_input_identities": 3,
+        "log_ids": [
+          "1792910645170-828856-dfa35c1f",
+          "1792911559250-834134-c91c06f6",
+          "1792912564373-843149-c5701743"
+        ],
+        "hours_after_two": 0.2058888888888889
+      },
+      {
+        "lane": "b-runtime",
+        "finding": "test command_is_ready_only_after_the_stock_package_is_deployed ... FAILED",
+        "jobs": 3,
+        "hours": 0.47091000000000005,
+        "failed_jobs": 3,
+        "failed_hours": 0.47091000000000005,
+        "distinct_input_identities": 3,
+        "log_ids": [
+          "1792911146505-831422-45f7678d",
+          "1792911630275-835049-07f31e93",
+          "1792912420954-842597-6dd04c56"
+        ],
+        "hours_after_two": 0.18321444444444446
+      }
+    ],
+    "broad_suite_log_candidates": {
+      "jobs": 1,
+      "hours": 0.03554555555555555,
+      "failed_jobs": 1,
+      "failed_hours": 0.03554555555555555
+    },
+    "repeat_groups": [
+      {
+        "identity": "f52251b14e69ee09d53e3177eeb8cdf0d7e691823bf4be259a966c9934ffa292",
+        "lanes": [
+          "gate-speed-windows-full"
+        ],
+        "runs": 2,
+        "hours": 0.5270113888888888,
+        "extra_hours": 0.024903333333333333,
+        "hours_beyond_two": 0,
+        "same_failure_runs": 0,
+        "scripts": [
+          ".bb-gs-windows-matrix-full.sh"
+        ],
+        "log_ids": [
+          "1792927901198-969807-2097af50",
+          "1792929711884-983427-02594399"
+        ],
+        "all_pass": true,
+        "expected_control_candidate": false
+      },
+      {
+        "identity": "d5c416199c31e3067ee8bf1b672e2a47fa9b073452aeba1d4b1e594a9f6f9a5b",
+        "lanes": [
+          "rb-sdk-up"
+        ],
+        "runs": 2,
+        "hours": 0.02887083333333333,
+        "extra_hours": 0.012948055555555555,
+        "hours_beyond_two": 0,
+        "same_failure_runs": 0,
+        "scripts": [],
+        "log_ids": [
+          "1792974456797-242057-49c81674",
+          "1792974532476-242548-bfa03260"
+        ],
+        "all_pass": true,
+        "expected_control_candidate": false
+      }
+    ],
+    "repeat_extra_hours": 0.037851388888888886,
+    "hours_beyond_two": 0,
+    "cross_tier_tree_groups": 0,
+    "coverage": {
+      "logs_read": 1565,
+      "bytes_read": 19957288,
+      "truncated_logs": 29
+    },
+    "limitations": [
+      "Job-hours are summed wrapper wall time, not exclusive box occupancy or CPU-hours.",
+      "Full ledger tree plus command is necessary but insufficient proof custody; mutable external inputs, scope, platforms, toolchain and controls still require qualification.",
+      "Script-name classes and bounded-log flags do not prove executed scope. Opaque scope is reported, never treated as redundant.",
+      "Expected negative controls and distinct required platforms must remain; repeated failures are candidates, not automatic skips.",
+      "Repeated-failed-test groups across changing inputs can overlap; hours after two is exposure, never an avoidable-cost sum.",
+      "Failure after two is observed only when retained bounded diagnostics match; unknown is not success."
+    ],
+    "runtime_seconds": 1.875
+  },
+  "provider_audit": {
+    "author": "Codex",
+    "cycle": 233,
+    "at": "2026-10-26T01:19:25.141445+00:00",
+    "lanes": [],
+    "reinvokes_since_previous_snapshot": {},
+    "limits": "Bounded error counts are lower bounds; no billed tokens, exact refusal timestamps or automatic provider reset inferred.",
+    "bb2_jobs_started": 0
+  },
+  "token_audit": {
+    "author": "Codex",
+    "as_of": "2026-10-26T01:17:54.197315Z",
+    "inventory_observed_at": "2026-10-26T01:18:32.671832Z",
+    "counter_basis": "session-high-water-v1",
+    "rows": [
+      {
+        "lane": "windows",
+        "active": true,
+        "session_tokens": 49641187,
+        "session_age_hours_proxy": 134.8779514763889,
+        "lifetime_tokens_per_hour_proxy": 368045.23242399597,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1494
+        ],
+        "overcount_removed": 562792880
+      },
+      {
+        "lane": "providers",
+        "active": true,
+        "session_tokens": 30298149,
+        "session_age_hours_proxy": 67.7892075875,
+        "lifetime_tokens_per_hour_proxy": 446946.49898204196,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1503
+        ],
+        "overcount_removed": 334183550
+      },
+      {
+        "lane": "b-authority",
+        "active": false,
+        "session_tokens": 29585568,
+        "session_age_hours_proxy": 81.6683311986111,
+        "lifetime_tokens_per_hour_proxy": 362264.87753313064,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [
+          1499
+        ],
+        "matched_open_prs": [
+          1510
+        ],
+        "overcount_removed": 893719811
+      },
+      {
+        "lane": "b-runtime",
+        "active": false,
+        "session_tokens": 28295849,
+        "session_age_hours_proxy": 81.66841703194444,
+        "lifetime_tokens_per_hour_proxy": 346472.3577161063,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1512
+        ],
+        "overcount_removed": 270030629
+      },
+      {
+        "lane": "approvals",
+        "active": true,
+        "session_tokens": 28107874,
+        "session_age_hours_proxy": 68.46511064305555,
+        "lifetime_tokens_per_hour_proxy": 410543.0303989583,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1511
+        ],
+        "overcount_removed": 188954332
+      },
+      {
+        "lane": "b-substrate",
+        "active": false,
+        "session_tokens": 27269568,
+        "session_age_hours_proxy": 81.66842147638889,
+        "lifetime_tokens_per_hour_proxy": 333905.9027592922,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [
+          1489
+        ],
+        "matched_open_prs": [],
+        "overcount_removed": 164069504
+      },
+      {
+        "lane": "tool-latency",
+        "active": true,
+        "session_tokens": 20816437,
+        "session_age_hours_proxy": 67.78919480972222,
+        "lifetime_tokens_per_hour_proxy": 307076.0326690669,
+        "observed_counter_delta": 589772,
+        "observed_tokens_per_hour": 1651250.512305257,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1514
+        ],
+        "overcount_removed": 203299623
+      },
+      {
+        "lane": "sessions",
+        "active": true,
+        "session_tokens": 19375857,
+        "session_age_hours_proxy": 68.4651175875,
+        "lifetime_tokens_per_hour_proxy": 283003.34071926784,
+        "observed_counter_delta": 41128,
+        "observed_tokens_per_hour": 115150.65325259695,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1500
+        ],
+        "overcount_removed": 135838674
+      },
+      {
+        "lane": "plugins",
+        "active": true,
+        "session_tokens": 18949329,
+        "session_age_hours_proxy": 66.2619989763889,
+        "lifetime_tokens_per_hour_proxy": 285975.81257323985,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1507
+        ],
+        "overcount_removed": 334625222
+      },
+      {
+        "lane": "gate-speed",
+        "active": true,
+        "session_tokens": 16072458,
+        "session_age_hours_proxy": 83.31973453194445,
+        "lifetime_tokens_per_hour_proxy": 192900.9746645062,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [
+          1487
+        ],
+        "matched_open_prs": [
+          1509
+        ],
+        "overcount_removed": 488070989
+      },
+      {
+        "lane": "mac-live",
+        "active": true,
+        "session_tokens": 15357400,
+        "session_age_hours_proxy": 87.12079703194445,
+        "lifetime_tokens_per_hour_proxy": 176277.08335093543,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1485
+        ],
+        "overcount_removed": 143173077
+      },
+      {
+        "lane": "fs-concurrency",
+        "active": false,
+        "session_tokens": 12805727,
+        "session_age_hours_proxy": 30.996591754166666,
+        "lifetime_tokens_per_hour_proxy": 413133.38903715473,
+        "observed_counter_delta": 404057,
+        "observed_tokens_per_hour": 1131283.4930287045,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1492
+        ],
+        "overcount_removed": 91003000
+      },
+      {
+        "lane": "main-green",
+        "active": true,
+        "session_tokens": 12624266,
+        "session_age_hours_proxy": 52.22493508749999,
+        "lifetime_tokens_per_hour_proxy": 241728.70638994075,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [
+          1501
+        ],
+        "matched_open_prs": [],
+        "overcount_removed": 267592230
+      },
+      {
+        "lane": "client-perf",
+        "active": true,
+        "session_tokens": 12009257,
+        "session_age_hours_proxy": 67.78918258750001,
+        "lifetime_tokens_per_hour_proxy": 177155.9493950064,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1508
+        ],
+        "overcount_removed": 66082773
+      },
+      {
+        "lane": "dst",
+        "active": false,
+        "session_tokens": 8272604,
+        "session_age_hours_proxy": 134.8779450875,
+        "lifetime_tokens_per_hour_proxy": 61334.00086006111,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 7918898
+      },
+      {
+        "lane": "e2e-graphcoder",
+        "active": false,
+        "session_tokens": 7666138,
+        "session_age_hours_proxy": 120.68742425416667,
+        "lifetime_tokens_per_hour_proxy": 63520.60330540471,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 60646158
+      },
+      {
+        "lane": "volume-search",
+        "active": false,
+        "session_tokens": 7126917,
+        "session_age_hours_proxy": 104.60668342083333,
+        "lifetime_tokens_per_hour_proxy": 68130.60855135201,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 2803921
+      },
+      {
+        "lane": "e2e-gate",
+        "active": true,
+        "session_tokens": 6811560,
+        "session_age_hours_proxy": 67.78917175416666,
+        "lifetime_tokens_per_hour_proxy": 100481.53449494428,
+        "observed_counter_delta": 75425,
+        "observed_tokens_per_hour": 211175.79317197832,
+        "matched_merges_24h": [],
+        "matched_open_prs": [
+          1495
+        ],
+        "overcount_removed": 107387622
+      },
+      {
+        "lane": "skills-context",
+        "active": false,
+        "session_tokens": 6422607,
+        "session_age_hours_proxy": 126.46398980972224,
+        "lifetime_tokens_per_hour_proxy": 50786.05387718241,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 34843189
+      },
+      {
+        "lane": "web-outcomes",
+        "active": false,
+        "session_tokens": 5168690,
+        "session_age_hours_proxy": 134.87796008749999,
+        "lifetime_tokens_per_hour_proxy": 38321.23496416236,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 5002739
+      },
+      {
+        "lane": "deletion",
+        "active": false,
+        "session_tokens": 4717468,
+        "session_age_hours_proxy": 52.22493508749999,
+        "lifetime_tokens_per_hour_proxy": 90329.8011207892,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "ws-green",
+        "active": false,
+        "session_tokens": 4481757,
+        "session_age_hours_proxy": 134.8779467541667,
+        "lifetime_tokens_per_hour_proxy": 33228.24159066277,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "addressing",
+        "active": false,
+        "session_tokens": 4213513,
+        "session_age_hours_proxy": 54.46632036527778,
+        "lifetime_tokens_per_hour_proxy": 77359.97166215969,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 11030187
+      },
+      {
+        "lane": "objects-flake",
+        "active": false,
+        "session_tokens": 3803057,
+        "session_age_hours_proxy": 82.22626675416667,
+        "lifetime_tokens_per_hour_proxy": 46251.12084159271,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 18448906
+      },
+      {
+        "lane": "test-consolidate",
+        "active": false,
+        "session_tokens": 3193176,
+        "session_age_hours_proxy": 133.81286703194445,
+        "lifetime_tokens_per_hour_proxy": 23862.996667112064,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "shell-name",
+        "active": false,
+        "session_tokens": 2652653,
+        "session_age_hours_proxy": 66.72779147638889,
+        "lifetime_tokens_per_hour_proxy": 39753.346264106774,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 7270576
+      },
+      {
+        "lane": "lib-speed",
+        "active": false,
+        "session_tokens": 2248367,
+        "session_age_hours_proxy": 121.29633036527778,
+        "lifetime_tokens_per_hour_proxy": 18536.150213523822,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 920259
+      },
+      {
+        "lane": "pr1037",
+        "active": false,
+        "session_tokens": 2236014,
+        "session_age_hours_proxy": 134.85129869861112,
+        "lifetime_tokens_per_hour_proxy": 16581.330855384855,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "tui-stream",
+        "active": false,
+        "session_tokens": 2044450,
+        "session_age_hours_proxy": 115.84419647638889,
+        "lifetime_tokens_per_hour_proxy": 17648.272957866262,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 1769932
+      },
+      {
+        "lane": "pr-triage",
+        "active": false,
+        "session_tokens": 1993381,
+        "session_age_hours_proxy": 51.517763976388885,
+        "lifetime_tokens_per_hour_proxy": 38693.08071898436,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 4176130
+      },
+      {
+        "lane": "fuzz-targets",
+        "active": false,
+        "session_tokens": 1901053,
+        "session_age_hours_proxy": 133.61025286527777,
+        "lifetime_tokens_per_hour_proxy": 14228.346696693065,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 1848822
+      },
+      {
+        "lane": "rebase-split",
+        "active": false,
+        "session_tokens": 1760735,
+        "session_age_hours_proxy": 117.26634925416666,
+        "lifetime_tokens_per_hour_proxy": 15014.835979789303,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 2351700
+      },
+      {
+        "lane": "build-speed",
+        "active": false,
+        "session_tokens": 1739163,
+        "session_age_hours_proxy": 82.12663786527779,
+        "lifetime_tokens_per_hour_proxy": 21176.600494141236,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 514049
+      },
+      {
+        "lane": "macos-watch",
+        "active": false,
+        "session_tokens": 1728015,
+        "session_age_hours_proxy": 126.46396619861112,
+        "lifetime_tokens_per_hour_proxy": 13664.089874313762,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "macos-mount",
+        "active": false,
+        "session_tokens": 1535338,
+        "session_age_hours_proxy": 104.60610703194445,
+        "lifetime_tokens_per_hour_proxy": 14677.326626170505,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 2435864
+      },
+      {
+        "lane": "test-budget",
+        "active": false,
+        "session_tokens": 1306196,
+        "session_age_hours_proxy": 52.22490842083333,
+        "lifetime_tokens_per_hour_proxy": 25010.977318993977,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "devdep-cycle",
+        "active": false,
+        "session_tokens": 1215534,
+        "session_age_hours_proxy": 128.31538675416667,
+        "lifetime_tokens_per_hour_proxy": 9473.018246274576,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 1194918
+      },
+      {
+        "lane": "env-context",
+        "active": false,
+        "session_tokens": 1150630,
+        "session_age_hours_proxy": 89.9068725875,
+        "lifetime_tokens_per_hour_proxy": 12798.02051706529,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 1135852
+      },
+      {
+        "lane": "substrate-runner",
+        "active": false,
+        "session_tokens": 1041245,
+        "session_age_hours_proxy": 66.17581230972223,
+        "lifetime_tokens_per_hour_proxy": 15734.525405244256,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 2921163
+      },
+      {
+        "lane": "lock-guard",
+        "active": false,
+        "session_tokens": 1010218,
+        "session_age_hours_proxy": 86.7359125875,
+        "lifetime_tokens_per_hour_proxy": 11647.055641236064,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 3412024
+      },
+      {
+        "lane": "verify",
+        "active": true,
+        "session_tokens": 928684,
+        "session_age_hours_proxy": 1.9586367541666667,
+        "lifetime_tokens_per_hour_proxy": 474148.15331346286,
+        "observed_counter_delta": 226569,
+        "observed_tokens_per_hour": 634350.5241389719,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 1839848
+      },
+      {
+        "lane": "predictor",
+        "active": false,
+        "session_tokens": 927763,
+        "session_age_hours_proxy": 52.22488814305555,
+        "lifetime_tokens_per_hour_proxy": 17764.76758473185,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 1600698
+      },
+      {
+        "lane": "projfs-recovery",
+        "active": false,
+        "session_tokens": 895071,
+        "session_age_hours_proxy": 89.90023647638888,
+        "lifetime_tokens_per_hour_proxy": 9956.269694964358,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 1142275
+      },
+      {
+        "lane": "child-errors",
+        "active": false,
+        "session_tokens": 804238,
+        "session_age_hours_proxy": 134.0442400875,
+        "lifetime_tokens_per_hour_proxy": 5999.795287548484,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "win-shell",
+        "active": false,
+        "session_tokens": 760382,
+        "session_age_hours_proxy": 87.20001564305555,
+        "lifetime_tokens_per_hour_proxy": 8719.975499919023,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 752750
+      },
+      {
+        "lane": "headless-retry",
+        "active": false,
+        "session_tokens": 616755,
+        "session_age_hours_proxy": 128.1600603652778,
+        "lifetime_tokens_per_hour_proxy": 4812.38069209818,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "xplat-live",
+        "active": false,
+        "session_tokens": 483656,
+        "session_age_hours_proxy": 127.20571592083333,
+        "lifetime_tokens_per_hour_proxy": 3802.156188492379,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 450182
+      },
+      {
+        "lane": "final-message",
+        "active": false,
+        "session_tokens": 416428,
+        "session_age_hours_proxy": 134.87790036527778,
+        "lifetime_tokens_per_hour_proxy": 3087.444265311257,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "test-hygiene",
+        "active": false,
+        "session_tokens": 347217,
+        "session_age_hours_proxy": 86.58274453194444,
+        "lifetime_tokens_per_hour_proxy": 4010.233238470459,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "roadmap-audit",
+        "active": false,
+        "session_tokens": 270659,
+        "session_age_hours_proxy": 83.49767369861111,
+        "lifetime_tokens_per_hour_proxy": 3241.5154579869704,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "checkout-next",
+        "active": false,
+        "session_tokens": 217898,
+        "session_age_hours_proxy": 83.26831036527778,
+        "lifetime_tokens_per_hour_proxy": 2616.817839153149,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "dev-profile",
+        "active": false,
+        "session_tokens": 0,
+        "session_age_hours_proxy": 134.8779450875,
+        "lifetime_tokens_per_hour_proxy": 0.0,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "intelligence",
+        "active": false,
+        "session_tokens": 0,
+        "session_age_hours_proxy": 67.78916342083333,
+        "lifetime_tokens_per_hour_proxy": 0.0,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      },
+      {
+        "lane": "streams",
+        "active": false,
+        "session_tokens": 0,
+        "session_age_hours_proxy": 0.5778911986111112,
+        "lifetime_tokens_per_hour_proxy": 0.0,
+        "observed_counter_delta": 0,
+        "observed_tokens_per_hour": 0.0,
+        "matched_merges_24h": [],
+        "matched_open_prs": [],
+        "overcount_removed": 0
+      }
+    ],
+    "unique_session_tokens": 415318156,
+    "sessions": 54,
+    "legacy_sum_run_counters": 4842573112,
+    "previous_observation": "2026-10-26T00:56:24.167664Z",
+    "observation_hours": 0.3571668838888889,
+    "previous_inventory_observed_at": "2026-10-26T00:57:06.871050Z",
+    "observed_counter_delta": 1336951,
+    "merges_in_observation_interval": 0,
+    "observed_tokens_per_merge": null,
+    "operator_reported_account_recovery": "2026-10-25T23:10:00Z; account identity and quota denominator unavailable",
+    "limits": [
+      "Counters cover SDK session histories, not one account or24h spend. Account recovery is coordinator-reported; no credential or account data accessed.",
+      "UUIDv7 creation time gives only a session-lifetime wall-hour proxy, not active hours, current burn or account depletion rate.",
+      "Observation deltas become available after two comparable corrected snapshots; completion/reporting lag prevents exact spend timing. Missing prior session counters count as newly observed, not proven interval spend.",
+      "Branch names are explicit ownership proxies; unmatched PRs, shared work, unmerged proof and roadmap contribution are not assigned. Zero24h matches does not mean a session made no progress.",
+      "Legacy resume sums and duplicated *.run.*.log copies overstate inventory. Corrections are accounting changes, not saved model tokens."
+    ],
+    "bb2_jobs_started": 0,
+    "cycle": 233
+  }
+}

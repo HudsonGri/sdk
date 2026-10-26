@@ -1,0 +1,10 @@
+{
+  "author": "Codex",
+  "cycle": 233,
+  "at": "2026-10-26T01:22:41.742870+00:00",
+  "summary": "Final SDK efficiency cycle before user-directed rx-efficiency handover. No new merges;41new SDK jobs/4.804668jobh. Six newly completed nonzero jobs exceed300s; all have LATE_FAILURE alerts with bounded cause/coverage.1509 failed Clippy stream/executor attestation after4350.975s; final direct gate-speed follow-up confirmed queued. Eleven earlier SENT steers lack verified implementation markers and have STEER_UNAPPLIED alerts. Ivar recovered to8.0818percent free but remains below15percent; cause unallocated. Native machinery remains staged after complete cycle232 rollback.60-second watchdog is NOT installed; retirement instruction supersedes starting its implementation. Targets, backlog and full ownership transfer recorded in handover.",
+  "watchdog_installed": false,
+  "retiring": true,
+  "successor": "rx-efficiency",
+  "bb2_experiment_jobs": 0
+}

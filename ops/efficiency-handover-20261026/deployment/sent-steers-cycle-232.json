@@ -1,0 +1,112 @@
+[
+  {
+    "file": "Q:/lanes/efficiency/steers/gate-speed-20261026T005542Z.md",
+    "state": "queued in canonical inbox/batch",
+    "lane": "gate-speed",
+    "pid": 39624,
+    "at": "2026-10-26T00:59:14.6471778Z",
+    "custody_matches": [
+      "gate-speed.md"
+    ]
+  },
+  {
+    "file": "Q:/lanes/efficiency/steers/main-green-20261026T005542Z.md",
+    "state": "queued in canonical inbox/batch",
+    "lane": "main-green",
+    "pid": 74564,
+    "at": "2026-10-26T00:59:15.1764079Z",
+    "custody_matches": [
+      "main-green.md"
+    ]
+  },
+  {
+    "file": "Q:/lanes/efficiency/steers/tool-latency-20261026T005542Z.md",
+    "state": "queued in canonical inbox/batch",
+    "lane": "tool-latency",
+    "pid": 36028,
+    "at": "2026-10-26T00:59:15.8233497Z",
+    "custody_matches": [
+      "tool-latency.md"
+    ]
+  },
+  {
+    "file": "Q:/lanes/efficiency/steers/plugins-20261026T004421Z.md",
+    "state": "queued in canonical inbox/batch",
+    "lane": "plugins",
+    "pid": 39432,
+    "at": "2026-10-26T00:59:16.583143Z",
+    "custody_matches": [
+      "plugins.md"
+    ]
+  },
+  {
+    "at": "2026-10-26T01:07:33.1550340Z",
+    "state": "queued in canonical inbox/batch",
+    "pid": 51344,
+    "file": "Q:/lanes/efficiency/steers/queue-recovered-20261026T010200Z.md",
+    "lane": "gate-speed",
+    "custody_matches": [
+      "gate-speed.md"
+    ]
+  },
+  {
+    "at": "2026-10-26T01:07:34.0290063Z",
+    "state": "queued in canonical inbox/batch",
+    "pid": 76640,
+    "file": "Q:/lanes/efficiency/steers/queue-recovered-20261026T010200Z.md",
+    "lane": "main-green",
+    "custody_matches": [
+      "main-green.md"
+    ]
+  },
+  {
+    "at": "2026-10-26T01:07:34.5278638Z",
+    "state": "queued in canonical inbox/batch",
+    "pid": 47184,
+    "file": "Q:/lanes/efficiency/steers/streams-schedule-20261026T005542Z.md",
+    "lane": "streams",
+    "custody_matches": [
+      "streams.md"
+    ]
+  },
+  {
+    "at": "2026-10-26T01:07:35.4307148Z",
+    "state": "queued in canonical inbox/batch",
+    "pid": 43500,
+    "file": "Q:/lanes/efficiency/steers/b-runtime-schedule-20261026T005542Z.md",
+    "lane": "b-runtime",
+    "custody_matches": [
+      "b-runtime.md"
+    ]
+  },
+  {
+    "at": "2026-10-26T01:07:36.8339789Z",
+    "state": "queued in canonical inbox/batch",
+    "pid": 58608,
+    "file": "Q:/lanes/efficiency/steers/fs-concurrency-schedule-20261026T005542Z.md",
+    "lane": "fs-concurrency",
+    "custody_matches": [
+      "fs-concurrency.md"
+    ]
+  },
+  {
+    "at": "2026-10-26T01:07:38.3677171Z",
+    "state": "queued in canonical inbox/batch",
+    "pid": 47672,
+    "file": "Q:/lanes/efficiency/steers/b-authority-schedule-20261026T005542Z.md",
+    "lane": "b-authority",
+    "custody_matches": [
+      "b-authority.md"
+    ]
+  },
+  {
+    "at": "2026-10-26T01:07:40.2959472Z",
+    "state": "queued in canonical inbox/batch",
+    "pid": 43120,
+    "file": "Q:/lanes/efficiency/steers/client-perf-schedule-20261026T005542Z.md",
+    "lane": "client-perf",
+    "custody_matches": [
+      "client-perf.md"
+    ]
+  }
+]

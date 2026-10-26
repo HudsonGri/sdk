@@ -1,0 +1,1113 @@
+{
+  "author": "Codex",
+  "at": "2026-10-26T01:28:35.569407+00:00",
+  "source": "Q:/lanes/efficiency; canonical shared operational deployment",
+  "files": [
+    {
+      "source": "Q:/lanes/efficiency/anomalies-extra-cycle-233.json",
+      "snapshot": "deployment/anomalies-extra-cycle-233.json",
+      "sha256": "82cd2acf83c602c6e13f8b0a4ee4170c68e93500994d7f85acb76dac49b61adb",
+      "bytes": 9241
+    },
+    {
+      "source": "Q:/lanes/efficiency/anomaly.py",
+      "snapshot": "deployment/anomaly.py",
+      "sha256": "8d96b2f77c143c2db65f2652ec4b0b4fdbb2fb6441c733d8904ff7909edfc7c7",
+      "bytes": 16792
+    },
+    {
+      "source": "Q:/lanes/efficiency/anomaly_test.py",
+      "snapshot": "deployment/anomaly_test.py",
+      "sha256": "7e443c3a1795ff89bc004efeb4183f86318ccfcff3cdb6cbe27e9995436465f8",
+      "bytes": 8217
+    },
+    {
+      "source": "Q:/lanes/efficiency/baseline-admission-cycle-232.json",
+      "snapshot": "deployment/baseline-admission-cycle-232.json",
+      "sha256": "521fc0dc5131e86df2f9fe44413297644c1907894b82c72ecec72cd15600759f",
+      "bytes": 720
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb-job.before-20261023.py",
+      "snapshot": "deployment/bb-job.before-20261023.py",
+      "sha256": "05e85a5f4062c74b26a1b7aa1d9cbb48c2791ae3f543f9d8cb5f0b548e4cc991",
+      "bytes": 12748
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb-job.before-cow.py",
+      "snapshot": "deployment/bb-job.before-cow.py",
+      "sha256": "7aa32ee31238338c8687e5a8cc7bc82fff63644d6e20ecca6d13a2356e9df9ae",
+      "bytes": 14859
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb-job.candidate.py",
+      "snapshot": "deployment/bb-job.candidate.py",
+      "sha256": "7aa32ee31238338c8687e5a8cc7bc82fff63644d6e20ecca6d13a2356e9df9ae",
+      "bytes": 14859
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb-job.cow-candidate.py",
+      "snapshot": "deployment/bb-job.cow-candidate.py",
+      "sha256": "e036802c8fcc389fec9a9db65fa6b6622658074a3b11df4f4d9cb80254d201fe",
+      "bytes": 16045
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb2-policy-audit.json",
+      "snapshot": "deployment/bb2-policy-audit.json",
+      "sha256": "9cb7379b05fb0d39dba58412f1482432786f9aae23db4756a7ee3ea315e0f3f3",
+      "bytes": 4602
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb2_policy_audit.py",
+      "snapshot": "deployment/bb2_policy_audit.py",
+      "sha256": "e4717695458d6ea045cd2268d2880a65a2ce319baa82ee04f8c663d58642c6de",
+      "bytes": 2938
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb_cargo_cache.before-local-lock-fix.py",
+      "snapshot": "deployment/bb_cargo_cache.before-local-lock-fix.py",
+      "sha256": "94288d76bc091ade433a414d087b52fb99b2ecb151833be52e6f067f8b7d7d6e",
+      "bytes": 5528
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb_cargo_cache.py",
+      "snapshot": "deployment/bb_cargo_cache.py",
+      "sha256": "7bc4fb0e120e967337d62869c78609aba9670f0851ba0fc08418e407213a6998",
+      "bytes": 6973
+    },
+    {
+      "source": "Q:/lanes/efficiency/bb_target_store.py",
+      "snapshot": "deployment/bb_target_store.py",
+      "sha256": "ee29f2f6c5a197ec3363ddc83bd8e11505fc122e29084d2385e2ab9bf2983ff2",
+      "bytes": 10944
+    },
+    {
+      "source": "Q:/lanes/efficiency/buildbox.before-20261023.mjs",
+      "snapshot": "deployment/buildbox.before-20261023.mjs",
+      "sha256": "d6df18acbd1461b227da5b1614cbfd6ea48a9839168db0dbe30350899448ec77",
+      "bytes": 109137
+    },
+    {
+      "source": "Q:/lanes/efficiency/buildbox.before-cow.mjs",
+      "snapshot": "deployment/buildbox.before-cow.mjs",
+      "sha256": "d67acfab5015131b67b5290f67d05234dc0b95faa845f1388abd639c186cdd0e",
+      "bytes": 109209
+    },
+    {
+      "source": "Q:/lanes/efficiency/buildbox.cow-candidate.mjs",
+      "snapshot": "deployment/buildbox.cow-candidate.mjs",
+      "sha256": "ccb160e100c5efcd66529257be5475345b48995b0542ab5e91a5ede480f90cee",
+      "bytes": 109660
+    },
+    {
+      "source": "Q:/lanes/efficiency/cache_audit.py",
+      "snapshot": "deployment/cache_audit.py",
+      "sha256": "a07887e607130adaf9ac29a888ecf0a543df9cca436b100613f3b5637606ddf4",
+      "bytes": 6536
+    },
+    {
+      "source": "Q:/lanes/efficiency/completion-cycle-233.json",
+      "snapshot": "deployment/completion-cycle-233.json",
+      "sha256": "e26d2241d1f77483132e136154d39bf930eb509341cd8ba0f181225f1e4c9c40",
+      "bytes": 971
+    },
+    {
+      "source": "Q:/lanes/efficiency/compute-results.json",
+      "snapshot": "deployment/compute-results.json",
+      "sha256": "a7ab42486f8ca4d3cb96a284f44b74db4bbbf538ef6f55c704dc12bf4c71af7e",
+      "bytes": 14509
+    },
+    {
+      "source": "Q:/lanes/efficiency/compute_report.py",
+      "snapshot": "deployment/compute_report.py",
+      "sha256": "af792b41c821ac121b323dd9534375bf770d94620746b73e0f16445556ba426b",
+      "bytes": 3762
+    },
+    {
+      "source": "Q:/lanes/efficiency/cow-results.json",
+      "snapshot": "deployment/cow-results.json",
+      "sha256": "c87554fd3759ab7fc4bb93fefb15c50c648c51501d13c963adbbb1450a820079",
+      "bytes": 1252832
+    },
+    {
+      "source": "Q:/lanes/efficiency/cycle_appendix.py",
+      "snapshot": "deployment/cycle_appendix.py",
+      "sha256": "fac1f6bce5a4a184881684c7fae1a1744456cf3d69b943c700defd7449742ae1",
+      "bytes": 8120
+    },
+    {
+      "source": "Q:/lanes/efficiency/cycle_report.py",
+      "snapshot": "deployment/cycle_report.py",
+      "sha256": "a4530f0a49d64f11c2f69a04212cca73a782308573b5a0f54dc07eaa13c8534d",
+      "bytes": 15262
+    },
+    {
+      "source": "Q:/lanes/efficiency/deploy-cache-policy.py",
+      "snapshot": "deployment/deploy-cache-policy.py",
+      "sha256": "9e7b0eebd16938c430fc3ab5082b9be44cce7f7d4c581209692b01af04c39458",
+      "bytes": 475
+    },
+    {
+      "source": "Q:/lanes/efficiency/deploy-native-cache-policy.py",
+      "snapshot": "deployment/deploy-native-cache-policy.py",
+      "sha256": "cc3c47f48dfdf754b561ea9df6fc0f8526667f7378b43f08aeecbef45a65274b",
+      "bytes": 671
+    },
+    {
+      "source": "Q:/lanes/efficiency/findings.md",
+      "snapshot": "deployment/findings.md",
+      "sha256": "55bfbd9fbe13de0ce2261319c3c1a1d33362149470828f9fa2e2b5ca93b2b019",
+      "bytes": 15272
+    },
+    {
+      "source": "Q:/lanes/efficiency/hard-target-evidence-cycle-233.json",
+      "snapshot": "deployment/hard-target-evidence-cycle-233.json",
+      "sha256": "6faf80dc56544a4fb1112456181a58a79a53defce0a3a7e70712a3b955746878",
+      "bytes": 63421
+    },
+    {
+      "source": "Q:/lanes/efficiency/incident_audit.py",
+      "snapshot": "deployment/incident_audit.py",
+      "sha256": "2550b1daf024e888dcd7544bb9a6b0d9cc5b4e26d1c20f00cb9e8af8b9f564af",
+      "bytes": 3205
+    },
+    {
+      "source": "Q:/lanes/efficiency/incidents-cycle-233.json",
+      "snapshot": "deployment/incidents-cycle-233.json",
+      "sha256": "da3367d11798fb5bf7ca008568aec8336c175e401a942dc1334a4af1af6f984d",
+      "bytes": 1124
+    },
+    {
+      "source": "Q:/lanes/efficiency/install_machinery.py",
+      "snapshot": "deployment/install_machinery.py",
+      "sha256": "c2c100f5c699c809b088ad508dd54b4c7210043aa30a904cbe9abbb996ec6d89",
+      "bytes": 6478
+    },
+    {
+      "source": "Q:/lanes/efficiency/install_target_store.py",
+      "snapshot": "deployment/install_target_store.py",
+      "sha256": "50953c14489b5fa43f44fdb9cd5af7b8a31e9bf391e9fce57ba851f68a6a9e99",
+      "bytes": 3127
+    },
+    {
+      "source": "Q:/lanes/efficiency/iteration.json",
+      "snapshot": "deployment/iteration.json",
+      "sha256": "f8ae8e37b0ce03d7e711cf1fdda4c4a9ff6c6005af6d0aa820bc0bfc3ff799a5",
+      "bytes": 4040
+    },
+    {
+      "source": "Q:/lanes/efficiency/iteration.py",
+      "snapshot": "deployment/iteration.py",
+      "sha256": "2b9efdcec4a7824c2deb52555ebfe9d6a94d929892705cdb41ad0573d83f077f",
+      "bytes": 11432
+    },
+    {
+      "source": "Q:/lanes/efficiency/iteration_test.py",
+      "snapshot": "deployment/iteration_test.py",
+      "sha256": "653369fb2108bd8966bf2004a1c92939a6713f47a293af7e9ccc7cac47b181f0",
+      "bytes": 1624
+    },
+    {
+      "source": "Q:/lanes/efficiency/job_exports.before-cow.py",
+      "snapshot": "deployment/job_exports.before-cow.py",
+      "sha256": "3d3e110b87f706247eacd7b98e64866ff4a7fc4c979ca46414aee3ee8ad444f5",
+      "bytes": 2534
+    },
+    {
+      "source": "Q:/lanes/efficiency/job_exports.cow-candidate.py",
+      "snapshot": "deployment/job_exports.cow-candidate.py",
+      "sha256": "88d0fb1033b1ebb61fa4781ed06cb296cffe248f866111ed605b79fb577711af",
+      "bytes": 2729
+    },
+    {
+      "source": "Q:/lanes/efficiency/lane-validation.json",
+      "snapshot": "deployment/lane-validation.json",
+      "sha256": "7eaeffab6302e2f2098cd5391b4b30269d21785c79ee818fee244ebba9e219e0",
+      "bytes": 1944201
+    },
+    {
+      "source": "Q:/lanes/efficiency/lane-validation.md",
+      "snapshot": "deployment/lane-validation.md",
+      "sha256": "7c52d5f27cb0dd897b06fb42824eb6f528b570fb26e3d419111c4ddd6ee44893",
+      "bytes": 5647
+    },
+    {
+      "source": "Q:/lanes/efficiency/lane_validation.py",
+      "snapshot": "deployment/lane_validation.py",
+      "sha256": "d7f532d06320038d23949ef950e7839f100efda6b559431df67f145731455995",
+      "bytes": 13319
+    },
+    {
+      "source": "Q:/lanes/efficiency/lane_validation_test.py",
+      "snapshot": "deployment/lane_validation_test.py",
+      "sha256": "c4f080bd24eb656266a5548c5e11a15755568a498507ba9449107a2e78859a29",
+      "bytes": 2643
+    },
+    {
+      "source": "Q:/lanes/efficiency/latest.json",
+      "snapshot": "deployment/latest.json",
+      "sha256": "607b3f462a3c27d1200a61c4a6262240d004d9562bb6a8aefda5ee2cbad44dde",
+      "bytes": 76222
+    },
+    {
+      "source": "Q:/lanes/efficiency/live_audit.py",
+      "snapshot": "deployment/live_audit.py",
+      "sha256": "09c71684a3d860aa58fc5b79cfc272d6735137b6552a38f90901bf255ae9ab20",
+      "bytes": 2465
+    },
+    {
+      "source": "Q:/lanes/efficiency/long-commands-cycle-233.json",
+      "snapshot": "deployment/long-commands-cycle-233.json",
+      "sha256": "ab442683f3caf907f82fcb1b19c51379ad8993b5e9733c54e7c923228dbfe326",
+      "bytes": 3864
+    },
+    {
+      "source": "Q:/lanes/efficiency/loop.sh",
+      "snapshot": "deployment/loop.sh",
+      "sha256": "f3457a4cb9330fc64509b9482c3eb15fbf24d05366201641f30c48f9eb31eedd",
+      "bytes": 1412
+    },
+    {
+      "source": "Q:/lanes/efficiency/loop2.sh",
+      "snapshot": "deployment/loop2.sh",
+      "sha256": "16534c1922a114e05df1fa0f8d6f92c87a439a35196fe05dccca79163032ec72",
+      "bytes": 1748
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/diagnose-drainer.py",
+      "snapshot": "deployment/machinery/diagnose-drainer.py",
+      "sha256": "494dba1922dc251751da9d08f9b8e2076aebbd43d18ba961aa32a52c32f00b33",
+      "bytes": 1689
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/drainer-diagnosis-cycle-224.json",
+      "snapshot": "deployment/machinery/drainer-diagnosis-cycle-224.json",
+      "sha256": "801a42bda2d55dd3431137436cb08685ecbc3c0eb5319ad2f066d2255b36e060",
+      "bytes": 2277
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/fleet-steer.py",
+      "snapshot": "deployment/machinery/fleet-steer.py",
+      "sha256": "656540e3c71152cd84b6c19ac6f728f10a1855bf486f493c00efc759c39dacd3",
+      "bytes": 7151
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/fleet-supervisor.py",
+      "snapshot": "deployment/machinery/fleet-supervisor.py",
+      "sha256": "37e4f7564e18256b126ffaa4bac6e6302222be0cb2e77cc4e692695e813f43f1",
+      "bytes": 15958
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/fleet_usage.py",
+      "snapshot": "deployment/machinery/fleet_usage.py",
+      "sha256": "6c42cebae4358d3e373e7d93570ac799f76bb0120b0aab1b25bfd4f7b721ab6b",
+      "bytes": 1596
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/installed-cycle-232/receipt.json",
+      "snapshot": "deployment/machinery/installed-cycle-232/receipt.json",
+      "sha256": "d9091f51871d0320ca77af6809edda65b29bda71f52d9e021f137faee9712b60",
+      "bytes": 1681
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/lane-busy.ps1",
+      "snapshot": "deployment/machinery/lane-busy.ps1",
+      "sha256": "8e700ebe14163b16322ec2f6df5e9b706e398be2bff6ff0ceddd723cc37464a6",
+      "bytes": 267
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/lane-running.ps1",
+      "snapshot": "deployment/machinery/lane-running.ps1",
+      "sha256": "42a65198e4a3078fc1e297e8c9541863587934c33e8f9e16aad2b40b5592081c",
+      "bytes": 3961
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/lane-supervisor2.sh",
+      "snapshot": "deployment/machinery/lane-supervisor2.sh",
+      "sha256": "a54f61a1616cb355c702fc2d4c357b1d6a13e14ce539a018890af2a77824de28",
+      "bytes": 264
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/manifest.json",
+      "snapshot": "deployment/machinery/manifest.json",
+      "sha256": "33925ca9b6cb7b7b089bde4823a80aeed86ab141a71b77d26e8fec95f93cd1f7",
+      "bytes": 2979
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/README.md",
+      "snapshot": "deployment/machinery/README.md",
+      "sha256": "9e4a92c0bfe5af672f05fd278966cab37dbfe0b5522c490f6824f04b9b688e45",
+      "bytes": 3395
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/self-test-first-attempt.json",
+      "snapshot": "deployment/machinery/self-test-first-attempt.json",
+      "sha256": "1dce98af5850a9e07768366a44a50fed42f3b323c5e986cad316ddef92d960b2",
+      "bytes": 206
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/self-test-result.json",
+      "snapshot": "deployment/machinery/self-test-result.json",
+      "sha256": "fd536a6c4433c95b0cc9623bd2c10e79fd506b3248371034ed365ffd04c12f3b",
+      "bytes": 317
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/self-test.py",
+      "snapshot": "deployment/machinery/self-test.py",
+      "sha256": "687b715afa34641124f0e2ecf0c05d82606e00e5f1549427648498e19e9dcce3",
+      "bytes": 17713
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/steer-now.sh",
+      "snapshot": "deployment/machinery/steer-now.sh",
+      "sha256": "55a1eb1487035f6a6a89d3983e10e3e4609725f4a74c7ca8c2cf3cca7c75db5f",
+      "bytes": 1013
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/steer.sh",
+      "snapshot": "deployment/machinery/steer.sh",
+      "sha256": "901342fc77d378cb49a356ae1358188c60164755d7a5090010ecbce41e568274",
+      "bytes": 235
+    },
+    {
+      "source": "Q:/lanes/efficiency/machinery/stop-lanes.ps1",
+      "snapshot": "deployment/machinery/stop-lanes.ps1",
+      "sha256": "28346cf488326eafadbb595d90e15d014014fa097d6aa1ba239e6f1eb420bd6a",
+      "bytes": 614
+    },
+    {
+      "source": "Q:/lanes/efficiency/measure.py",
+      "snapshot": "deployment/measure.py",
+      "sha256": "459cf471ffa4bbcfb829dcf1cbeb9c326524675f3e71dadfce56c9e5efecbeae",
+      "bytes": 49203
+    },
+    {
+      "source": "Q:/lanes/efficiency/metrics.md",
+      "snapshot": "deployment/metrics.md",
+      "sha256": "c71bc8a2765dd7e0cacc4da1edc9d0271a0ce7dc62e7237964354fa28756ded6",
+      "bytes": 41173
+    },
+    {
+      "source": "Q:/lanes/efficiency/observed-20261024T004135Z-bb_cargo_cache.py",
+      "snapshot": "deployment/observed-20261024T004135Z-bb_cargo_cache.py",
+      "sha256": "2105b35e9f8de091486899ad360dd9a5056074f716f7844fbde327c5d92f98c3",
+      "bytes": 7111
+    },
+    {
+      "source": "Q:/lanes/efficiency/observed-20261024T004135Z-bb_target_store.py",
+      "snapshot": "deployment/observed-20261024T004135Z-bb_target_store.py",
+      "sha256": "00482e2513306931c052aeca5f1b3dd10524ed3e2af92b4b7063a4456449669e",
+      "bytes": 11589
+    },
+    {
+      "source": "Q:/lanes/efficiency/observed-20261024T021836Z-bb_cargo_cache.py",
+      "snapshot": "deployment/observed-20261024T021836Z-bb_cargo_cache.py",
+      "sha256": "fdb15e3b0a90876e8fe4c6d941ae202e2c38f07de4efccb77105b65838c339bb",
+      "bytes": 7186
+    },
+    {
+      "source": "Q:/lanes/efficiency/observed-20261024T021836Z-bb_target_store.py",
+      "snapshot": "deployment/observed-20261024T021836Z-bb_target_store.py",
+      "sha256": "ddd13a24dd32c7f9e955c6c1d8271dc5c3cf056edd6223aa1b89881b4d9b54c8",
+      "bytes": 12644
+    },
+    {
+      "source": "Q:/lanes/efficiency/observed-20261024T130942Z-bb_target_store.py",
+      "snapshot": "deployment/observed-20261024T130942Z-bb_target_store.py",
+      "sha256": "6935892d43dee35604cb96e40f52dca5c492c609b0c7bbfd3b88690380673526",
+      "bytes": 14513
+    },
+    {
+      "source": "Q:/lanes/efficiency/observed-20261024T170042Z-bb_cargo_cache.py",
+      "snapshot": "deployment/observed-20261024T170042Z-bb_cargo_cache.py",
+      "sha256": "d76d41720b789c28be73080d012e78a5869ec044a13993d0109f4e4ba8ac093a",
+      "bytes": 12600
+    },
+    {
+      "source": "Q:/lanes/efficiency/observed-20261024T170042Z-bb_target_store.py",
+      "snapshot": "deployment/observed-20261024T170042Z-bb_target_store.py",
+      "sha256": "5453c9ed715562515cb63992c4c4fcc17a3479c123c530f5bc37eb155f53ae5d",
+      "bytes": 16049
+    },
+    {
+      "source": "Q:/lanes/efficiency/outcomes-cycle-233.json",
+      "snapshot": "deployment/outcomes-cycle-233.json",
+      "sha256": "b40d22292ed726d3668be9bb84c9272aa5e43d14cb3a5bf0fb781d3838bea4c9",
+      "bytes": 965
+    },
+    {
+      "source": "Q:/lanes/efficiency/prior-fix-verification-cycle-233.json",
+      "snapshot": "deployment/prior-fix-verification-cycle-233.json",
+      "sha256": "7d93263fa252e70826124dc71d28ed94ecec733d32049d4cf8653508918c6360",
+      "bytes": 1361
+    },
+    {
+      "source": "Q:/lanes/efficiency/prompt.md",
+      "snapshot": "deployment/prompt.md",
+      "sha256": "824fb6c3c141a8141e900146bd12327c7eba12cb21321c2aa83053ad81bfad6c",
+      "bytes": 7905
+    },
+    {
+      "source": "Q:/lanes/efficiency/provider_audit.py",
+      "snapshot": "deployment/provider_audit.py",
+      "sha256": "b294b4aa84e4a0a81e00c9ca3f434024987f0f4dbc4db61774f5447c4597f4a8",
+      "bytes": 1768
+    },
+    {
+      "source": "Q:/lanes/efficiency/queue-wakeup-cycle-232.json",
+      "snapshot": "deployment/queue-wakeup-cycle-232.json",
+      "sha256": "86263c523cef647ea223b768c668559ea00c7aeadce9a0a5d510db951ff8d90e",
+      "bytes": 181
+    },
+    {
+      "source": "Q:/lanes/efficiency/read_rules-cycle-190-before.py",
+      "snapshot": "deployment/read_rules-cycle-190-before.py",
+      "sha256": "606163bfca4cf97ab46b8eac3f4483ca6231d25a4d2f9aa84c06348901de1713",
+      "bytes": 1141
+    },
+    {
+      "source": "Q:/lanes/efficiency/read_rules.py",
+      "snapshot": "deployment/read_rules.py",
+      "sha256": "16cf62d06ddad69f508b612152bdddfb3affc961630d949efa5ddcc227ea0ad6",
+      "bytes": 1267
+    },
+    {
+      "source": "Q:/lanes/efficiency/redesign-schedule.json",
+      "snapshot": "deployment/redesign-schedule.json",
+      "sha256": "214081909a264894e50dd66ca2a6cdb64a8a3aa1c07b54f91f282f409bd6c628",
+      "bytes": 9942
+    },
+    {
+      "source": "Q:/lanes/efficiency/redesign-schedule.md",
+      "snapshot": "deployment/redesign-schedule.md",
+      "sha256": "92a3a01a683fa1877e515fe06b19afb48803abaf55c07b6bcd367f02460f3d1e",
+      "bytes": 5060
+    },
+    {
+      "source": "Q:/lanes/efficiency/reporting-controls-cycle-233.json",
+      "snapshot": "deployment/reporting-controls-cycle-233.json",
+      "sha256": "9ecefee60d4fc27a8dc19739b8a24066f36d68e2cf2c925772fb38fc386949c6",
+      "bytes": 343
+    },
+    {
+      "source": "Q:/lanes/efficiency/retirement-cycle-233.json",
+      "snapshot": "deployment/retirement-cycle-233.json",
+      "sha256": "e10bc90fda6d5397dd2743c604e2dfcdcc32f541caa579be22043ec658dddd64",
+      "bytes": 282
+    },
+    {
+      "source": "Q:/lanes/efficiency/sent-steers-cycle-232.json",
+      "snapshot": "deployment/sent-steers-cycle-232.json",
+      "sha256": "4904c990456712dc5f51b52443ea8399edd04b909bdbd45507b23e00c5452c01",
+      "bytes": 3129
+    },
+    {
+      "source": "Q:/lanes/efficiency/sent-steers-cycle-233.json",
+      "snapshot": "deployment/sent-steers-cycle-233.json",
+      "sha256": "a39d690b1d62572c53fccb20308bac33651b89e35aabefb620ba0b82539f1c7d",
+      "bytes": 287
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/approvals-20261024T221602Z.md",
+      "snapshot": "deployment/steers/approvals-20261024T221602Z.md",
+      "sha256": "580c3229ec5a3973c5115e036e580f13e1161040880cea8bbc1e1575865695da",
+      "bytes": 35837
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/approvals-20261025T115900Z.md",
+      "snapshot": "deployment/steers/approvals-20261025T115900Z.md",
+      "sha256": "28851d9f8401bb6d9603d4bb774eee3824ce052595bde6e4861b722ba1f5e882",
+      "bytes": 6005
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/b-authority-import-20261024T194524Z.md",
+      "snapshot": "deployment/steers/b-authority-import-20261024T194524Z.md",
+      "sha256": "2a6f9bd2cac1459498515dabfaa8ed265239deaa72b735df4a3d1887ef6b0b5d",
+      "bytes": 4755
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/b-authority-schedule-20261026T005542Z.md",
+      "snapshot": "deployment/steers/b-authority-schedule-20261026T005542Z.md",
+      "sha256": "19a603556a4ca1334e56892748bc3d08d0d526e641a41732aa89cbfc69b1a0f4",
+      "bytes": 992
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/b-runtime-20261025T140223Z.md",
+      "snapshot": "deployment/steers/b-runtime-20261025T140223Z.md",
+      "sha256": "bc849e4bdbedcdae19b1dc301a9c88f46af271c04d33c5605e471795d8741e15",
+      "bytes": 6387
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/b-runtime-schedule-20261026T005542Z.md",
+      "snapshot": "deployment/steers/b-runtime-schedule-20261026T005542Z.md",
+      "sha256": "ee4e456497b85482881fbcd8d031a49946bff38d2d5e7916625929df7d0447d1",
+      "bytes": 973
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/client-perf-schedule-20261026T005542Z.md",
+      "snapshot": "deployment/steers/client-perf-schedule-20261026T005542Z.md",
+      "sha256": "926106ae722a0ba25b99ae1d301ae5cff13115987b3f866ec4174dd4395c2b0a",
+      "bytes": 975
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261022T224431Z.md",
+      "snapshot": "deployment/steers/coordinator-20261022T224431Z.md",
+      "sha256": "c75dae8e80660bf1c1fcaf814107cb817361ddf3dc91566303fc0df6fa3fe067",
+      "bytes": 13090
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261023T021914Z.md",
+      "snapshot": "deployment/steers/coordinator-20261023T021914Z.md",
+      "sha256": "385ac2a8d337856d68faabdc4f0d9f3bc35ae50394895619be018d12b4cb12b6",
+      "bytes": 2832
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261023T042630Z.md",
+      "snapshot": "deployment/steers/coordinator-20261023T042630Z.md",
+      "sha256": "cc34b7f69ac3b37853ac971bad7aa6b11bc14af91670d50abada78b2f313d49b",
+      "bytes": 1629
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261023T063058Z.md",
+      "snapshot": "deployment/steers/coordinator-20261023T063058Z.md",
+      "sha256": "3dff62ae1b88fe73352e1b3886fcade4310e867068f7ed2689c859573717c318",
+      "bytes": 104272
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261023T205348Z.md",
+      "snapshot": "deployment/steers/coordinator-20261023T205348Z.md",
+      "sha256": "966f3ea5257e7c7654cd2ba7f5cf77184ae82cb68206de63f57bf7a3ff4c3f2a",
+      "bytes": 2693
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261023T220100Z.md",
+      "snapshot": "deployment/steers/coordinator-20261023T220100Z.md",
+      "sha256": "8ae2746fd562d5e00d6c907a16bd06f599290583956c15f203245cfd3d2ad154",
+      "bytes": 4301
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261023T225000Z.md",
+      "snapshot": "deployment/steers/coordinator-20261023T225000Z.md",
+      "sha256": "bb30dcbc049ef50cb949ddbb3c1dee5611578049c012fa727e893a17823fec80",
+      "bytes": 3845
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261023T232000Z.md",
+      "snapshot": "deployment/steers/coordinator-20261023T232000Z.md",
+      "sha256": "336a7ded136a3ca6054e1c96fa1732c7ef24470fde0bb5690f8adc541f7cba54",
+      "bytes": 3682
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261024T004132Z.md",
+      "snapshot": "deployment/steers/coordinator-20261024T004132Z.md",
+      "sha256": "3353e71ee0063cd23d388c216787a18b63af3d79d7f7062f2fd9f7b0110c06c9",
+      "bytes": 16729
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261024T010731Z.md",
+      "snapshot": "deployment/steers/coordinator-20261024T010731Z.md",
+      "sha256": "aaa18e7c4ee47e28175cd7c35b8116fb1383167e77cf96ed49ae230b37317082",
+      "bytes": 3665
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T010830Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T010830Z.md",
+      "sha256": "e45d51a889d18292be54dfabe2da1e195214506c498394cba8b00e3db7798d6e",
+      "bytes": 4156
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T014202Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T014202Z.md",
+      "sha256": "5edcb601339ce5f6f1cb12e1142b34b44f7f9b272a0483ac96dd6a21ba956184",
+      "bytes": 4459
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T032310Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T032310Z.md",
+      "sha256": "06ff2b0f94bf5a8d8994973cbe20c25cae231dfec15c866ccc58083595e259e8",
+      "bytes": 6093
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T034807Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T034807Z.md",
+      "sha256": "9482988fd911513b9963e12e01b15bdc54022b3db1be6f99b88e81082465e3b3",
+      "bytes": 4515
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T054658Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T054658Z.md",
+      "sha256": "6538718d2693be3e3b0cb83928ac7f0349a4b502eb0751d0665b5c3688b8e78b",
+      "bytes": 6166
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T184500Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T184500Z.md",
+      "sha256": "3c5ebb9f99cbbede607b2bc239fa4258bfdfeb511606bc54ded78f043dc4a0e9",
+      "bytes": 5522
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T190301Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T190301Z.md",
+      "sha256": "7b75a0a5d1ea82c0f0013e276b22f606b998501bb562b8c9c3ab654dcb6a3dc9",
+      "bytes": 5712
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T195201Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T195201Z.md",
+      "sha256": "b2f9727bc9f3b168f836948477646aa07afd2a8d627c6244e7215eccf714d6ac",
+      "bytes": 5490
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T230738Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T230738Z.md",
+      "sha256": "a7bd31312df02ce93eb0355cd9d7d43127bad2a5369051dd5cdb7eefb3d66226",
+      "bytes": 5511
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261025T231729Z.md",
+      "snapshot": "deployment/steers/coordinator-20261025T231729Z.md",
+      "sha256": "0971f546bdbb6b8f3d7e8fbbed8b7d2336ee9af3f26d0f24ec255d7db94619c0",
+      "bytes": 6107
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261026T000150Z.md",
+      "snapshot": "deployment/steers/coordinator-20261026T000150Z.md",
+      "sha256": "a6abbe7bbac3ff0476cae216bb2917d474a4f8b024f85b6a645bd0884a558ccd",
+      "bytes": 3813
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-20261026T004421Z.md",
+      "snapshot": "deployment/steers/coordinator-20261026T004421Z.md",
+      "sha256": "b35f94ac4041612895d47c9df604c50c1bd6ca3c6def958fbd2e764869a70d39",
+      "bytes": 3911
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-absorb-persistent.md",
+      "snapshot": "deployment/steers/coordinator-absorb-persistent.md",
+      "sha256": "b48c33d4d4d01fa4b240a396f2d261683eab05bfb93566d901389c99a24a94ea",
+      "bytes": 671
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-atomic-install.md",
+      "snapshot": "deployment/steers/coordinator-atomic-install.md",
+      "sha256": "3ba40c5ba711e66d3fa203ec72b0cba20c7d8cdf203f973df144aab2ba0e20ad",
+      "bytes": 1042
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-bb2-ip.md",
+      "snapshot": "deployment/steers/coordinator-bb2-ip.md",
+      "sha256": "3bdd1ebf7e2bfdb3e58f5ddd7bd9b778659626f7d3c23410c5e33398f6b65f8c",
+      "bytes": 1031
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-bb2-utilisation.md",
+      "snapshot": "deployment/steers/coordinator-bb2-utilisation.md",
+      "sha256": "acd9e853806e88220f30ef3e6c9421587696e61db10fdc6cdd831b3b20769e10",
+      "bytes": 3368
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-capacity-20261026T005542Z.md",
+      "snapshot": "deployment/steers/coordinator-capacity-20261026T005542Z.md",
+      "sha256": "a04e358f472a6e918c735eb881e7604978cd833e50769d72a242526b65587d0e",
+      "bytes": 1703
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-disk.md",
+      "snapshot": "deployment/steers/coordinator-disk.md",
+      "sha256": "d362ca26409f41c9791d82a481c31c8a001b9ad72789893ec00a3398880b9f49",
+      "bytes": 3186
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-draft-gate.md",
+      "snapshot": "deployment/steers/coordinator-draft-gate.md",
+      "sha256": "3b7b15f041fc878c8719a75b747308c2804a489674e81a656a53cfdec66b7070",
+      "bytes": 577
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/coordinator-silent-copy.md",
+      "snapshot": "deployment/steers/coordinator-silent-copy.md",
+      "sha256": "40142775ba25afdabde70530698155914e3e4ae6bdc06c1162b6872309fc821e",
+      "bytes": 519
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/e2e-gate-20261025T065803Z.md",
+      "snapshot": "deployment/steers/e2e-gate-20261025T065803Z.md",
+      "sha256": "188a86c3e544925018957dc200af27e85f37c4f9f292cc0b7aa3c19ff5292efb",
+      "bytes": 1957
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/fs-concurrency-20261025T190301Z.md",
+      "snapshot": "deployment/steers/fs-concurrency-20261025T190301Z.md",
+      "sha256": "bef3cfd647d2da04f67363b51c137267fd9545c92f1f1c5162de4fdb09afb4c5",
+      "bytes": 1988
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/fs-concurrency-schedule-20261026T005542Z.md",
+      "snapshot": "deployment/steers/fs-concurrency-schedule-20261026T005542Z.md",
+      "sha256": "f1b27cbc06099a9e17c80268a08bf07bfd3378b2d8c28f8ea074ea57416538a3",
+      "bytes": 978
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261022T224431Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261022T224431Z.md",
+      "sha256": "915055ce6abf34f52ce3171ae8ebb2bb3ccdd5c84e5d1d5b7b3a64f6b50dea6e",
+      "bytes": 6554
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T021914Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T021914Z.md",
+      "sha256": "584846b4b4e13c0daae38fbd4c7502521854bcbfc7f210bc896baa80fff92363",
+      "bytes": 2787
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T042630Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T042630Z.md",
+      "sha256": "c1817ea23948b54daa8e007781920e81cb3322151e81c2cc5e3899027dbbe71a",
+      "bytes": 2319
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T063058Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T063058Z.md",
+      "sha256": "4f323d7d0ac13adf5a442a5c21c2de395248aa9acb47e0433d8d591f1ec31b8a",
+      "bytes": 2216
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T063116Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T063116Z.md",
+      "sha256": "752173ab4b78a8b1143ae29135a0d0edee79ccaf7474504257a0d178f0c45323",
+      "bytes": 14607
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T083415Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T083415Z.md",
+      "sha256": "63f6cc3deb3ecfbcce6946c7691ab2eacb139bfba55b1013651fcb41568157c0",
+      "bytes": 2333
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T103846Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T103846Z.md",
+      "sha256": "9bd75ca668ada71d02539cd651992fe88a37f791c62935a91ea86ca1acff3fee",
+      "bytes": 2704
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T191350Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T191350Z.md",
+      "sha256": "d99aad367d7d51d92da6b336a797c2b8ac6d53cc22421f4b17d8457e2baceded",
+      "bytes": 17399
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T193100Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T193100Z.md",
+      "sha256": "8916439bf28d670588a0511ec5d9765f28b5c13c42aef6275ca2d92331280bdd",
+      "bytes": 19380
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T200100Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T200100Z.md",
+      "sha256": "e4fcdf4c3df26263b9d5c67018e41437528f527500f9795e2d139994e9daa149",
+      "bytes": 4157
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T202700Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T202700Z.md",
+      "sha256": "8e6ae7ab81af59d7b32b5617047617ef3b378b2995fc1ba06cbea5e23de7d976",
+      "bytes": 2812
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T210000Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T210000Z.md",
+      "sha256": "1ab2f8df3b81a5b67ea3c4018fedf09623378cfae2bb7e210d8bc584f82b7ead",
+      "bytes": 8602
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T215542Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T215542Z.md",
+      "sha256": "dc56542de359efc7f37b72fd683ec9f212eccf69a81a2f8ef902a82f08b3cb7b",
+      "bytes": 8476
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T223200Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T223200Z.md",
+      "sha256": "73afb80aeea20786f007f26c186a3918616834dbaa0a4a51a88567e465994b42",
+      "bytes": 8999
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261023T233700Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261023T233700Z.md",
+      "sha256": "73b3551521f82c176de7ac7f0e685b7a3d8841a7c84454f20192bfa3ad8c3190",
+      "bytes": 11048
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261024T005720Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261024T005720Z.md",
+      "sha256": "814375eb752b6c6d717442cc35a4dbaa5478bb405671441cd701dfe7104320ae",
+      "bytes": 8573
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261024T011558Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261024T011558Z.md",
+      "sha256": "89bf76f89e7027289e6c88083dbaf8b5416ec4d123a4033c306c00a47a0b3cf5",
+      "bytes": 4765
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261024T110407Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261024T110407Z.md",
+      "sha256": "cce9e8daad44b39c2d65536ae600cfec568dec7e57cf386d318fad2378ff6b5e",
+      "bytes": 11134
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261024T123838Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261024T123838Z.md",
+      "sha256": "4ad02a21953ca4d86d8f486413b2bdce200fcae61fd07e8e7143f38938c3acfb",
+      "bytes": 4491
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261025T062200Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261025T062200Z.md",
+      "sha256": "76a545b05a90550449707648913c0414dde8e0a85124ce81610d55774db7b425",
+      "bytes": 8017
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261025T072500Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261025T072500Z.md",
+      "sha256": "c2dff73807b0aed484d55d39b10564c57025ec8d39cd4e6f565bc94cb0ac4af6",
+      "bytes": 16169
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261025T160013Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261025T160013Z.md",
+      "sha256": "b9c3b5ce1efd2737d934f14f9cc40679f5e6d2b2d8a26ae65c545dd08f098f81",
+      "bytes": 16249
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261025T184500Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261025T184500Z.md",
+      "sha256": "bd050c5a7b9ba7242a8350f09b470610e4740da7990c844dcefd529cffb68991",
+      "bytes": 3195
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261025T185000Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261025T185000Z.md",
+      "sha256": "13f47493e913cdafd9457035ac412ed2ae0c158f40128833aa41731a07c8d232",
+      "bytes": 5537
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261025T210206Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261025T210206Z.md",
+      "sha256": "7487eb3dd35dd65a2fcc9a9f5ea2765f927882b7380e6483a290e75e3ec98dbb",
+      "bytes": 3446
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261025T234704Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261025T234704Z.md",
+      "sha256": "94c99ce7847fdc8d9b0bae1f98caeb4cadf5addadca04c39da1936933f96f6c5",
+      "bytes": 7887
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/gate-speed-20261026T005542Z.md",
+      "snapshot": "deployment/steers/gate-speed-20261026T005542Z.md",
+      "sha256": "4639432441baed292cd685faa0795dea0d2db512c7917ad3d159da23baf7869e",
+      "bytes": 1885
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/INDEX.md",
+      "snapshot": "deployment/steers/INDEX.md",
+      "sha256": "055d54772b1bd0ddfa694ef076f2825e365858fcd31d58ae6f96291da432e31a",
+      "bytes": 75535
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/mac-live-20261025T113410Z.md",
+      "snapshot": "deployment/steers/mac-live-20261025T113410Z.md",
+      "sha256": "da768a068badeb9cb3ac71b8e14fac546d1744d790e936de186861a53274b063",
+      "bytes": 9104
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/main-green-20261026T005542Z.md",
+      "snapshot": "deployment/steers/main-green-20261026T005542Z.md",
+      "sha256": "356c50bce35d9f14c038abbea5435e7633940bd5cfd6fc90bad9a748fd318a23",
+      "bytes": 2011
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/plugins-20261024T101132Z.md",
+      "snapshot": "deployment/steers/plugins-20261024T101132Z.md",
+      "sha256": "ee38e025398f84065697dd5064c607d795fddc3c460cf04bfb1ec3be979c6e15",
+      "bytes": 6775
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/plugins-20261024T170038Z.md",
+      "snapshot": "deployment/steers/plugins-20261024T170038Z.md",
+      "sha256": "7ab87e2adb312b81cf27cbf26a7f733dfcbd6b4a2f3c66f539666f8705516e5f",
+      "bytes": 24170
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/plugins-20261025T195201Z.md",
+      "snapshot": "deployment/steers/plugins-20261025T195201Z.md",
+      "sha256": "556a2829bc05328cc3e67a16eaaeca15cd084b4bbdd92c658f11ef2a1e72f4c7",
+      "bytes": 2014
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/plugins-20261026T004421Z.md",
+      "snapshot": "deployment/steers/plugins-20261026T004421Z.md",
+      "sha256": "19f62f78723866687f86f760ebd75b90a2889fdd834399029cbaa518102b3551",
+      "bytes": 2610
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/queue-recovered-20261026T010200Z.md",
+      "snapshot": "deployment/steers/queue-recovered-20261026T010200Z.md",
+      "sha256": "7b701c87fa15ae0716c172d411ae4eebe728489b614918f48fd3a8cea4ae7f21",
+      "bytes": 2096
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/sessions-20261025T071140Z.md",
+      "snapshot": "deployment/steers/sessions-20261025T071140Z.md",
+      "sha256": "663a0679b16523f9e7880ef00000fbd279cf632900b020c26a2e5328b06fd24b",
+      "bytes": 7945
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/streams-schedule-20261026T005542Z.md",
+      "snapshot": "deployment/steers/streams-schedule-20261026T005542Z.md",
+      "sha256": "d94d78f7f0c84d13d2fcb802358e1132eb33886276d3cda87f758121c6bee728",
+      "bytes": 974
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/tool-latency-20261026T005542Z.md",
+      "snapshot": "deployment/steers/tool-latency-20261026T005542Z.md",
+      "sha256": "cfcf470a6bf5d3582a139b18620245b6ba284d4da95a084ae411977c66dbbee8",
+      "bytes": 1448
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/win-qual-20261024T225131Z.md",
+      "snapshot": "deployment/steers/win-qual-20261024T225131Z.md",
+      "sha256": "a312e065245208d01115f25a7e2cd3d73318e64526ea48d30dada7247d281679",
+      "bytes": 14078
+    },
+    {
+      "source": "Q:/lanes/efficiency/steers/win-qual-20261025T041150Z.md",
+      "snapshot": "deployment/steers/win-qual-20261025T041150Z.md",
+      "sha256": "a3b91f5f5dbfe2122c081f51986d5e9622fe088489649e72a1d744e0dfea29cc",
+      "bytes": 11741
+    },
+    {
+      "source": "Q:/lanes/efficiency/terminal-audit-cycle-233.json",
+      "snapshot": "deployment/terminal-audit-cycle-233.json",
+      "sha256": "c03ed08d93b338949ca7f3c82686bcb8926fc1b014da96864ec87a02873d4add",
+      "bytes": 135561
+    },
+    {
+      "source": "Q:/lanes/efficiency/terminal_audit-cycle-187-before.py",
+      "snapshot": "deployment/terminal_audit-cycle-187-before.py",
+      "sha256": "f82c844b6b8805e1c1ff875c65c5a6c52d662f1a9449524d04196abd9a96a2b2",
+      "bytes": 6549
+    },
+    {
+      "source": "Q:/lanes/efficiency/terminal_audit-cycle-194-before.py",
+      "snapshot": "deployment/terminal_audit-cycle-194-before.py",
+      "sha256": "25d7dacf62b296c98573c2216b3196909c711337ccfd41f8c5fc494a032a2640",
+      "bytes": 7401
+    },
+    {
+      "source": "Q:/lanes/efficiency/terminal_audit.py",
+      "snapshot": "deployment/terminal_audit.py",
+      "sha256": "15cb56bed194083fdd8ae1bea30a7707957735eed50f0cf5bebe1d6d2c1f5dbc",
+      "bytes": 7415
+    },
+    {
+      "source": "Q:/lanes/efficiency/test_measure.py",
+      "snapshot": "deployment/test_measure.py",
+      "sha256": "8f5d4174510784e06fca4751be96d8bb1ebb61e93058a92d7d61a472f9b23f36",
+      "bytes": 12631
+    },
+    {
+      "source": "Q:/lanes/efficiency/test_target_exports.py",
+      "snapshot": "deployment/test_target_exports.py",
+      "sha256": "258232f6e3cdd828b199f8a910f40ed8423dca999931c68d0efb25698b0b1902",
+      "bytes": 2718
+    },
+    {
+      "source": "Q:/lanes/efficiency/test_target_store.py",
+      "snapshot": "deployment/test_target_store.py",
+      "sha256": "ae6d72b331c1d00765230125dd945a79e90164736e31422a0cbceb7ffa93604a",
+      "bytes": 16088
+    },
+    {
+      "source": "Q:/lanes/efficiency/throughput.json",
+      "snapshot": "deployment/throughput.json",
+      "sha256": "69aa6b12e787f23ee9a574fab103bd6dbcdc0d13ff8c1fe0e7ec063256dce8ae",
+      "bytes": 59419
+    },
+    {
+      "source": "Q:/lanes/efficiency/throughput.md",
+      "snapshot": "deployment/throughput.md",
+      "sha256": "e923a4c12f5b2afd1a8dad0e159e8636fad48878730530fdf849b26b4343d425",
+      "bytes": 7300
+    },
+    {
+      "source": "Q:/lanes/efficiency/throughput.py",
+      "snapshot": "deployment/throughput.py",
+      "sha256": "4c278acac85f93db59ed4a3bc56afac0ebb88e66310d7685b95db4260010ff3c",
+      "bytes": 13021
+    },
+    {
+      "source": "Q:/lanes/efficiency/token-audit.json",
+      "snapshot": "deployment/token-audit.json",
+      "sha256": "915edda376e59f0587ae124b751c7391f4662abd7bafd048ec16572a92d003d4",
+      "bytes": 18282
+    },
+    {
+      "source": "Q:/lanes/efficiency/token-audit.md",
+      "snapshot": "deployment/token-audit.md",
+      "sha256": "ef3178e0c947de4da6eaa94a7ba4b7b2c74c4d6c86700ab1201ce5faab0d188e",
+      "bytes": 7506
+    },
+    {
+      "source": "Q:/lanes/efficiency/token_audit.py",
+      "snapshot": "deployment/token_audit.py",
+      "sha256": "a4792143bc3d010b93a643467c79777eb538129cd850e672c780124621c61814",
+      "bytes": 9394
+    },
+    {
+      "source": "Q:/lanes/efficiency/token_audit_test.py",
+      "snapshot": "deployment/token_audit_test.py",
+      "sha256": "72add4023b7904d516c5397916bd7f13370fdc9ad1459cc2f777f06efa36c3b4",
+      "bytes": 3805
+    },
+    {
+      "source": "Q:/lanes/efficiency/utilisation.json",
+      "snapshot": "deployment/utilisation.json",
+      "sha256": "5a7c25cf9529948150fb99fd39f0fbdf88bd0eac39cd376e648fdee6c3d1e444",
+      "bytes": 707
+    },
+    {
+      "source": "Q:/lanes/efficiency/utilisation.py",
+      "snapshot": "deployment/utilisation.py",
+      "sha256": "3318bffe7446cec865eab0a825272b74c8be122c1c924e7e5979a3568d227a4a",
+      "bytes": 1355
+    },
+    {
+      "source": "Q:/lanes/efficiency/validate_compute.py",
+      "snapshot": "deployment/validate_compute.py",
+      "sha256": "0c100339e3a11a7f79c37492a50aef9c917b4e151bf9695fc5e9f1dc88c1f466",
+      "bytes": 1495
+    },
+    {
+      "source": "Q:/lanes/efficiency/verify_cycle-cycle-193-before.py",
+      "snapshot": "deployment/verify_cycle-cycle-193-before.py",
+      "sha256": "a49218f0b4dff8f5da1dd9054132ea7ad4cbd678797d1c73d444871059eef548",
+      "bytes": 5246
+    },
+    {
+      "source": "Q:/lanes/efficiency/verify_cycle.py",
+      "snapshot": "deployment/verify_cycle.py",
+      "sha256": "d12fd914d7d33f381b0dacc5502ef83b829eaab7354c00b12544ca3a63901ccb",
+      "bytes": 9518
+    },
+    {
+      "source": "Q:/lanes/efficiency/verify_fixes.py",
+      "snapshot": "deployment/verify_fixes.py",
+      "sha256": "754e265e3159ca67c40538f2f5c43979fb39ee6a184c103743def0b6776bea01",
+      "bytes": 3277
+    }
+  ],
+  "all_copies_hash_verified": true,
+  "limits": "Bounded source/reports snapshot, no lane logs, credentials, GitHub review bodies or .bb driver files. Full historical data remains in canonical path from owned-files.json. Scripts are preservation, not activated duplicates; absolute canonical dependencies remain."
+}

@@ -1,0 +1,43 @@
+{
+  "author": "Codex",
+  "cycle": 233,
+  "checks": {
+    "rules_reader": true,
+    "verifier": true,
+    "terminal_metadata_correction": true,
+    "gate_custody_archive": true,
+    "gate_custody_patch": true
+  },
+  "status": "PASS",
+  "staged_hash_checks": {
+    "fleet-supervisor.py": true,
+    "fleet-steer.py": true,
+    "lane-supervisor2.sh": true,
+    "steer.sh": true,
+    "lane-running.ps1": true,
+    "fleet_usage.py": true,
+    "self_test": true
+  },
+  "live_matches_staged": {
+    "fleet-supervisor.py": false,
+    "fleet-steer.py": false,
+    "lane-supervisor2.sh": false,
+    "steer.sh": false,
+    "lane-running.ps1": false,
+    "fleet_usage.py": false
+  },
+  "retained_machinery_test": {
+    "author": "Codex",
+    "tests": 20,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 5.14100000000326,
+    "status": "PASS",
+    "bb2_jobs_started": 0,
+    "live_files_changed": false,
+    "scope": "controller integration and OS descriptor regression; staged Bash source contract; deployment smoke still required"
+  },
+  "machinery_test_rerun": false,
+  "bb2_jobs_started": 0,
+  "limits": "Unchanged fixture qualification retained; source hashes do not prove live dispatch or fleet ROI. Deployment requires atomic publication/restart and actual smoke. Efficiency is authorized directly. No bb2 experiments."
+}

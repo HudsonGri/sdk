@@ -1,0 +1,26 @@
+{
+  "author": "Codex",
+  "at": "2026-10-26T01:02:00.701081+00:00",
+  "base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
+  "check": "actual canonical read-only selector against SDK checkout",
+  "phases": [
+    {
+      "phase": "tests",
+      "rc": 0,
+      "stdout": "Q:/lanes/main-gate/b7333953cbd5d3b31adc05cf2f0851f049f6c16a.log",
+      "diagnostic": ""
+    },
+    {
+      "phase": "clippy",
+      "rc": 0,
+      "stdout": "Q:/lanes/main-gate/clippy/b7333953cbd5d3b31adc05cf2f0851f049f6c16a.log",
+      "diagnostic": ""
+    },
+    {
+      "phase": "features",
+      "rc": 0,
+      "stdout": "Q:/lanes/main-gate/b7333953cbd5d3b31adc05cf2f0851f049f6c16a.log",
+      "diagnostic": ""
+    }
+  ]
+}

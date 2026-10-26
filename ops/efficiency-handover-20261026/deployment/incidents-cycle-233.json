@@ -1,0 +1,37 @@
+{
+  "author": "Codex",
+  "since": "2026-10-26T00:56:24.167664Z",
+  "until": "2026-10-26T01:17:54.197315Z",
+  "rows": [
+    {
+      "at": "2026-10-26T01:14:10.564Z",
+      "log_id": "1792972899589-128167-8108cb20",
+      "lane": "pr-gate",
+      "wall": 4350.975,
+      "rc": 224,
+      "termination": "infra",
+      "phase": "pr-gate",
+      "infra_reason": null,
+      "reason": null,
+      "exec_start": "2026-10-26T00:02:24.910Z",
+      "end": "2026-10-26T01:14:10.564Z",
+      "detail": null,
+      "remote_receipt": {
+        "rc": 224,
+        "exit_status": 224,
+        "termination": "infra",
+        "phase": "pr-gate",
+        "export_error": null,
+        "exec_start": "2026-10-26T00:02:24.910Z",
+        "end": "2026-10-26T01:14:06.406Z",
+        "home_removed": true,
+        "targets_removed": true,
+        "outer_targets_removed": true,
+        "namespace_custody": "pidns-v1"
+      },
+      "wrapper_hours": 1.2086041666666667,
+      "execution_hours": 1.19486
+    }
+  ],
+  "note": "Metadata only; client status is not remote proof admission or avoidable CPU cost."
+}

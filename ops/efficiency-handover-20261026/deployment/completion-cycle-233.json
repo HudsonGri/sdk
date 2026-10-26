@@ -1,0 +1,32 @@
+{
+  "author": "Codex",
+  "cycle": 233,
+  "completed_at": "2026-10-26T01:28:35.412383+00:00",
+  "as_of": "2026-10-26T01:17:54.197315Z",
+  "merges24h": 4,
+  "new_merges": 0,
+  "new_jobs": 41,
+  "new_job_hours": 4.804668333333334,
+  "job_hours_per_merge": 54.25338388888889,
+  "alert_lines": 34,
+  "verification": "PASS with5negativecontrols rejected",
+  "reporting_checks": {
+    "endpoint_alignment": true,
+    "alerts": true,
+    "late_alerts": true,
+    "unapplied_alerts": true,
+    "proof_retained": true,
+    "retired_loop_flag": true,
+    "watchdog_truth": true,
+    "targets_present": true,
+    "no_false_eta": true
+  },
+  "watchdog_installed": false,
+  "machinery": "QUALIFIED_STAGED;232publicationfullyrolledback;no233apply",
+  "own_loop_run_flag_removed": true,
+  "new_prs": 0,
+  "queued_heads_changed": false,
+  "bb2_experiment_jobs": 0,
+  "successor": "rx-efficiency",
+  "handover": "Q:/lanes/redesign/efficiency/handover.md"
+}
