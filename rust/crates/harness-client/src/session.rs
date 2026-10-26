@@ -141,6 +141,9 @@ impl WireSession {
             demand.expanded().cloned(),
         )
         .map_err(WireSessionError::Demand)?;
+        if demand.full().count() + self.resource_views.len() > self.policy.selected_capacity() {
+            return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
+        }
         if demand == self.demand {
             return Ok(());
         }
@@ -188,7 +191,7 @@ impl WireSession {
                 return Err(WireSessionError::AlreadyOpen);
             }
         }
-        if requested.len() + self.resources.len() > self.policy.selected_capacity() {
+        if requested.len() + self.resource_views.len() > self.policy.selected_capacity() {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         let demand = ViewDemand::new(
@@ -283,7 +286,7 @@ impl WireSession {
         if self.follows.contains_key(&agent) {
             return Err(WireSessionError::AlreadyOpen);
         }
-        self.admit_one()?;
+        self.admit_one(self.views.contains_key(&agent))?;
         let from = validate_subscription(&agent, &subscription)?;
         let revision = self
             .revision
@@ -361,7 +364,7 @@ impl WireSession {
         if self.resources.contains_key(&resource) {
             return Err(WireSessionError::AlreadyOpen);
         }
-        self.admit_one()?;
+        self.admit_one(self.resource_views.contains_key(&resource))?;
         let revision = self
             .revision
             .checked_add(1)
@@ -413,11 +416,38 @@ impl WireSession {
         Ok(true)
     }
 
-    fn admit_one(&self) -> Result<(), WireSessionError> {
-        if self.follows.len() + self.resources.len() >= self.policy.selected_capacity() {
+    fn admit_one(&self, replacing_view: bool) -> Result<(), WireSessionError> {
+        // Terminal follows retain their last view. Charge that custody too,
+        // otherwise repeatedly opening different failed resources grows memory
+        // even though the number of live subscriptions stays bounded.
+        if !replacing_view
+            && self.views.len() + self.resource_views.len() >= self.policy.selected_capacity()
+        {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         Ok(())
+    }
+
+    /// Release every stream/resource interest and its retained view atomically.
+    /// Dropping subscriptions uses the pool's existing cancellation custody.
+    pub fn clear(&mut self) -> Result<(), WireSessionError> {
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+        self.follows.clear();
+        self.views.clear();
+        self.resources.clear();
+        self.resource_views.clear();
+        self.demand = ViewDemand::default();
+        self.revision = revision;
+        Ok(())
+    }
+
+    /// Live and opening interests across all products on this bounded owner.
+    #[must_use]
+    pub fn followed_interests(&self) -> usize {
+        self.follows.len() + self.resources.len()
     }
 
     /// Admitted selected follows, including pending opens, independent of swarm size.
