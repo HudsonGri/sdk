@@ -14,7 +14,9 @@ import { TaskContext } from "./task-context.js";
 import { type GroupPolicy } from "./enums.js";
 import { TaskGroup } from "./task-group.js";
 import { validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm, validateModelContent, prepareModelRequest as prepareModelRequestWasm, type ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
-import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
+
+/** The default page size of a children listing. */
+export const CHILD_PAGE_DEFAULT = 256;
 
 export class IndeterminateModelTurnError extends Error {
   constructor(readonly operationId: OperationId, cause?: unknown) {
@@ -706,7 +708,7 @@ export class AgentHarness {
   }
   /** Read one revision-checked page of direct, owner-retained task children. */
   async children(parent: TaskId, expectedRevision: bigint | null = null,
-    afterSlot: string | null = null, maximum = HARNESS_CHILD_PAGE_DEFAULT): Promise<TaskChildrenPage> {
+    afterSlot: string | null = null, maximum = CHILD_PAGE_DEFAULT): Promise<TaskChildrenPage> {
     this.contracts.validateIdentity("task", parent);
     if (!Number.isSafeInteger(maximum) || maximum < 1
       || afterSlot !== null && ([...afterSlot].some(character => /[\x00-\x1f\x7f]/u.test(character)))) {

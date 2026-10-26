@@ -24,7 +24,6 @@ const modules = [
   "generate-stream-token-operations.mjs",
   "generate-harness-limits-contract.mjs",
   "generate-harness-model-fixtures.mjs",
-  "generate-harness-child-page-contract.mjs",
   "generate-harness-private-directory-page-contract.mjs",
   "generate-harness-conversation-page-contract.mjs",
   "generate-harness-file-tools-contract.mjs",
