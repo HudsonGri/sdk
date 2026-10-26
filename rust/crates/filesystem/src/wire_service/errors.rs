@@ -89,7 +89,6 @@ fn filesystem_status(error: &crate::FsError) -> Status {
         | F::LocalObjects(_)
         | F::LocalObjectsBucket(_)
         | F::LocalRoot(_)
-        | F::LocalStaging(_)
         | F::LocalInitializationWorker => Code::Unavailable,
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         F::LocalOptionsConflict => Code::FailedPrecondition,

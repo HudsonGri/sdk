@@ -13,6 +13,8 @@ pub(super) fn callback_runtime(
         original_work: Mutex::new(None),
         callback_guard: None,
         root: root.to_path_buf(),
+        prefix: Vec::new(),
+        staging_anchor: root.to_path_buf(),
         metadata_root: HostRoot::open(root, &mut &*work)?,
         staging: Mutex::new(None),
         creating_name: RwLock::new((MountPath::root(), None)),
@@ -127,7 +129,7 @@ async fn a_scoped_name_query_keeps_the_callback_budget_and_cancellation()
     cancellation.cancel();
     assert_eq!(
         cached_name_query(&runtime, lookup.node.file_id, basis),
-        HR_FILE_INVALID
+        crate::native_mount::shared::outcome::CallbackFailure::Cancelled.hresult()
     );
     assert_eq!(cancellable.receipt(), before);
     Ok(())

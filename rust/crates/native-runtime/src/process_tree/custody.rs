@@ -26,11 +26,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
-/// One owner's directory of live process-tree records.
+/// One owner's directory of live process-tree records. It holds no
+/// descriptor while idle: each spawn opens the directory and checks that it is
+/// still the one this custody fenced, and the tree's record keeps that
+/// descriptor while the tree runs.
 pub struct ProcessCustody {
     path: PathBuf,
+    /// The directory's device and inode when this custody opened it.
     #[cfg(unix)]
-    directory: File,
+    identity: (u64, u64),
 }
 
 /// One tree's record, removed by its owner once the tree is gone.
@@ -51,7 +55,7 @@ impl ProcessCustody {
         Ok(Self {
             path: path.to_path_buf(),
             #[cfg(unix)]
-            directory: File::open(path)?,
+            identity: unix::identity(&File::open(path)?)?,
         })
     }
 
@@ -114,6 +118,21 @@ impl Drop for ProcessCustody {
 }
 
 impl Record {
+    /// Keep recovery authority until the original ledger and physical removal
+    /// both accept retirement. A failed cleanup must leave an owned record.
+    pub(super) fn retire(
+        record: &mut Option<Self>,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<()> {
+        if let Some(retained) = record {
+            super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
+                retained.remove()
+            })?;
+            record.take();
+        }
+        Ok(())
+    }
+
     /// Removes the record of a tree its owner has observed to be gone.
     pub(super) fn remove(&self) -> io::Result<()> {
         #[cfg(unix)]
@@ -140,12 +159,19 @@ impl Record {
             }
         }
         #[cfg(windows)]
-        match fs::remove_file(&self.path) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-            _ => Ok(()),
+        {
+            windows::await_record(self)?;
+            match fs::remove_file(&self.path) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "custody_retirement_tests.rs"]
+mod retirement_tests;
 
 #[cfg(unix)]
 mod unix {
@@ -157,10 +183,17 @@ mod unix {
     use std::process::Command;
 
     impl ProcessCustody {
-        /// Makes `command`'s direct child the warden of its tree.
+        /// Makes `command`'s direct child the warden of its tree. Answers
+        /// the custody directory, opened for this spawn, which the caller
+        /// keeps open while the spawn borrows it.
         pub(in crate::process_tree) fn arm(&self, command: &mut Command) -> io::Result<File> {
-            let directory = self.directory.try_clone()?;
-            let descriptor = self.directory.as_raw_fd();
+            let directory = File::open(&self.path)?;
+            // A directory put in place of the fenced one holds records no
+            // fence of this custody has seen.
+            if identity(&directory)? != self.identity {
+                return Err(io::Error::other("process custody directory was replaced"));
+            }
+            let descriptor = directory.as_raw_fd();
             let owner = libc::pid_t::try_from(std::process::id())
                 .map_err(|_| io::ErrorKind::InvalidInput)?;
             // SAFETY: the warden makes only async-signal-safe calls, and the
@@ -176,6 +209,15 @@ mod unix {
         pub(in crate::process_tree) const fn new(directory: File, pid: libc::pid_t) -> Self {
             Self { directory, pid }
         }
+    }
+
+    /// An open directory's device and inode.
+    pub(super) fn identity(directory: &File) -> io::Result<(u64, u64)> {
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() {
+            return Err(io::ErrorKind::NotADirectory.into());
+        }
+        Ok((metadata.dev(), metadata.ino()))
     }
 
     /// Fences one record. False for a name that is not a record.
@@ -228,12 +270,26 @@ mod unix {
     /// group ID stays reserved while any member of the warden's group lives.
     fn fence_group(group: libc::pid_t, start: &[u8]) -> io::Result<()> {
         let mut current = [0; super::super::warden::START_BYTES];
-        match super::super::warden::start_identity(group, &mut current) {
-            Ok(length) if current.get(..length) != Some(start) => return Ok(()),
-            // Another user's process is never this owner's warden.
-            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return Ok(()),
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
+        use crate::process_identity::{IncarnationState, ProcessIncarnation, ProcessObservation};
+        let owner = ProcessIncarnation::new(
+            u32::try_from(group).map_err(|_| io::ErrorKind::InvalidData)?,
+            start,
+        )
+        .ok_or(io::ErrorKind::InvalidData)?;
+        let observation = match super::super::warden::start_identity(group, &mut current) {
+            Ok(length) => ProcessObservation::Present {
+                started: current.get(..length).ok_or(io::ErrorKind::InvalidData)?,
+                exited: false,
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => ProcessObservation::Absent,
+            Err(error) => return Err(error),
+        };
+        match owner.observe(observation) {
+            IncarnationState::Replaced => return Ok(()),
+            IncarnationState::Unknown => return Err(io::ErrorKind::InvalidData.into()),
+            // Unlike a Windows process handle, a POSIX group can outlive its
+            // absent or zombie leader. Retain the group until every member exits.
+            IncarnationState::Running | IncarnationState::Exited | IncarnationState::Absent => {}
         }
         loop {
             // SAFETY: a negative PID names exactly this process group.
@@ -344,35 +400,18 @@ use unix::fence;
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_FILE_NOT_FOUND, FILETIME, HANDLE, WAIT_FAILED,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, WAIT_FAILED};
     use windows_sys::Win32::System::JobObjects::{
         JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, OpenJobObjectW,
         QueryInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_SYNCHRONIZE,
-        WaitForMultipleObjects,
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForMultipleObjects,
     };
 
     const PREFIX: &str = "acyclic-process-tree-";
     // JOB_OBJECT_QUERY | JOB_OBJECT_TERMINATE.
     const JOB_ACCESS: u32 = 0x0004 | 0x0008;
-
-    /// This process's creation time, in 100 ns intervals since 1601.
-    fn creation_time() -> io::Result<u64> {
-        let mut times = [FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        }; 4];
-        let [creation, exit, kernel, user] = &mut times;
-        // SAFETY: the current-process pseudo-handle and four writable times.
-        if unsafe { GetProcessTimes(GetCurrentProcess(), creation, exit, kernel, user) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
-    }
 
     /// The Job name a record names, NUL-terminated.
     pub(in crate::process_tree) fn job_name(record: &str) -> Vec<u16> {
@@ -395,7 +434,7 @@ mod windows {
             let name = format!(
                 "{PREFIX}{}-{}-{sequence}",
                 std::process::id(),
-                creation_time()?
+                crate::process_identity::current_process_started()?
             );
             let path = self.path.join(&name);
             fs::OpenOptions::new()
@@ -408,6 +447,18 @@ mod windows {
 
     /// Separates a record's tree from the custodian it names.
     const CUSTODIAN: &str = "-custodian-";
+
+    pub(super) fn await_record(record: &Record) -> io::Result<()> {
+        let name = record
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if let Some((_, identity)) = name.split_once(CUSTODIAN) {
+            super::super::custodian::await_custodian(identity)?;
+        }
+        Ok(())
+    }
 
     impl Record {
         /// Names the tree's custodian in the record, before any member
@@ -442,11 +493,16 @@ mod windows {
             // A member leaves the Job's list before its process has fully
             // exited; the custodian exits only once each has, so its exit
             // ends the fence.
-            let fenced = terminate_and_await(job)
-                .and_then(|()| custodian.map_or(Ok(()), super::super::custodian::await_custodian));
+            let fenced = terminate_and_await(job);
             // SAFETY: the Job handle opened above.
             unsafe { CloseHandle(job) };
             fenced?;
+        }
+        // A missing Job proves that the custodian closed it after member
+        // retirement, but its own process and retained pipe handles can still
+        // be live. The recorded identity is the same barrier in either case.
+        if let Some(custodian) = custodian {
+            super::super::custodian::await_custodian(custodian)?;
         }
         match fs::remove_file(path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
