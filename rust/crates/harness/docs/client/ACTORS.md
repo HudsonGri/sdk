@@ -33,3 +33,14 @@ reader only when needed.
 Input staging, approval request reads and decisions belong to the runtime host.
 The browser host migration supplies those bindings; this observation adapter
 does not implement another outbox, submission transport or approval policy.
+
+The browser host can return this same client with the Rust `from_session`
+factory, sharing its authenticated session and credential slot. It does not
+need another `WasmStream` or a polling reader.
+
+The shared Rust `actor_error` adapter preserves indeterminate admission as an
+`UnknownAgentError`: `name` is `agent_unknown` and `request` owns the original
+canonical Streams `CommitRequest` protobuf bytes. The byte array is copied
+before the borrowed WASM slice expires. The caller keeps its original intent
+and this request; the client does not acknowledge or automatically resubmit it.
+Browser host controls must use this adapter for this custody guarantee to apply.
