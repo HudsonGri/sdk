@@ -162,14 +162,18 @@ where
                 #[cfg(target_arch = "wasm32")]
                 let present = journal.admission(None)?.await?.0.is_some();
                 if !present {
-                    return self.finish_known_reconciliation(task, &fence, None, io).await;
+                    return self
+                        .finish_known_reconciliation(task, &fence, None, io)
+                        .await;
                 }
                 let transition = journal
                     .observe_latest_record(io)
                     .await?
                     .map(|record| record.transition);
                 let Some(transition) = transition else {
-                    return self.finish_known_reconciliation(task, &fence, None, io).await;
+                    return self
+                        .finish_known_reconciliation(task, &fence, None, io)
+                        .await;
                 };
                 #[cfg(not(target_arch = "wasm32"))]
                 let context = if let Some(io) = io {
@@ -305,7 +309,10 @@ where
                                     ));
                                 }
                                 self.context_owner_observed(
-                                    task, &fence, context.context(), Some(io),
+                                    task,
+                                    &fence,
+                                    context.context(),
+                                    Some(io),
                                 )
                                 .await?;
                             }
@@ -319,7 +326,8 @@ where
                 if transition.commands.len() > maximum_commands as usize {
                     return Ok(WorkerTurn::Reconciling);
                 }
-                self.finish_known_reconciliation(task, &fence, Some(context.context()), io).await
+                self.finish_known_reconciliation(task, &fence, Some(context.context()), io)
+                    .await
             },
             io,
         )
@@ -339,7 +347,8 @@ where
         io: Option<&super::super::PreparationIo>,
     ) -> Result<WorkerTurn> {
         if let Some(context) = context {
-            self.context_owner_observed(task, fence, context, io).await?;
+            self.context_owner_observed(task, fence, context, io)
+                .await?;
         } else {
             self.owner_observed(task, fence, true, io).await?;
         }

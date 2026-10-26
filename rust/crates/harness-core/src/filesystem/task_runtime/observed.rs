@@ -194,7 +194,12 @@ where
                 ));
             }
             return owner
-                .verify(true, &mut history(Some(io))?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo))
+                .verify(
+                    true,
+                    &mut history(Some(io))?
+                        .as_mut()
+                        .map(|work| work as &mut dyn crate::store::HistoryIo),
+                )
                 .await;
         }
         let _ = context;
