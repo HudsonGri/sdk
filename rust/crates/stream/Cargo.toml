@@ -22,6 +22,10 @@ name = "http-conformance"
 required-features = ["http"]
 
 [[example]]
+name = "wave1-conformance"
+required-features = ["http"]
+
+[[example]]
 name = "browser-test-host"
 required-features = ["grpc", "test-support"]
 

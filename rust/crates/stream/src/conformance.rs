@@ -1,5 +1,8 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
+/// Wave-1 key and subtree-fork histories shared by every provider.
+pub mod wave1;
+
 use crate::OwnedBytes as Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
 
