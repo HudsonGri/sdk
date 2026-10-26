@@ -66,32 +66,139 @@ pub struct AgentAuthority<'v> {
     pub private: &'v VolumeBinding,
 }
 
-/// The authority of the agent at `path` over `volumes`, signed with
-/// `issuer`'s custody. Each `external` file on a volume the agent does not
-/// bind (a message or result from another agent) is granted alone, by its
-/// exact version.
-pub fn agent_authority<'v>(
-    issuer: &AuthorityRoot,
-    path: &AgentPath,
+/// What every agent scope of a host derives from.
+#[derive(Clone, Debug)]
+pub enum TurnAdmission {
+    /// The trusted local runtime root: each agent's scope is a root grant over
+    /// its bound volumes, under the agent's conversation audience.
+    LocalRoot,
+    /// A workload scope admitted under `audience`. Each agent's scope is
+    /// delegated from it, keeping its audience, agent and lifetime, and grants
+    /// only what it admits: a read-only admission cannot write.
+    Admitted {
+        /// The audience the admitted scope was issued for.
+        audience: Authority,
+        /// The admitted scope.
+        scope: Scope,
+    },
+}
+
+/// An agent's admission, verified before any of its IO: its private volume
+/// is its own, and under [`TurnAdmission::Admitted`] the admitted scope is
+/// authentic, live, bound to this audience and agent, and grants the private
+/// volume's write, and the agent's scope is already delegated from it. Every
+/// read of a turn and its [`AgentAuthority`] require one.
+pub(super) struct AdmittedAgent<'v> {
+    issuer: AuthorityRoot,
+    owner: crate::AgentId,
     volumes: &'v [VolumeBinding],
-    external: &[FileRef],
-) -> Result<AgentAuthority<'v>> {
-    let owner = crate::AgentId::from_bytes(path.id().to_bytes());
-    let private = volumes
-        .iter()
-        .find(|binding| binding.name == PRIVATE_VOLUME)
-        .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
-    if private.volume.class() != VolumeClass::AgentPrivate
-        || *private.volume.owner() != VolumeOwner::Agent(owner)
-    {
-        return Err(Error::Unauthorized(
-            "private volume belongs to another agent".into(),
-        ));
+    private: &'v VolumeBinding,
+    /// The agent's scope delegated from its admission, if admitted.
+    delegated: Option<Scope>,
+}
+
+impl<'v> AdmittedAgent<'v> {
+    /// Verifies the admission of the agent at `path` over `volumes`, signed
+    /// with `issuer`'s custody. It performs no IO.
+    pub(super) fn verify(
+        issuer: &AuthorityRoot,
+        admission: &TurnAdmission,
+        path: &AgentPath,
+        volumes: &'v [VolumeBinding],
+    ) -> Result<Self> {
+        let owner = crate::AgentId::from_bytes(path.id().to_bytes());
+        let private = volumes
+            .iter()
+            .find(|binding| binding.name == PRIVATE_VOLUME)
+            .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
+        if private.volume.class() != VolumeClass::AgentPrivate
+            || *private.volume.owner() != VolumeOwner::Agent(owner)
+        {
+            return Err(Error::Unauthorized(
+                "private volume belongs to another agent".into(),
+            ));
+        }
+        let (issuer, delegated) = match admission {
+            TurnAdmission::LocalRoot => (
+                issuer.with_audience(Authority {
+                    kind: AggregateKind::Conversation,
+                    id: path.id().as_str().to_owned(),
+                }),
+                None,
+            ),
+            TurnAdmission::Admitted { audience, scope } => {
+                if scope.agent().is_some_and(|agent| agent != owner) {
+                    return Err(Error::Unauthorized(
+                        "admitted scope belongs to another agent".into(),
+                    ));
+                }
+                let issuer = issuer.with_audience(audience.clone());
+                // The agent holds exactly its admission's grants, so it can
+                // never widen them, and whatever volume, directory or file the
+                // admission grants stays readable.
+                let delegated = issuer.issue_derived(
+                    scope,
+                    "agent",
+                    scope.capabilities(),
+                    Some(owner),
+                    &mut None,
+                )?;
+                // The same check the turn's private writer makes: its exact or
+                // structured grants admit writing the private volume.
+                crate::conversation::ContentGrant::verify(
+                    &issuer.verifier(&mut None)?,
+                    &delegated,
+                    &private.volume,
+                    VolumeOperation::Write,
+                    u64::MAX,
+                    &mut None,
+                )?;
+                (issuer, Some(delegated))
+            }
+        };
+        Ok(Self {
+            issuer,
+            owner,
+            volumes,
+            private,
+            delegated,
+        })
     }
-    let issuer = issuer.with_audience(Authority {
-        kind: AggregateKind::Conversation,
-        id: path.id().as_str().to_owned(),
-    });
+
+    /// The agent's authority over its bound volumes. Under a local root, each
+    /// `external` file on a volume the agent does not bind (a message or
+    /// result from another agent) is granted alone, by its exact version; an
+    /// admitted agent reads what its admission grants.
+    pub(super) fn authority(self, external: &[FileRef]) -> Result<AgentAuthority<'v>> {
+        let Self {
+            issuer,
+            owner,
+            volumes,
+            private,
+            delegated,
+        } = self;
+        let (grants, scope) = match delegated {
+            Some(scope) => (scope.capabilities().clone(), scope),
+            None => {
+                let grants = Capabilities::new(root_grants(volumes, external)?);
+                let scope = issuer.bootstrap_scope("agent", &grants, Some(owner), &mut None)?;
+                (grants, scope)
+            }
+        };
+        let verifier = issuer.verifier(&mut None)?;
+        Ok(AgentAuthority {
+            issuer,
+            scope,
+            grants,
+            verifier,
+            private,
+        })
+    }
+}
+
+/// A local root agent's grants: routing, its agent tools, read and write of
+/// every bound volume, and each `external` file by its exact version.
+fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<String>> {
     let mut grants = Vec::with_capacity(2 * volumes.len() + 1);
     grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
     // Every agent may spawn, message and archive within its own subtree.
@@ -116,16 +223,20 @@ pub fn agent_authority<'v>(
             grants.push(file.read_capability(&mut None)?);
         }
     }
-    let grants = Capabilities::new(grants);
-    let scope = issuer.bootstrap_scope("agent", &grants, Some(owner), &mut None)?;
-    let verifier = issuer.verifier(&mut None)?;
-    Ok(AgentAuthority {
-        issuer,
-        scope,
-        grants,
-        verifier,
-        private,
-    })
+    Ok(grants)
+}
+
+/// The authority of the agent at `path` over `volumes`, signed with
+/// `issuer`'s custody under `admission`: [`AdmittedAgent::verify`], then its
+/// authority over `external` files.
+pub fn agent_authority<'v>(
+    issuer: &AuthorityRoot,
+    admission: &TurnAdmission,
+    path: &AgentPath,
+    volumes: &'v [VolumeBinding],
+    external: &[FileRef],
+) -> Result<AgentAuthority<'v>> {
+    AdmittedAgent::verify(issuer, admission, path, volumes)?.authority(external)
 }
 
 /// Builds the executor of one agent turn: its tools, context, policy, limits
@@ -159,6 +270,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     issuer: AuthorityRoot,
+    admission: TurnAdmission,
     executors: Arc<dyn TurnExecutors>,
     schemas: SchemaRegistry,
     limits: TurnLimits,
@@ -172,13 +284,14 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Host signing each agent's authority with `issuer`'s custody, under
-    /// that agent's conversation audience.
+    /// Host signing each agent's authority with `issuer`'s custody, derived
+    /// from `admission`.
     #[must_use]
     pub fn new(
         stream: Arc<P>,
         host: Arc<FilesystemHost<A, O>>,
         issuer: AuthorityRoot,
+        admission: TurnAdmission,
         executors: Arc<dyn TurnExecutors>,
         limits: TurnLimits,
     ) -> Self {
@@ -186,6 +299,7 @@ where
             stream,
             host,
             issuer,
+            admission,
             executors,
             schemas: SchemaRegistry::new(),
             limits,
@@ -251,9 +365,14 @@ where
         approved: bool,
         reason: Option<String>,
     ) -> Result<()> {
-        let (_, authority, files) = self.journal(agent, &[])?;
+        let (_, authority, files) = self.journal(self.admit(agent)?, &[])?;
         let (policy, _) = self.approvals(agent, &authority.content).await?;
         crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
+    }
+
+    /// `agent`'s verified admission; it performs no IO.
+    fn admit<'v>(&'v self, agent: &'v AgentState) -> Result<AdmittedAgent<'v>> {
+        AdmittedAgent::verify(&self.issuer, &self.admission, &agent.path, &agent.volumes)
     }
 
     /// The journal and authority of `agent`'s turns. Each `external` input
@@ -262,7 +381,7 @@ where
     /// version.
     fn journal(
         &self,
-        agent: &AgentState,
+        admitted: AdmittedAgent<'_>,
         external: &[FileRef],
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
@@ -275,7 +394,7 @@ where
             grants: capabilities,
             verifier,
             private,
-        } = agent_authority(&self.issuer, &agent.path, &agent.volumes, external)?;
+        } = admitted.authority(external)?;
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&self.host),
             &verifier,
@@ -334,7 +453,11 @@ where
     }
 
     /// The agent's last settled turns, oldest first.
-    async fn history(&self, agent: &AgentState) -> Result<Vec<ConversationEntry>> {
+    async fn history(
+        &self,
+        _: &AdmittedAgent<'_>,
+        agent: &AgentState,
+    ) -> Result<Vec<ConversationEntry>> {
         let tail = agent.conversation_tail;
         let from = tail.saturating_sub(u64::from(self.limits.history_turns));
         if from == tail {
@@ -447,6 +570,8 @@ where
         stop: Arc<TurnStop>,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
+            // The admission is verified before the turn's first read.
+            let admitted = self.admit(agent)?;
             // An inherited turn staged its output on an ancestor's private
             // volume, which this agent's grants do not reach; the model
             // context holds this agent's own settled turns.
@@ -456,7 +581,7 @@ where
                 .find(|binding| binding.name == PRIVATE_VOLUME)
                 .map(|binding| &binding.volume);
             let history: Vec<ConversationEntry> = self
-                .history(agent)
+                .history(&admitted, agent)
                 .await?
                 .into_iter()
                 .filter(|entry| Some(entry.output.volume()) == own)
@@ -468,7 +593,7 @@ where
                 let content = crate::agent::model_input(&entry.input).map_err(agent_error)?;
                 external.extend(input_files(&content));
             }
-            let (journal, mut authority, files) = self.journal(agent, &external)?;
+            let (journal, mut authority, files) = self.journal(admitted, &external)?;
             authority.effects = Some(Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
                 Arc::clone(&self.stream),

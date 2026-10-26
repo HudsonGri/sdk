@@ -13,8 +13,8 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemSpawnVolumes, FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAuthority,
-        TurnExecutors, TurnLimits,
+        FilesystemSpawnVolumes, FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAdmission,
+        TurnAuthority, TurnExecutors, TurnLimits,
     },
     model::ModelContent,
 };
@@ -242,6 +242,7 @@ impl LocalHarness {
                 stream.clone(),
                 self.files.clone(),
                 authority.clone(),
+                TurnAdmission::LocalRoot,
                 Arc::new(Executors(Arc::downgrade(self))),
                 limits,
             )
@@ -260,6 +261,7 @@ impl LocalHarness {
                 Arc::new(FilesystemSpawnVolumes::new(
                     self.files.clone(),
                     authority,
+                    TurnAdmission::LocalRoot,
                     self.limits.file_bytes,
                 )),
             )
