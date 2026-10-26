@@ -1,0 +1,31 @@
+[package]
+name = "acyclic-machines-prized"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Kept out of the release until the maintainers choose to ship it.
+publish = false
+description = "Machines provider over Prized Sandboxes (Firecracker microVMs with one-call live fork)"
+readme = "README.md"
+keywords = ["machines", "prized", "sandbox", "microvm"]
+categories = ["api-bindings"]
+
+[dependencies]
+acyclic-machines = { version = "=0.2.0", path = "../machines" }
+async-trait.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+acyclic-conformance = { path = "../conformance" }
+axum.workspace = true
+
+[lints]
+workspace = true
