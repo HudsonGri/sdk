@@ -469,6 +469,63 @@ async fn done_reports_to_the_parent_exactly_once() -> Result {
 }
 
 #[tokio::test]
+async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Result {
+    let path = AgentPath::root(&id(1));
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+    state.phase = Phase::WaitingApproval { id: intent("q") };
+    state.turn = Some(Vec::new());
+    let request = |n: u64| -> Result<InboxRecord> {
+        Ok(InboxRecord::ApprovalRequested(ApprovalRequested {
+            child: path.child(&id(2))?,
+            id: intent(&format!("r{n}")),
+        }))
+    };
+    let held = |state: &AgentState| -> Vec<String> {
+        state
+            .queued
+            .iter()
+            .filter_map(|input| match input {
+                TurnInput::ApprovalRequested { id, .. } => Some(id.as_str().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    // Forty inputs arrive while the turn waits; the window holds the first 32.
+    let idle = script(Vec::new());
+    for sequence in 1..=40 {
+        let wake = Wake::Inbox { sequence, record: request(sequence)? };
+        state = step(&idle, &path, Some(state), sequence + 1, wake).await?.state;
+    }
+    assert_eq!(state.queued.len(), MAX_QUEUED);
+    assert_eq!(state.overflow, Some(33));
+    // The awaited response is taken out of order, and remembered as taken.
+    let resumed = script(vec![TurnStep {
+        checkpoint: None,
+        outs: Vec::new(),
+        wait: Wait::Input,
+    }]);
+    let approval = InboxRecord::Approval(Approval { id: intent("q") });
+    let wake = Wake::Inbox { sequence: 41, record: approval.clone() };
+    let after = step(&resumed, &path, Some(state), 42, wake).await?;
+    state = after.state;
+    assert_eq!(after.alarm, Alarm::At(CONTINUE_NOW));
+    assert_eq!(state.taken, std::collections::BTreeSet::from([41]));
+    assert_eq!(state.overflowed(42), Some((33, 1)));
+    // As the window drains, read-back restores inbox order and skips the taken
+    // response; every one of the forty inputs is still held exactly once.
+    state.queued.drain(..8);
+    let (from, limit) = state.overflowed(42).ok_or("nothing to read back")?;
+    assert_eq!((from, limit), (33, 9));
+    let mut inbox = (33..=40).map(|n| Ok((n, request(n)?))).collect::<Result<Vec<_>>>()?;
+    inbox.push((41, approval));
+    state.refill(inbox, 42);
+    let expected: Vec<String> = (9..=40).map(|n| format!("r{n}")).collect();
+    assert_eq!(held(&state), expected);
+    assert_eq!((state.overflow, state.taken.len()), (None, 0));
+    Ok(())
+}
+
+#[tokio::test]
 async fn archive_cascades_in_bounded_batches_then_reports() -> Result {
     let root = AgentPath::root(&id(1));
     let (path, mut state) = child_of(&root, 2)?;
