@@ -415,6 +415,7 @@ dependencies = [
 name = "acyclic-harness-client"
 version = "0.2.0"
 dependencies = [
+ "acyclic-stream",
  "proptest",
 ]
 
