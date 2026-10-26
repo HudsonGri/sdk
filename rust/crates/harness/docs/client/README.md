@@ -24,14 +24,20 @@ evaluated after draining a fixed conversation tail. A missing settlement in the
 selected window is a typed refusal requiring explicit historical backfill.
 
 Native `run_agent_prompt` and `run_agent_jsonl` use one JSONL reply dialect:
-`settled`, `blocked`, `settlement_unavailable`, or `closed`. A settled reply
+`AgentReply`: `settled`, `blocked`, `settlement_unavailable`, `closed`, or
+`unknown`. A settled reply
 includes the original intent, conversation sequence, input/output references and
 bounded decoded output. JSONL input is `{"id":"caller-intent","prompt":"text"}`,
 capped at 65,536 bytes per line. It admits one prompt at a time, then drains
 immediately available complete lines before exiting; keeping stdin open cannot
 hold up an already settled batch. `-p --operation UUID` fixes the prompt's intent;
-JSONL lines supply their own identities. Unknown commits remain typed errors
-carrying the exact request. These are the new actor APIs, without a TaskVolume
+JSONL lines supply their own identities. `AgentReply` also decodes this public
+contract, and its `outcome()` supplies the stable process exit class. Unknown
+commits emit the original intent and canonical Streams CommitRequest protobuf
+bytes in the shared `{"text":...}` / `{"base64":...}` byte form, with exit4.
+The interactive error channel preserves the same receipt after releasing the
+terminal. Retain these exact bytes for recovery; an Unknown is never an
+acknowledgement or a new delivery identity. These are the new actor APIs, without a TaskVolume
 request-file compatibility path.
 
 Browser callers initialize the generated WASM module and construct `AgentClient`

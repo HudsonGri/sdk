@@ -19,25 +19,49 @@ pub struct AgentRequest {
 
 /// The same output dialect for `-p` and JSONL mode. Immutable references and
 /// the exact input receipt remain available alongside the displayed answer.
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum Reply<'a> {
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentReply {
+    /// Exact committed input and its settled immutable conversation entry.
     Settled {
-        id: &'a IntentId,
+        /// Caller-owned input identity.
+        id: IntentId,
+        /// Conversation sequence of the settlement.
         sequence: u64,
+        /// Original input receipt and output reference.
         entry: ConversationEntry,
+        /// Authenticated bounded output read for this selected entry.
         output: crate::executor::TurnOutput,
     },
-    Blocked { id: &'a IntentId, inbox: u64, status: StatusRecord },
-    SettlementUnavailable {
-        id: &'a IntentId,
+    /// The input is waiting on a published external action.
+    Blocked {
+        /// Caller-owned input identity.
+        id: IntentId,
+        /// Original committed inbox sequence.
         inbox: u64,
+        /// Actual observed lifecycle state.
+        status: StatusRecord,
+    },
+    /// The selected page cannot establish this input's terminal settlement.
+    SettlementUnavailable {
+        /// Caller-owned input identity.
+        id: IntentId,
+        /// Original committed inbox sequence.
+        inbox: u64,
+        /// Eviction edge for explicit historical backfill.
         first_sequence: u64,
+        /// Observed status, when available.
         status: Option<StatusRecord>,
     },
-    Closed { id: &'a IntentId },
+    /// The recipient was closed before this input could be admitted.
+    Closed {
+        /// Caller-owned input identity.
+        id: IntentId,
+    },
+    /// Unresolved admission retains all original commit custody.
     Unknown {
-        id: &'a IntentId,
+        /// Caller-owned input identity.
+        id: IntentId,
         /// Canonical Streams CommitRequest protobuf bytes, not a second request
         /// schema. The original identity, conditions and payloads stay intact.
         #[serde(with = "super::wire_bytes")]
@@ -45,8 +69,20 @@ enum Reply<'a> {
     },
 }
 
-fn unknown_reply<'a>(id: &'a IntentId, request: &acyclic_stream::CommitRequest) -> Reply<'a> {
-    Reply::Unknown { id, commit: acyclic_stream::wire_codec::commit_to_wire(request).encode_to_vec() }
+impl AgentReply {
+    /// Stable process class comes from the typed reply, never error text.
+    pub const fn outcome(&self) -> HeadlessOutcome {
+        match self {
+            Self::Settled { .. } => HeadlessOutcome::Completed,
+            Self::Blocked { .. } => HeadlessOutcome::Blocked,
+            Self::SettlementUnavailable { .. } | Self::Unknown { .. } => HeadlessOutcome::Indeterminate,
+            Self::Closed { .. } => HeadlessOutcome::Cancelled,
+        }
+    }
+}
+
+fn unknown_reply(id: &IntentId, request: &acyclic_stream::CommitRequest) -> AgentReply {
+    AgentReply::Unknown { id: id.clone(), commit: acyclic_stream::wire_codec::commit_to_wire(request).encode_to_vec() }
 }
 
 /// Preserve exact Unknown custody when an interactive process ends. The caller
@@ -58,7 +94,7 @@ pub fn write_agent_unknown(error: &LocalAgentError, output: &mut impl Write) -> 
     Ok(true)
 }
 
-fn write_reply(output: &mut impl Write, reply: &Reply<'_>) -> Result<(), LocalAgentError> {
+fn write_reply(output: &mut impl Write, reply: &AgentReply) -> Result<(), LocalAgentError> {
     serde_json::to_writer(&mut *output, reply)?;
     output.write_all(b"\n")?;
     output.flush()?;
@@ -74,24 +110,18 @@ pub async fn run_agent_prompt(
     prompt: &str,
     output: &mut impl Write,
 ) -> Result<HeadlessOutcome, LocalAgentError> {
-    let (reply, outcome) = match client.prompt_turn(id, prompt).await {
-        Ok(AgentTurn { sequence, entry, output }) => (
-            Reply::Settled { id, sequence, entry, output }, HeadlessOutcome::Completed,
-        ),
-        Err(LocalAgentError::Blocked { inbox, status }) => (
-            Reply::Blocked { id, inbox, status }, HeadlessOutcome::Blocked,
-        ),
-        Err(LocalAgentError::SettlementUnavailable { inbox, first_sequence, status }) => (
-            Reply::SettlementUnavailable { id, inbox, first_sequence, status },
-            HeadlessOutcome::Indeterminate,
-        ),
-        Err(LocalAgentError::Closed) => (Reply::Closed { id }, HeadlessOutcome::Cancelled),
-        Err(LocalAgentError::Unknown { id: actual, request }) => {
-            write_reply(output, &unknown_reply(&actual, &request))?;
-            return Ok(HeadlessOutcome::Indeterminate);
-        }
+    let reply = match client.prompt_turn(id, prompt).await {
+        Ok(AgentTurn { sequence, entry, output }) =>
+            AgentReply::Settled { id: id.clone(), sequence, entry, output },
+        Err(LocalAgentError::Blocked { inbox, status }) =>
+            AgentReply::Blocked { id: id.clone(), inbox, status },
+        Err(LocalAgentError::SettlementUnavailable { inbox, first_sequence, status }) =>
+            AgentReply::SettlementUnavailable { id: id.clone(), inbox, first_sequence, status },
+        Err(LocalAgentError::Closed) => AgentReply::Closed { id: id.clone() },
+        Err(LocalAgentError::Unknown { id, request }) => unknown_reply(&id, &request),
         Err(error) => return Err(error),
     };
+    let outcome = reply.outcome();
     write_reply(output, &reply)?;
     Ok(outcome)
 }
@@ -148,22 +178,20 @@ mod tests {
         let reply: serde_json::Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(reply["kind"], "unknown");
         assert_eq!(reply["id"], "caller-owned-intent");
-        #[derive(Deserialize)]
-        struct Custody {
-            #[serde(with = "crate::client::wire_bytes")]
-            commit: Vec<u8>,
-        }
         assert!(reply["commit"].is_object(), "binary custody uses the canonical byte codec");
-        let custody: Custody = serde_json::from_value(reply.clone()).unwrap();
+        let custody: AgentReply = serde_json::from_value(reply.clone()).unwrap();
+        assert_eq!(custody.outcome(), HeadlessOutcome::Indeterminate);
+        let AgentReply::Unknown { id, commit } = custody else { panic!("unknown custody reply"); };
+        assert_eq!(id.as_str(), "caller-owned-intent");
         let recovered = acyclic_stream::wire_codec::commit_from_wire(
-            acyclic_stream::wire::CommitRequest::decode(custody.commit.as_slice()).unwrap(),
+            acyclic_stream::wire::CommitRequest::decode(commit.as_slice()).unwrap(),
         ).unwrap();
         assert_eq!(recovered, request, "recovery must retain key, conditions and every mutation byte");
         // Actual former field encoding: the same recovery decoder must reject
         // serde's integer-array spelling instead of accepting two dialects.
         let mut integer_array = reply;
-        integer_array["commit"] = serde_json::to_value(&custody.commit).unwrap();
-        assert!(serde_json::from_value::<Custody>(integer_array).is_err());
+        integer_array["commit"] = serde_json::to_value(&commit).unwrap();
+        assert!(serde_json::from_value::<AgentReply>(integer_array).is_err());
         // The former process boundary only printed Display. The same recovery
         // consumer cannot recover custody from that output.
         assert!(serde_json::from_str::<serde_json::Value>(&error.to_string()).is_err());
