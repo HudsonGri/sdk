@@ -47,7 +47,7 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 pub use process_tree::PreparedClosedProcess;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, OwnedCaptureInput,
-    ProcessCaptureFailure, ProcessCustody, ProcessInput, ProcessOutput, ProcessTree,
+    ProcessCaptureFailure, ProcessCustody, ProcessInput, ProcessOutput, ProcessTree, ProcessTreeIo,
     ProcessTreeStorage,
 };
 

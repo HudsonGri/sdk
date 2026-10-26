@@ -340,6 +340,17 @@ fn process_tree_helper() {
                 let _ = grandchild.wait();
             }
         }
+        "stderr-bulk" => {
+            for _ in 0..32 {
+                std::io::stderr()
+                    .write_all(&[b'e'; 8192])
+                    .expect("stderr bulk");
+            }
+            std::io::stderr()
+                .write_all(b"stderr-tail-marker")
+                .expect("stderr tail");
+            std::process::exit(7);
+        }
         "flood" => loop {
             std::io::stdout()
                 .write_all(&[b'o'; 8192])

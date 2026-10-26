@@ -154,7 +154,13 @@ impl HostProcessLease {
         Ok(HostSessionProcess {
             tree,
             lease: Some(self),
+            work: work.clone(),
         })
+    }
+
+    /// Admits one child's storage and retirement independently of its manager.
+    pub fn funded_process(self) -> Result<HostSessionProcess> {
+        self.process(&polling_work()?)
     }
 
     /// An unstarted lease already fenced every preceding physical owner.
@@ -180,6 +186,15 @@ impl QuiescentHostProcess {
 pub struct HostSessionProcess {
     tree: ProcessTreeStorage,
     lease: Option<HostProcessLease>,
+    work: acyclic_fs::NativeMaterializationWork,
+}
+
+fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
+    acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(65_536, 65_536),
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
 impl HostSessionProcess {
@@ -203,12 +218,12 @@ impl HostSessionProcess {
 
     /// Queues a prompt on the originally funded native stdin owner.
     pub fn queue_stdin(&mut self, bytes: Vec<u8>) -> Result<()> {
-        self.live_tree()?.queue_stdin(bytes).map_err(storage)
+        self.live_io()?.queue_stdin(bytes).map_err(storage)
     }
 
     /// Advances the existing native stdin pump.
     pub fn pump_stdin(&mut self) -> Result<bool> {
-        self.live_tree()?.pump_stdin().map_err(storage)
+        self.live_io()?.pump_stdin().map_err(storage)
     }
 
     /// Verifies delivery even after physical retirement.
@@ -218,31 +233,72 @@ impl HostSessionProcess {
 
     /// Reads through the existing bounded native output owner.
     pub fn read_stdout(&mut self, bytes: &mut [u8]) -> Result<Option<usize>> {
-        self.live_tree()?.read_stdout(bytes).map_err(storage)
+        self.live_io()?.read_stdout(bytes).map_err(storage)
+    }
+
+    /// Drains bounded stderr through shared process capture, retaining its tail.
+    pub fn drain_stderr(&mut self) -> Result<bool> {
+        self.require_live()?;
+        let meter = self.polling_meter()?;
+        self.tree.drain_stderr(&meter).map_err(storage)
+    }
+
+    /// Formats a failed native outcome with bounded diagnostic context.
+    pub fn failure_message(&self, message: &str) -> String {
+        let tail = self.tree.stderr_tail();
+        if tail.is_empty() {
+            message.into()
+        } else {
+            format!("{message}\n{}", String::from_utf8_lossy(tail))
+        }
     }
 
     /// Observes native exit without releasing descendant custody.
     pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
-        self.live_tree()?.try_wait().map_err(storage)
+        self.live_io()?.try_wait().map_err(storage)
     }
 
     /// Stops descendants using the one runtime containment implementation.
     pub fn terminate_descendants(&mut self) -> Result<()> {
-        self.live_tree()?.terminate_descendants().map_err(storage)
+        self.live_io()?.terminate_descendants().map_err(storage)
     }
 
-    fn live_tree(&mut self) -> Result<&mut ProcessTreeStorage> {
+    fn live_io(&mut self) -> Result<acyclic_native_runtime::ProcessTreeIo<'_>> {
+        self.require_live()?;
+        // Each bounded operation is independently admitted. Session duration
+        // cannot spend another operation's credit or replace retirement funds.
+        let meter = self.polling_meter()?;
+        self.tree.io(&meter).map_err(storage)
+    }
+
+    fn polling_meter(&self) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
+        self.work
+            .invocation_window()
+            .map(|window| window.runtime_meter())
+            .map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None,
+            })
+    }
+
+    fn require_live(&self) -> Result<()> {
         if self.lease.is_none() {
             return Err(Error::Conflict(
                 "step=access native session: process already released; recovery: reopen the task through acyclic host".into(),
             ));
         }
-        Ok(&mut self.tree)
+        Ok(())
     }
 
     /// Releases execution custody only after the complete tree is reaped.
     /// Publication reacquires that lease and retains it through the commit.
     pub fn release(&mut self) -> Result<()> {
+        if self.lease.is_none() {
+            return Ok(());
+        }
+        // Capture ready diagnostics before retirement closes the native pipes,
+        // including when input delivery failed before the ordinary output poll.
+        self.drain_stderr()?;
         self.tree.terminate().map_err(storage)?;
         if !self.tree.is_reaped() {
             return Err(Error::Conflict(
@@ -257,6 +313,40 @@ impl HostSessionProcess {
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_polls_never_spend_the_original_lifetime_allowance() -> Result<()> {
+        let root = tempfile::tempdir().map_err(storage)?;
+        let view = root.path().canonicalize().map_err(storage)?;
+        let work = polling_work()?;
+        let mut process = HostProcessLease::acquire(&view, TaskId::new(), &view)?.process(&work)?;
+        let mut command = std::process::Command::new(std::env::current_exe().map_err(storage)?);
+        command
+            .arg("--list")
+            .current_dir(&view)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        process.spawn(&mut command)?;
+        let before = work.remaining().map_err(storage)?;
+        let live = work.live_allocation_bytes();
+        for _ in 0..32_768 {
+            process.read_stdout(&mut [0; 8192])?;
+            process.drain_stderr()?;
+            process.try_wait()?;
+            assert_eq!(
+                work.remaining().map_err(storage)?.backend_read_operations,
+                before.backend_read_operations,
+                "polling spent the original process allowance"
+            );
+            assert_eq!(work.live_allocation_bytes(), live);
+        }
+        assert!(
+            work.receipt().backend_read_operations > 65_536,
+            "polling must retain cumulative work beyond a single invocation budget"
+        );
+        process.release()?;
+        Ok(())
+    }
 
     #[test]
     fn failed_spawn_keeps_physical_custody_until_shared_retirement() -> Result<()> {

@@ -101,6 +101,9 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
     // remain in TaskFiles, including uncertain outcomes after a killed owner.
     remove_projection(&request_path)?;
     remove_projection(&result_path)?;
+    if result.get("completion").and_then(Value::as_str) == Some("indeterminate") {
+        return Err(Error::Indeterminate(operation));
+    }
     result.get("ok").cloned().ok_or_else(|| {
         Error::Conflict(
             result
@@ -314,7 +317,19 @@ async fn process_request(
             &result.bytes,
         )?;
     } else {
-        outcome?;
+        match outcome {
+            Err(error @ (Error::Indeterminate(_) | Error::CommandIndeterminate { .. })) => {
+                // A durable claim is not permission to repeat its effect. Its
+                // uncertainty is a reply, not a reason to poison the endpoint.
+                // Keep the canonical claim unresolved for explicit recovery.
+                let uncertain = Err(error);
+                let bytes = crate::client::encode_command_result(0, &uncertain, MAXIMUM_BYTES)?;
+                immutable(&result_path, &bytes)?;
+            }
+            other => {
+                other?;
+            }
+        }
     }
     Ok(())
 }

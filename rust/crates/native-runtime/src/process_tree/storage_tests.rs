@@ -7,6 +7,73 @@ enum HostState<T> {
 }
 
 #[test]
+fn bounded_poll_scopes_preserve_original_storage_and_retirement_credit() {
+    let root = tempfile::tempdir().unwrap();
+    let custody = ProcessCustody::open(root.path()).unwrap();
+    let original = Arc::new(crate::tests::ReadBudgetMeter::new(256, 65536));
+    let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
+    let mut slot = ProcessTreeStorage::new(&observer).unwrap();
+    slot.spawn(
+        &mut super::super::tests::command("partial", root.path()),
+        Some(&custody),
+    )
+    .unwrap();
+    super::super::tests::ready(root.path(), "partial-ready", || {
+        slot.try_wait().unwrap().is_some()
+    });
+    let before = original.used_operations.load(Ordering::Acquire);
+    let memory = original.memory.load(Ordering::Acquire);
+    for _ in 0..1024 {
+        let scope = Arc::new(crate::tests::ReadBudgetMeter::new(16, 65536));
+        let meter: Arc<dyn crate::NativeReadMeter> = scope.clone();
+        let mut io = slot.io(&meter).unwrap();
+        assert!(io.try_wait().unwrap().is_none());
+        io.read_stdout(&mut [0; 1024]).unwrap();
+        assert!(!io.drain_stderr().unwrap());
+        assert_eq!(
+            original.used_operations.load(Ordering::Acquire),
+            before,
+            "polling consumed the lifetime allowance"
+        );
+        assert!(scope.used_operations.load(Ordering::Acquire) > 0);
+        assert_eq!(original.memory.load(Ordering::Acquire), memory);
+    }
+    assert_eq!(slot.stderr_tail(), b"stderr-before-stop");
+    original.cancelled.store(true, Ordering::Release);
+    drop(slot);
+    custody.fence_stale().unwrap();
+    assert_eq!(original.memory.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
+    let root = tempfile::tempdir().unwrap();
+    let original = Arc::new(crate::tests::ReadBudgetMeter::new(256, 65536));
+    let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
+    let mut slot = ProcessTreeStorage::new(&observer).unwrap();
+    let mut command = super::super::tests::command("stderr-bulk", root.path());
+    command.stdout(std::process::Stdio::null());
+    slot.spawn(&mut command, None).unwrap();
+    loop {
+        let meter: Arc<dyn crate::NativeReadMeter> =
+            Arc::new(crate::tests::ReadBudgetMeter::new(32, 65536));
+        let mut io = slot.io(&meter).unwrap();
+        assert_eq!(io.read_stdout(&mut [0; 1024]).unwrap(), Some(0));
+        let eof = io.drain_stderr().unwrap();
+        if let Some(status) = io.try_wait().unwrap() {
+            assert_eq!(status.code(), Some(7));
+            if eof {
+                break;
+            }
+        }
+        std::thread::yield_now();
+    }
+    assert_eq!(slot.stderr_tail().len(), 4096);
+    assert!(slot.stderr_tail().ends_with(b"stderr-tail-marker"));
+    slot.terminate().unwrap();
+}
+
+#[test]
 fn process_storage_is_small_and_matches_the_original_heap_credit() {
     const CEILING: usize = 64;
     let before = std::mem::size_of::<HostState<ProcessTree>>();
@@ -30,7 +97,7 @@ fn process_storage_is_small_and_matches_the_original_heap_credit() {
     );
     assert_eq!(
         usize::try_from(physical.bytes_current).unwrap(),
-        std::mem::size_of::<ProcessSlot>()
+        std::mem::size_of::<ProcessSlot>() + 4096
     );
     let HostState::Running(slot) = &state else {
         panic!("missing funded slot")

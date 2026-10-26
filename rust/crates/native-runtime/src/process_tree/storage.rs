@@ -2,9 +2,11 @@ use super::*;
 use crate::meter::ReadBuffer;
 use std::sync::Arc;
 
+const STDERR_TAIL_BYTES: usize = 4096;
+
 /// Small, stable storage for an originally funded process-tree owner.
 ///
-/// Allocate this before attempting spawn. All operations use the original
+/// Allocate this before attempting spawn. Storage and retirement use the original
 /// invocation's meter and retain partial owners in the same allocation on
 /// failure. Moving storage between host states never recharges or reallocates
 /// the tree. Its contents retire before its credit. There is no public mutable
@@ -20,9 +22,78 @@ pub struct ProcessTreeStorage {
     slot: ReadBuffer<ProcessSlot>,
 }
 
+/// Bounded polling work borrowed from a retained process owner. The caller
+/// funds each operation scope; storage and reserved retirement never move to it.
+pub struct ProcessTreeIo<'a> {
+    tree: &'a mut ProcessTree,
+    meter: Arc<dyn crate::NativeReadMeter>,
+    stderr: &'a mut ReadBuffer<u8>,
+}
+
+impl ProcessTreeIo<'_> {
+    /// Queues input without transferring the native pipe or its owner.
+    pub fn queue_stdin(&mut self, bytes: Vec<u8>) -> io::Result<()> {
+        self.meter.check()?;
+        self.tree.queue_stdin(bytes)
+    }
+    /// Advances bounded nonblocking input delivery.
+    pub fn pump_stdin(&mut self) -> io::Result<bool> {
+        self.tree.pump_stdin_controlled(Some(self.meter.as_ref()))
+    }
+    /// Reads bounded stdout without waiting for data.
+    pub fn read_stdout(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
+        self.tree
+            .read_output_controlled(bytes, Some(self.meter.as_ref()), false)
+    }
+    /// Reads bounded stderr through the same cross-platform pipe implementation.
+    pub fn read_stderr(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
+        self.tree
+            .read_output_controlled(bytes, Some(self.meter.as_ref()), true)
+    }
+    /// Drains a bounded pass while retaining only the originally funded tail.
+    /// Returns true only at EOF, including when stdout closed before stderr.
+    pub fn drain_stderr(&mut self) -> io::Result<bool> {
+        let mut bytes = [0; 8192];
+        for _ in 0..4 {
+            let Some(count) = self.read_stderr(&mut bytes)? else {
+                break;
+            };
+            if count == 0 {
+                return Ok(true);
+            }
+            let chunk = bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?;
+            let capacity = STDERR_TAIL_BYTES;
+            let keep = chunk.len().min(capacity);
+            let remove = self
+                .stderr
+                .data
+                .len()
+                .saturating_add(keep)
+                .saturating_sub(capacity);
+            self.stderr.data.drain(..remove);
+            self.stderr.data.extend_from_slice(
+                chunk
+                    .get(chunk.len() - keep..)
+                    .ok_or(io::ErrorKind::InvalidData)?,
+            );
+        }
+        Ok(false)
+    }
+    /// Observes direct-child exit while retaining descendant custody.
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.tree.try_wait(Some(self.meter.as_ref()))
+    }
+    /// Stops descendants through the retained containment owner.
+    pub fn terminate_descendants(&mut self) -> io::Result<()> {
+        self.tree
+            .capture_terminate_descendants(Some(self.meter.as_ref()))
+    }
+}
+
 struct ProcessSlot {
     tree: Option<ProcessTree>,
     retirement: Option<Retirement>,
+    stderr: ReadBuffer<u8>,
 }
 
 /// Concrete kill and wait SDK calls are withheld before physical admission.
@@ -50,12 +121,42 @@ impl Retirement {
 }
 
 impl ProcessTreeStorage {
+    /// Borrows live process I/O against one independently admitted work scope.
+    /// This cannot replace the original allocation or its retirement reserves.
+    pub fn io(&mut self, meter: &Arc<dyn crate::NativeReadMeter>) -> io::Result<ProcessTreeIo<'_>> {
+        meter.check()?;
+        let [slot] = self.slot.data.as_mut_slice() else {
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        Ok(ProcessTreeIo {
+            tree: slot.tree.as_mut().ok_or(io::ErrorKind::NotFound)?,
+            meter: Arc::clone(meter),
+            stderr: &mut slot.stderr,
+        })
+    }
+
+    /// Bounded raw diagnostic tail. Decoding at the reporting boundary may be lossy.
+    pub fn stderr_tail(&self) -> &[u8] {
+        match self.slot.data.as_slice() {
+            [slot] => &slot.stderr.data,
+            _ => &[],
+        }
+    }
+
+    /// Drains diagnostics even when a refused spawn acquired no native tree.
+    pub fn drain_stderr(&mut self, meter: &Arc<dyn crate::NativeReadMeter>) -> io::Result<bool> {
+        if matches!(self.slot.data.as_slice(), [slot] if slot.tree.is_none()) {
+            return Ok(true);
+        }
+        self.io(meter)?.drain_stderr()
+    }
     /// Funds the exact slot on the original invocation before allocating it.
     pub fn new(meter: &Arc<dyn crate::NativeReadMeter>) -> io::Result<Self> {
         let mut slot = ReadBuffer::new(1, meter)?;
         slot.data.push(ProcessSlot {
             tree: None,
             retirement: None,
+            stderr: ReadBuffer::new(STDERR_TAIL_BYTES, meter)?,
         });
         Ok(Self { slot })
     }
@@ -134,14 +235,14 @@ impl ProcessTreeStorage {
 
     /// Queues one native prompt on the retained process without giving away its pipe.
     pub fn queue_stdin(&mut self, bytes: Vec<u8>) -> io::Result<()> {
-        self.slot.meter().check()?;
-        self.tree_mut()?.queue_stdin(bytes)
+        let meter = Arc::clone(self.slot.meter());
+        self.io(&meter)?.queue_stdin(bytes)
     }
 
     /// Advances the shared stdin pump on the original invocation's meter.
     pub fn pump_stdin(&mut self) -> io::Result<bool> {
         let meter = Arc::clone(self.slot.meter());
-        self.tree_mut()?.pump_stdin_controlled(Some(meter.as_ref()))
+        self.io(&meter)?.pump_stdin()
     }
 
     /// Refuses completion until all queued input has been delivered.
@@ -160,21 +261,19 @@ impl ProcessTreeStorage {
     /// Reads bounded native output through the retained invocation's meter.
     pub fn read_stdout(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
         let meter = Arc::clone(self.slot.meter());
-        self.tree_mut()?
-            .read_stdout_controlled(buffer, Some(meter.as_ref()))
+        self.io(&meter)?.read_stdout(buffer)
     }
 
     /// Observes exit while retaining containment and recovery ownership.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         let meter = Arc::clone(self.slot.meter());
-        self.tree_mut()?.try_wait(Some(meter.as_ref()))
+        self.io(&meter)?.try_wait()
     }
 
     /// Stops descendants through the shared containment implementation.
     pub fn terminate_descendants(&mut self) -> io::Result<()> {
         let meter = Arc::clone(self.slot.meter());
-        self.tree_mut()?
-            .capture_terminate_descendants(Some(meter.as_ref()))
+        self.io(&meter)?.terminate_descendants()
     }
 
     fn tree_mut(&mut self) -> io::Result<&mut ProcessTree> {
@@ -197,6 +296,7 @@ impl Drop for ProcessTreeStorage {
             ProcessSlot {
                 tree: Some(tree),
                 retirement: Some(retirement),
+                ..
             },
         ] = self.slot.data.as_mut_slice()
         else {

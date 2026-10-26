@@ -129,7 +129,7 @@ pub(super) fn child(
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     if host == "codex" {
         command.args(args).args(["exec", "--json", "--cd"]).arg(cwd);
         if let Some(id) = session {

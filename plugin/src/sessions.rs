@@ -54,7 +54,6 @@ struct Sessions {
     flags: Vec<String>,
     children: BTreeMap<String, Running>,
     after: Option<Component>,
-    work: acyclic_fs::NativeMaterializationWork,
     _ownership: FileLock,
     _root: acyclic_fs::HeldRoot,
 }
@@ -77,11 +76,6 @@ impl Sessions {
             root.open_file(Path::new("manager.lock"), true)?,
             FileLockMode::Exclusive,
         )?;
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::performance::work_budget(65_536, 65_536),
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
         Ok(Self {
             host: host.into(),
             cwd,
@@ -89,7 +83,6 @@ impl Sessions {
             flags,
             children: BTreeMap::new(),
             after: None,
-            work,
             _ownership: ownership,
             _root: root,
         })
@@ -150,7 +143,7 @@ impl Sessions {
         command
             .env("ACYCLIC_WORKSPACE", &cwd)
             .env("ACYCLIC_TASK", task.to_string());
-        let process = lease.process(&self.work)?;
+        let process = lease.funded_process()?;
         // Install the stable owner before spawn can acquire any physical work.
         // Even a partial spawn or stdin failure stays here until it is reaped.
         let running = self.children.entry(reference.into()).or_insert(Running {
@@ -177,6 +170,7 @@ impl Sessions {
         Ok(())
     }
     fn output(&self, reference: &str, running: &mut Running) -> Result<bool> {
+        let stderr_closed = running.process.drain_stderr()?;
         let mut chunk = [0u8; 8192];
         // Bound each pass so a busy child cannot starve cancellation or peers.
         for _ in 0..16 {
@@ -184,7 +178,7 @@ impl Sessions {
                 break;
             };
             if count == 0 {
-                return Ok(true);
+                return Ok(stderr_closed);
             }
             for event in running
                 .events
@@ -341,9 +335,12 @@ impl Sessions {
         running.process.release()?;
         let outcome = match (running.finish_input(), outcome) {
             (_, acyclic_harness::Outcome::Cancelled) => acyclic_harness::Outcome::Cancelled,
-            (_, outcome @ acyclic_harness::Outcome::Failed { .. }) | (Ok(()), outcome) => outcome,
+            (_, acyclic_harness::Outcome::Failed { message }) => acyclic_harness::Outcome::Failed {
+                message: running.process.failure_message(&message),
+            },
+            (Ok(()), outcome) => outcome,
             (Err(error), _) => acyclic_harness::Outcome::Failed {
-                message: error.to_string(),
+                message: running.process.failure_message(&error.to_string()),
             },
         };
         self.request(

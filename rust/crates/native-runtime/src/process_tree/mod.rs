@@ -19,7 +19,7 @@ pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInpu
 mod custody;
 pub use custody::ProcessCustody;
 mod storage;
-pub use storage::ProcessTreeStorage;
+pub use storage::{ProcessTreeIo, ProcessTreeStorage};
 #[cfg(unix)]
 mod warden;
 
@@ -463,19 +463,42 @@ impl ProcessTree {
         buffer: &mut [u8],
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<Option<usize>> {
+        self.read_output_controlled(buffer, meter, false)
+    }
+
+    fn read_output_controlled(
+        &mut self,
+        buffer: &mut [u8],
+        meter: Option<&dyn crate::NativeReadMeter>,
+        stderr: bool,
+    ) -> io::Result<Option<usize>> {
         if buffer.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "empty process read buffer",
             ));
         }
-        let Some(pipe) = self.child.as_mut().and_then(|child| child.stdout.as_mut()) else {
+        let Some(child) = self.child.as_mut() else {
             return Ok(Some(0));
         };
         // SAFETY: initialized bytes can be borrowed as MaybeUninit bytes.
         let buffer =
             unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast(), buffer.len()) };
-        let (read, recorded) = platform::read_pipe(pipe, buffer, meter)?;
+        let result = if stderr {
+            child
+                .stderr
+                .as_mut()
+                .map(|pipe| platform::read_pipe(pipe, buffer, meter))
+        } else {
+            child
+                .stdout
+                .as_mut()
+                .map(|pipe| platform::read_pipe(pipe, buffer, meter))
+        };
+        let Some(result) = result else {
+            return Ok(Some(0));
+        };
+        let (read, recorded) = result?;
         recorded?;
         Ok(read)
     }

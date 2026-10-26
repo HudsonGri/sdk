@@ -1,6 +1,193 @@
 use super::*;
 
 #[tokio::test]
+async fn codex_interrupted_claim_replies_uncertain_without_reexecution() -> Result<()> {
+    interrupted_claim_replies_uncertain("codex").await
+}
+#[tokio::test]
+async fn claude_interrupted_claim_replies_uncertain_without_reexecution() -> Result<()> {
+    interrupted_claim_replies_uncertain("claude-code").await
+}
+#[tokio::test]
+async fn pi_interrupted_claim_replies_uncertain_without_reexecution() -> Result<()> {
+    interrupted_claim_replies_uncertain("pi").await
+}
+
+async fn interrupted_claim_replies_uncertain(host: &str) -> Result<()> {
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let local = Arc::new(
+        LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(state.path().join("owner")),
+        )
+        .await?,
+    );
+    let mut owner = HostWorkspaceOwner::new(Arc::clone(&local))?;
+    let root = owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Open {
+                host: host.into(),
+                session: "interrupted-command".into(),
+            },
+        )
+        .await?;
+    let parent = serde_json::from_value(root["task"].clone()).map_err(storage)?;
+    let session = uuid::Uuid::new_v4();
+    let operation = OperationId::new();
+    let action = HostAction::Fork {
+        parent,
+        reference: "once".into(),
+    };
+    interrupt_claim(&local, &mut owner, session, operation, action.clone()).await?;
+    drop(owner);
+    let directory = checkout.path().join(DIRECTORY);
+    std::fs::create_dir_all(directory.join("results")).map_err(storage)?;
+    for _ in 0..2 {
+        assert_uncertain_restart(
+            &local,
+            &directory,
+            Request {
+                session,
+                operation,
+                action: action.clone(),
+            },
+            parent,
+        )
+        .await?;
+    }
+    Arc::try_unwrap(local)
+        .map_err(|_| Error::Conflict("interrupted fixture retained owner".into()))?
+        .disconnect()
+        .await?;
+    Ok(())
+}
+
+async fn assert_uncertain_restart(
+    local: &Arc<LocalHarness>,
+    directory: &Path,
+    request: Request,
+    parent: TaskId,
+) -> Result<()> {
+    let Request {
+        session,
+        operation,
+        action,
+    } = request;
+    let session_component = Component::new(session.to_string()).map_err(storage)?;
+    let component = Component::new(operation.to_string()).map_err(storage)?;
+    let mut owner = HostWorkspaceOwner::new(Arc::clone(local))?;
+    let mut commands = CommandSession::open_local(local, session, MAXIMUM_BYTES, 4096).await?;
+    let before = local.task_files.inner.head().await.map_err(storage)?;
+    process_request(
+        local,
+        &mut owner,
+        &mut commands,
+        &session_component,
+        directory,
+        Request {
+            session,
+            operation,
+            action: action.clone(),
+        },
+    )
+    .await?;
+    let bytes = regular_bytes(&directory.join("results").join(format!("{operation}.json")))?;
+    let uncertain: Value = serde_json::from_slice(&bytes).map_err(storage)?;
+    assert_eq!(uncertain["completion"], "indeterminate", "{uncertain}");
+    assert_eq!(
+        before,
+        local.task_files.inner.head().await.map_err(storage)?,
+        "replay dispatched the already-claimed effect"
+    );
+    let durable = local
+        .task_files
+        .snapshot(
+            &Query::File(FileKey::Session {
+                session: session_component.clone(),
+                file: TaskFile::ExecutionResult(component.clone()),
+            }),
+            1,
+        )
+        .await
+        .map_err(storage)?;
+    assert!(
+        durable.files.is_empty(),
+        "an uncertain projection settled the canonical claim"
+    );
+    remove_projection(&directory.join("results").join(format!("{operation}.json")))?;
+    let next = OperationId::new();
+    process_request(
+        local,
+        &mut owner,
+        &mut commands,
+        &session_component,
+        directory,
+        Request {
+            session,
+            operation: next,
+            action: HostAction::Sessions {
+                parent,
+                after: None,
+            },
+        },
+    )
+    .await?;
+    let next: Value = serde_json::from_slice(&regular_bytes(
+        &directory.join("results").join(format!("{next}.json")),
+    )?)
+    .map_err(storage)?;
+    assert_eq!(
+        next["ok"],
+        serde_json::json!(["once"]),
+        "owner stopped serving"
+    );
+    Ok(())
+}
+
+async fn interrupt_claim(
+    local: &LocalHarness,
+    owner: &mut HostWorkspaceOwner,
+    session: uuid::Uuid,
+    operation: OperationId,
+    action: HostAction,
+) -> Result<()> {
+    let file = FileValue::new(
+        FileKey::Session {
+            session: Component::new(session.to_string()).map_err(storage)?,
+            file: TaskFile::Request(Component::new(operation.to_string()).map_err(storage)?),
+        },
+        serde_json::to_vec(&CommandResolution::Sdk {
+            command: "workspace".into(),
+            arguments: serde_json::to_string(&action).map_err(storage)?,
+        })
+        .map_err(storage)?,
+    );
+    local
+        .task_files
+        .inner
+        .append(local.task_files.inner.head().await.map_err(storage)?, &file)
+        .await
+        .map_err(storage)?;
+    let mut commands = CommandSession::open_local(local, session, MAXIMUM_BYTES, 4096).await?;
+    let (reached, admitted) = tokio::sync::oneshot::channel();
+    let consuming = commands.consume(&file, |operation, _, _| async move {
+        let effect = owner.dispatch(operation, action).await?;
+        reached.send(effect).map_err(storage)?;
+        std::future::pending::<Result<Value>>().await
+    });
+    tokio::pin!(consuming);
+    tokio::select! {
+        result = &mut consuming => panic!("interrupted effect unexpectedly settled: {result:?}"),
+        effect = admitted => { effect.map_err(storage)?; }
+    }
+    // Drop the actual consumer after the claim and effect, before its durable
+    // result. Reopening must never grant this effect again.
+    Ok(())
+}
+
+#[tokio::test]
 async fn every_host_observes_live_files_without_journaling_queries() -> Result<()> {
     for host in ["codex", "claude-code", "pi"] {
         let checkout = tempfile::tempdir().map_err(storage)?;

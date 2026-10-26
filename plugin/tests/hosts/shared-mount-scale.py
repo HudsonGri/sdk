@@ -74,6 +74,9 @@ with socket.create_connection(('127.0.0.1',int(os.environ['FIXTURE_BARRIER']))) 
   message=gate.recv(1)
   if message!=b'?': break
   gate.sendall(b'!')
+sys.stderr.buffer.write(b'e'*262144 + ('diagnostic-tail-'+host).encode())
+sys.stderr.flush()
+sys.exit(17)
 ''')
         executable.chmod(0o755)
         with (root / 'owner.log').open('w+') as owner_log, (root / 'bridge.log').open('w+') as bridge_log:
@@ -164,6 +167,9 @@ with socket.create_connection(('127.0.0.1',int(os.environ['FIXTURE_BARRIER']))) 
                     reference = 'child' + str(child)
                     observed = tool('wait', reference)
                     assert observed['status']['settled'], observed
+                    failure = observed['results'][0]['outcome']['Failed']['message']
+                    assert failure.endswith('diagnostic-tail-' + host), failure
+                    assert len(failure.encode()) < 4300, len(failure.encode())
                     client({'kind': 'fs', 'task': task, 'command': 'merge agents/' + reference})
                     assert (workspace / (reference + '.txt')).read_text() == reference
                     assert (path / (reference + '.txt')).read_text() == reference
