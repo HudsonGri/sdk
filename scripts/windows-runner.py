@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -43,10 +44,71 @@ def admitted_host(source, executable, receipt):
     return executable.resolve()
 
 
+class Cancellation:
+    """Caller-owned cancellation, independent of command output readiness.
+
+    Subscribers retain only their own invocation's control pipe. Cancellation
+    requests the existing native host's drain; it never kills or reaps a child.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._requested = False
+        self._callbacks = set()
+
+    @property
+    def requested(self):
+        with self._lock:
+            return self._requested
+
+    def cancel(self):
+        with self._lock:
+            self._requested = True
+            callbacks = tuple(self._callbacks)
+        for callback in callbacks:
+            callback()
+
+    def subscribe(self, callback):
+        with self._lock:
+            self._callbacks.add(callback)
+            requested = self._requested
+        if requested:
+            callback()
+
+        def unsubscribe():
+            with self._lock:
+                self._callbacks.discard(callback)
+        return unsubscribe
+
+
+class _ControlInput:
+    """One idempotent EOF notification to the admitted host, including races."""
+
+    def __init__(self, stream):
+        self._lock = threading.Lock()
+        self._stream = stream
+        self.cancelled = False
+
+    def close(self, *, cancelled=False):
+        with self._lock:
+            if self._stream is not None:
+                self.cancelled |= cancelled
+                try:
+                    self._stream.close()
+                except BrokenPipeError:
+                    # The host has already closed its end; close still retires
+                    # our descriptor. No other close failure is suppressed.
+                    pass
+                self._stream = None
+
+    def cancel(self):
+        self.close(cancelled=True)
+
+
 class Commands:
     """Exclusive fixture per command; the lease outlives its process host."""
 
-    def __init__(self, records, source, host, binary=None):
+    def __init__(self, records, source, host, binary=None, *, cancellation=None):
         self.records = Path(records).resolve()
         self.source = Path(source).resolve()
         if not self.records.is_relative_to(Path("D:/lane-scratch").resolve()):
@@ -58,6 +120,7 @@ class Commands:
         self.acquired = False
         self.lease_wait_seconds = 0
         self.results = []
+        self.cancellation = cancellation
 
     def __enter__(self):
         if os.name != "nt":
@@ -128,6 +191,9 @@ class Commands:
         """Run admitted argv. Only the libtest adapter adds libtest arguments."""
         if not self.acquired:
             raise RuntimeError("Windows fleet lease is not held")
+        if self.cancellation is not None and self.cancellation.requested:
+            raise RuntimeError("Windows command step=admit cancelled before launch; "
+                               "recovery=create a new Cancellation for a new operation")
         argv = [str(value) for value in argv]
         executable = Path(argv[0])
         cwd = Path(cwd).resolve()
@@ -144,6 +210,8 @@ class Commands:
         summaries = []
         log_path = self.records / (identity + ".log")
         proc = None
+        control = None
+        unsubscribe = None
         try:
             with log_path.open("x", encoding="utf-8") as log:
                 proc = subprocess.Popen(
@@ -151,6 +219,9 @@ class Commands:
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                 )
+                control = _ControlInput(proc.stdin)
+                if self.cancellation is not None:
+                    unsubscribe = self.cancellation.subscribe(control.cancel)
                 for line in proc.stdout:
                     log.write(line)
                     log.flush()
@@ -162,17 +233,21 @@ class Commands:
             if proc is not None:
                 # EOF asks the existing host to terminate and drain its tree.
                 # Keep the fleet lease while it drains, including on exceptions.
-                proc.stdin.close()
+                if unsubscribe is not None:
+                    unsubscribe()
+                control.close()
                 proc.stdin = None
                 proc.communicate()
         elapsed = time.monotonic() - start
+        cancelled = control.cancelled
+        outcome = 130 if cancelled else rc
         verification_error = None
-        if libtest and rc == 0 and "--list" not in argv:
+        if libtest and outcome == 0 and "--list" not in argv:
             if not summaries or not any(re.search(r"\b[1-9][0-9]* passed\b", value) for value in summaries):
                 verification_error = "libtest selected ZERO passing tests: " + repr(argv)
         result = dict(
             target=name, executable=str(executable), argv=argv,
-            exit=1 if verification_error else rc, process_exit=rc,
+            exit=1 if verification_error else outcome, process_exit=rc, cancelled=cancelled,
             seconds=round(elapsed, 6), under_10s=elapsed < 10,
             lease_wait_seconds=self.lease_wait_seconds,
             summaries=summaries, sha256=sha256, fixture=identity,
@@ -191,10 +266,10 @@ class Commands:
         print("WIN_TEST_RESULT", json.dumps(result), flush=True)
         if verification_error:
             raise RuntimeError(verification_error)
-        return rc if 0 <= rc < 256 else 1
+        return outcome if 0 <= outcome < 256 else 1
 
 
-def run_tests(records, manifest, runtime):
+def run_tests(records, manifest, runtime, *, cancellation=None):
     """The libtest adapter over the same generic command custody API."""
     source = records / "source"
     fixtures = [row for row in manifest["artifacts"] if not row["test"]]
@@ -206,7 +281,7 @@ def run_tests(records, manifest, runtime):
                              records / "host-receipt.json")
     else:
         host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
-    with Commands(records, source, host, binary) as commands:
+    with Commands(records, source, host, binary, cancellation=cancellation) as commands:
         for row in manifest["artifacts"]:
             if row["test"]:
                 rc = commands.run(
