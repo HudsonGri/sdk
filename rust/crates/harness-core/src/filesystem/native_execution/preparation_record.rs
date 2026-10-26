@@ -145,6 +145,12 @@ pub fn fuzz_native_preparation_intent(
     Ok(())
 }
 
+/// Reports the shared typed admission reservation for the journal fuzz oracle.
+#[cfg(any(test, fuzzing, feature = "test-support"))]
+pub fn fuzz_native_preparation_journal_layout(input: &[u8]) -> Option<u64> {
+    crate::executor::json::layout_reservation::<MaterializationJournal>(input)
+}
+
 /// Exercises bounded journal decoding and its original allocation custody.
 #[cfg(any(test, fuzzing, feature = "test-support"))]
 pub fn fuzz_native_preparation_journal(

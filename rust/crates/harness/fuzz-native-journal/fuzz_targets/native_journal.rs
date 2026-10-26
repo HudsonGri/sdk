@@ -3,8 +3,6 @@ acyclic_test_support::counting_allocator!();
 
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../../harness-core/src/filesystem/native_execution/journal_allocation.rs"]
-mod journal_allocation;
 #[path = "../../../harness-core/src/filesystem/native_execution/journal_encoding.rs"]
 mod journal_encoding;
 #[path = "../../../harness-core/src/filesystem/native_execution/journal_verification.rs"]
@@ -12,7 +10,10 @@ mod journal_verification;
 
 fuzz_target!(|input: &[u8]| {
     if input.len() <= 65_536 {
-        let accepted = journal_verification::verify_decode(input);
+        let accepted = journal_verification::verify_decode(
+            input,
+            acyclic_harness::filesystem::fuzz_native_preparation_journal_layout(input),
+        );
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
             &acyclic_fs::CancellationToken::new(),

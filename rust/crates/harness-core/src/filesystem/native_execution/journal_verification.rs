@@ -1,7 +1,6 @@
 use acyclic_fs::MaterializationJournal;
 
-pub(crate) fn verify_decode(input: &[u8]) -> bool {
-    let bound = crate::executor::json::layout_reservation::<MaterializationJournal>(input);
+pub(crate) fn verify_decode(input: &[u8], bound: Option<u64>) -> bool {
     let mut decoded = None;
     let measured = acyclic_test_support::measure(|| {
         decoded = Some(serde_json::from_slice::<MaterializationJournal>(input));

@@ -555,7 +555,7 @@ pub(super) fn admit_typed(
 }
 /// What a typed decode of `bytes` into `T` reserves at its entry point, or
 /// `None` when admission refuses the document.
-#[cfg(test)]
+#[cfg(any(test, fuzzing, feature = "test-support"))]
 pub(crate) fn layout_reservation<T: super::layout::HeapLayout>(bytes: &[u8]) -> Option<u64> {
     let bounds = JsonBounds {
         maximum_bytes: u64::MAX,

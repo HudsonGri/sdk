@@ -42,7 +42,10 @@ mod mounted;
 mod preparation;
 mod preparation_record;
 #[cfg(any(fuzzing, feature = "test-support"))]
-pub use preparation_record::{fuzz_native_preparation_intent, fuzz_native_preparation_journal};
+pub use preparation_record::{
+    fuzz_native_preparation_intent, fuzz_native_preparation_journal,
+    fuzz_native_preparation_journal_layout,
+};
 mod publication;
 pub use allocation::NativePreparationRoot;
 pub(crate) use completion::NativePreparationCompletionTemplate;
