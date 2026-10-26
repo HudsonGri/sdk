@@ -4,7 +4,7 @@ use super::*;
 #[derive(Clone)]
 pub struct ConfiguredRecursiveAuthorityBinding {
     /// Host-owned signing identity.
-    pub issuer: AuthorityIssuer,
+    pub issuer: AuthorityRoot,
     /// Signed actor scope.
     pub scope: Scope,
 }
@@ -60,7 +60,7 @@ impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
     ) -> std::result::Result<Self, D::Error> {
         let binding = Binding::deserialize(deserializer)?;
         Ok(Self {
-            issuer: AuthorityIssuer::new(binding.issuer, binding.key, binding.authority),
+            issuer: AuthorityRoot::new(binding.issuer, binding.key, binding.authority),
             scope: binding.scope,
         })
     }
