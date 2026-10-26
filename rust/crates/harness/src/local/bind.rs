@@ -220,6 +220,7 @@ impl BoundComposition {
             runtime: Arc::new(runtime),
             root: AgentId::from_bytes([1; 16]),
             root_authority: None,
+            agent_stream: None,
             agents: tokio::sync::OnceCell::new(),
             #[cfg(feature = "grpc")]
             session: tokio::sync::OnceCell::new(),

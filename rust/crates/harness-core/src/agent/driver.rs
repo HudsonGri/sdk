@@ -41,6 +41,9 @@ pub struct OpenTurn {
     pub selected: Option<crate::projection::SelectedModelContext>,
     /// Owner of the turn's approval files; `None` when the host runs no approvals.
     pub approvals: Option<Arc<crate::approvals::AgentApprovals>>,
+    /// Effects recorded by the turn's agent tools, lowered when it settles;
+    /// `None` when the host binds no agent tools.
+    pub effects: Option<Arc<dyn super::TurnEffects>>,
 }
 
 /// Host binding of agent turns to an executor and journal.
@@ -262,9 +265,17 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     } else {
                         Wait::Input
                     };
+                    // The tools' recorded effects commit with the turn's settlement.
+                    let mut outs = match &open.effects {
+                        Some(effects) => {
+                            super::effect_outs(agent, effects.recorded().await.map_err(host_error)?)
+                        }
+                        None => Vec::new(),
+                    };
+                    outs.push(Out::Conversation(entry.encode()?));
                     TurnStep {
                         checkpoint: None,
-                        outs: vec![Out::Conversation(entry.encode()?)],
+                        outs,
                         wait,
                     }
                 }

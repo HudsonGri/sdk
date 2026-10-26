@@ -91,6 +91,10 @@ pub struct LocalHarness {
     /// use. An embedded `bind` has no signing custody, so it hosts no agents.
     root: AgentId,
     root_authority: Option<crate::core::AuthorityRoot>,
+    /// The filesystem's volume-authority stream, which every agent runs on so
+    /// that agents and their volumes share one consistency domain. An embedded
+    /// `bind` has no filesystem of its own, so it hosts no agents.
+    agent_stream: Option<Arc<LocalStream>>,
     agents: tokio::sync::OnceCell<agents::Hosted>,
     #[cfg(feature = "grpc")]
     session: tokio::sync::OnceCell<LocalSession>,

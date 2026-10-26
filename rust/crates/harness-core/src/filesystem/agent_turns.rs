@@ -8,16 +8,17 @@
 //! so the executor can dispatch no other history.
 
 use super::{
+    agent_effects::FilesystemTurnEffects, agent_internal::AgentInternalFiles,
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
     FilesystemHost, FilesystemJournalBinding,
 };
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, TurnStop},
-    conversation::{ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner},
+    conversation::{FileRef, ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityRoot, SchemaRegistry, Scope},
     executor::{ExecutionJournal, Executor, TurnOutput},
-    model::{ModelContent, ModelMessage, ModelRole},
+    model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
     runtime::ContentBindings,
 };
@@ -44,6 +45,8 @@ pub struct TurnAuthority {
     pub content: ContentBindings,
     /// Approval gate of the agent's policy file; without one every tool runs.
     pub approval: Option<Arc<dyn crate::runtime::ToolPolicy>>,
+    /// Where the turn's agent tools record their effects.
+    pub effects: Option<Arc<dyn crate::agent::TurnEffects>>,
 }
 
 /// Builds the executor of one agent turn: its tools, context, policy, limits
@@ -160,18 +163,22 @@ where
         approved: bool,
         reason: Option<String>,
     ) -> Result<()> {
-        let (_, authority, files) = self.journal(agent)?;
+        let (_, authority, files) = self.journal(agent, None)?;
         let (policy, _) = self.approvals(agent, &authority.content).await?;
         crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
     }
 
+    /// The journal and authority of `agent`'s turns. A turn's `input` file on
+    /// a volume the agent does not bind (a message from another agent) is
+    /// granted to it alone, by its exact version.
     fn journal(
         &self,
         agent: &AgentState,
+        input: Option<&FileRef>,
     ) -> Result<(
         FilesystemExecutionJournal<P, A, O>,
         TurnAuthority,
-        Arc<dyn crate::approvals::ApprovalFiles>,
+        Arc<AgentInternalFiles<A, O>>,
     )> {
         let owner = crate::AgentId::from_bytes(agent.path.id().to_bytes());
         let private = agent
@@ -190,9 +197,16 @@ where
         });
         let mut grants = Vec::with_capacity(2 * agent.volumes.len() + 1);
         grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
+        // Every agent may spawn, message and archive within its own subtree.
+        grants.extend(crate::tools::AGENT_TOOLS.map(crate::contract::capability::tool_call));
         for binding in &agent.volumes {
             grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
             grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
+        }
+        if let Some(file) = input
+            && !agent.volumes.iter().any(|binding| binding.volume == *file.volume())
+        {
+            grants.push(file.read_capability(&mut None)?);
         }
         let capabilities = Capabilities::new(grants);
         let scope = issuer.bootstrap_scope("agent", &capabilities, Some(owner), &mut None)?;
@@ -225,7 +239,7 @@ where
             },
         )?
         .with_input_verifier(reader.clone());
-        let approvals = super::agent_approvals::AgentApprovalFiles::new(
+        let internal = AgentInternalFiles::new(
             Arc::clone(&self.host),
             private.volume.clone(),
             crate::conversation::ContentGrant::verify(
@@ -248,8 +262,9 @@ where
                     writer: Some(writer),
                 },
                 approval: None,
+                effects: None,
             },
-            Arc::new(approvals),
+            Arc::new(internal),
         ))
     }
 
@@ -354,16 +369,37 @@ where
         stop: Arc<TurnStop>,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
-            let (journal, mut authority, files) = self.journal(agent)?;
+            let file = match input {
+                ModelContent::Part(ModelContentPart::File { file, .. }) => Some(file),
+                _ => None,
+            };
+            let (journal, mut authority, files) = self.journal(agent, file)?;
+            authority.effects = Some(Arc::new(FilesystemTurnEffects::new(
+                Arc::clone(&files),
+                Arc::clone(&self.stream),
+                agent.path.clone(),
+                turn,
+                self.limits.maximum_bytes,
+            )) as Arc<dyn crate::agent::TurnEffects>);
             let (policy, configured) = self.approvals(agent, &authority.content).await?;
             authority.approval = configured
                 .map(|policy| policy.bind().map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>))
                 .transpose()?;
             let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
+            let effects = authority.effects.clone();
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
-            let history = self.history(agent).await?;
+            // An inherited turn staged its output on an ancestor's private
+            // volume, which this agent's grants do not reach; the model
+            // context holds this agent's own settled turns.
+            let own = authority.content.writer.as_ref().map(|writer| writer.volume().clone());
+            let history = self
+                .history(agent)
+                .await?
+                .into_iter()
+                .filter(|entry| Some(entry.output.volume()) == own.as_ref())
+                .collect();
             let selected = select(agent, &journal, history, turn, input).await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
@@ -379,6 +415,7 @@ where
                 custody: Some(authority.issuer),
                 selected,
                 approvals: Some(approvals),
+                effects,
             })
         })
     }

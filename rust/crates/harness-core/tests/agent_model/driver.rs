@@ -145,6 +145,7 @@ impl TurnHost for Host {
             custody: None,
             selected: None,
             approvals: None,
+            effects: None,
         };
         Box::pin(async move { Ok(open) })
     }

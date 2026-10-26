@@ -21,6 +21,8 @@ struct Storage {
     directory: PathBuf,
     owner: owner::Owner,
     files: Arc<LocalFilesystem>,
+    /// The Stream provider holding the filesystem's volume authority.
+    volume_stream: Arc<LocalStream>,
     scratch: VolumeRef,
     journal: VolumeRef,
     task_volume: VolumeRef,
@@ -212,6 +214,7 @@ impl Opening {
             _ => acyclic_fs::Fs::local(options).await,
         }
         .map_err(storage)?;
+        let volume_stream = filesystem.stream_provider();
         let provider_ref = owner.project.provider();
         let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
         let issuer = AuthorityRoot::bootstrap(
@@ -263,6 +266,7 @@ impl Opening {
             directory,
             owner,
             files,
+            volume_stream,
             scratch,
             journal,
             task_volume,
@@ -340,6 +344,7 @@ impl Opening {
             directory,
             owner,
             files,
+            volume_stream,
             scratch,
             journal,
             task_volume,
@@ -401,6 +406,7 @@ impl Opening {
             runtime,
             root: owner.agent,
             root_authority: Some(issuer.clone()),
+            agent_stream: Some(volume_stream),
             agents: tokio::sync::OnceCell::new(),
             #[cfg(feature = "grpc")]
             session: tokio::sync::OnceCell::new(),

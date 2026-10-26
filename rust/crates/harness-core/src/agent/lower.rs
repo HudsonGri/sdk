@@ -78,9 +78,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         .ok_or(Error::Record("conversation tail precedes its appends"))?;
     for out in &step.outs {
         if let Out::Spawn {
-            intent,
-            brief,
-            volumes,
+            intent, volumes, ..
         } = out
         {
             let spawn = commit::spawn(
@@ -93,7 +91,9 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
                     forked_at: cursor,
                     conversation_tail: prior_conversation,
                     volumes: volumes.clone(),
-                    brief: brief.as_deref().cloned(),
+                    // The brief is a file in the child's private volume,
+                    // whose version exists only once this commit seals.
+                    brief: None,
                     policy: state.policy.clone(),
                 },
             )?;

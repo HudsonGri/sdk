@@ -224,7 +224,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
                     .map_err(|_| Error::Record("agent checkpoint is malformed"))
             })
             .transpose()?;
-        let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
+        let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
             (Trigger::Record { sequence, .. }, Some(record)) => (
                 Wake::Inbox {
                     sequence: *sequence,
@@ -254,6 +254,15 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             },
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         };
+        // A spawned child names the brief its private volume was created with.
+        if let (None, Some(volumes), Wake::Inbox { record: InboxRecord::ForkAdopted(adopted), .. }) =
+            (&saved, &self.volumes, &mut wake)
+            && adopted.parent.is_some()
+            && adopted.brief.is_none()
+        {
+            let brief = volumes.brief(&path, &adopted.volumes).await?;
+            adopted.brief = brief;
+        }
         let mut state = saved.map(|saved| saved.state);
         if let Some(state) = state.as_mut() {
             // Overflowed input precedes this delivery; read it back first.

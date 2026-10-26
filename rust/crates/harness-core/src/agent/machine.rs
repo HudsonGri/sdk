@@ -202,8 +202,9 @@ pub enum Out {
     Spawn {
         /// Spawning intent; names the child.
         intent: IntentId,
-        /// Task brief.
-        brief: Option<Box<FileRef>>,
+        /// Task brief bytes; [`super::SpawnVolumes`] creates the child's private
+        /// volume holding them, and the child names that file at adoption.
+        brief: Option<Vec<u8>>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
     },

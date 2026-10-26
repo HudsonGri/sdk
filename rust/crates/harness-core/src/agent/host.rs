@@ -8,8 +8,8 @@
 //! ([`AgentPath::status`], [`AgentPath::conversation`]) any client follows.
 
 use super::{
-    AgentHandler, AgentPath, Error, ForkAdopted, InboxRecord, IntentId, Sender, Submitted,
-    TurnDriver, archive, inbox_tail, send, submit,
+    AgentHandler, AgentPath, Error, ForkAdopted, InboxRecord, IntentId, Sender, SpawnVolumes,
+    Submitted, TurnDriver, archive, inbox_tail, send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -55,14 +55,40 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
         limits: ActorLimits,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, Error> {
+        Self::build(provider, driver, within, limits, clock, None)
+    }
+
+    /// Host whose spawns create each child's volumes through `volumes`, in the
+    /// spawn's commit; `volumes` must place them in `provider`'s domain.
+    pub fn with_spawn_volumes(
+        provider: Arc<P>,
+        driver: D,
+        within: ActorReference,
+        limits: ActorLimits,
+        clock: Arc<dyn Clock>,
+        volumes: Arc<dyn SpawnVolumes>,
+    ) -> Result<Self, Error> {
+        Self::build(provider, driver, within, limits, clock, Some(volumes))
+    }
+
+    fn build(
+        provider: Arc<P>,
+        driver: D,
+        within: ActorReference,
+        limits: ActorLimits,
+        clock: Arc<dyn Clock>,
+        volumes: Option<Arc<dyn SpawnVolumes>>,
+    ) -> Result<Self, Error> {
         let store = || -> Result<Store<P>, Error> {
             let root = StreamPath::new(super::ACTORS).map_err(|_| Error::Path("actor root"))?;
             Ok(Store::new(provider.clone(), root))
         };
-        let handler = Arc::new(
-            AgentHandler::new(store()?, driver, limits)
-                .map_err(|_| Error::Record("agent handler manifest"))?,
-        );
+        let handler = AgentHandler::new(store()?, driver, limits)
+            .map_err(|_| Error::Record("agent handler manifest"))?;
+        let handler = Arc::new(match volumes {
+            Some(volumes) => handler.with_spawn_volumes(volumes),
+            None => handler,
+        });
         let runtime = Runtime::new(store()?, handler.clone() as Arc<dyn Handler>, clock);
         Ok(Self {
             provider,
