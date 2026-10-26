@@ -83,12 +83,12 @@ impl TurnExecutors for Executors {
                 authority.content.clone(),
             )?;
             let reader = authority.content.reader.clone();
-            let provider = local
-                .provider
+            let (model, provider) = local.agent()?;
+            let provider = provider
                 .bind_content(reader.clone(), local.limits.file_bytes)
-                .unwrap_or_else(|| local.provider.clone());
+                .unwrap_or_else(|| provider.clone());
             let executor = StockExecutor::new(
-                local.model.clone(),
+                model.clone(),
                 provider,
                 crate::context::ContextPipeline::default(),
                 local.tools().clone(),
@@ -165,10 +165,10 @@ impl LocalHarness {
     }
 
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
-        let authority = self.agent_authority.clone().ok_or_else(|| {
+        let authority = self.root_authority.clone().ok_or_else(|| {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
-        let id = crate::agent::AgentId::from_bytes(self.agent.into_bytes());
+        let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
         let stream = self.runtime.task_host().workflow_stream();
         let limits = TurnLimits {
             maximum_bytes: self.limits.file_bytes,
