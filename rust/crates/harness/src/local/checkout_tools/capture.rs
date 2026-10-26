@@ -9,7 +9,6 @@ use acyclic_fs::{
 };
 use std::time::Duration;
 
-mod arrivals;
 mod converge;
 #[cfg(test)]
 #[cfg(not(acyclic_harness_loom))]
@@ -24,8 +23,6 @@ pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
     unreadable_diff_source: bool,
-    #[cfg(target_os = "macos")]
-    work: acyclic_fs::NativeMaterializationWork,
     #[cfg(all(test, not(acyclic_harness_loom)))]
     injection: Option<tests::Injection>,
 }
@@ -37,28 +34,11 @@ impl Cursor {
         // the checkout. Register directories once; subsequent commands consume
         // only push hints on this persistent watcher.
         let mut options = NativeWatchOptions::new(config.limits);
-        // FSEvents observes the whole root recursively. Inotify and Windows
-        // register individual directories as capture discovers them.
-        options.recursive = cfg!(target_os = "macos");
-        #[cfg(not(target_os = "macos"))]
+        // The shared watcher admits each discovered directory. A producer
+        // which already covers the subtree reuses its existing registration.
+        options.recursive = false;
         let mut watcher = NativeWatch::open_with_profile(&workspace.path, config.profile, options)
             .map_err(storage)?;
-        // FSEvents' held-source adapter requires retained native custody. Linux
-        // and Windows already select their held source for a nonrecursive watch.
-        #[cfg(target_os = "macos")]
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| storage(cause))?;
-        #[cfg(target_os = "macos")]
-        let mut watcher = NativeWatch::open_with_profile_with_native_work(
-            &workspace.path,
-            config.profile,
-            options,
-            &work,
-        )
-        .map_err(storage)?;
         watcher
             .exclude_subtrees(policy.excluded_prefixes())
             .map_err(storage)?;
@@ -66,8 +46,6 @@ impl Cursor {
             watcher,
             initial: None,
             unreadable_diff_source: false,
-            #[cfg(target_os = "macos")]
-            work,
             #[cfg(all(test, not(acyclic_harness_loom)))]
             injection: None,
         })
@@ -75,9 +53,9 @@ impl Cursor {
 
     pub(super) fn initial(workspace: &LocalWorkspace, policy: &CapturePolicy) -> Result<Self> {
         let mut cursor = Self::open(workspace, policy)?;
-        cursor.watcher.begin_rescan().map_err(storage)?;
+        let rescan = cursor.watcher.begin_rescan().map_err(storage)?;
         cursor.watcher.watch_tree(EXCLUDED).map_err(storage)?;
-        cursor.initial = Some(cursor.watcher.finish_rescan().map_err(storage)?);
+        cursor.initial = Some(cursor.watcher.finish_rescan(rescan).map_err(storage)?);
         Ok(cursor)
     }
 }
@@ -119,7 +97,7 @@ impl CheckoutTools {
             // A file publication's physical write is owed a capture of its own.
             // Finish it first, so this capture never records that write.
             self.finish_owed_write(selected, slot, permit)?.await?;
-            self.capture_changes(selected, slot, operation, phase, permit)?
+            self.capture_changes(selected, slot, operation, phase, permit, None)?
                 .await
         })
     }
@@ -147,7 +125,8 @@ impl CheckoutTools {
 
     /// Captures a file publication's physical write under the write's own
     /// operation while its staged generation is still the head, then clears
-    /// the debt. Once the head has moved on nothing is left to capture.
+    /// the debt. A durable companion receipt also acknowledges a clean capture,
+    /// so replay cannot capture a later edit under this write's identity.
     #[inline(never)]
     pub(in crate::local) fn finish_owed_write<'a>(
         &'a self,
@@ -161,19 +140,38 @@ impl CheckoutTools {
                 return Ok(());
             };
             let (operation, staged) = owed;
+            let cancellation = CancellationToken::new();
+            let operation = OperationId::from_bytes(operation.into_bytes());
+            let completed = view
+                .workspace()
+                .operation_generation(
+                    acyclic_fs::IdempotencyKey::from_bytes(
+                        capture_operation(operation, 1).into_bytes(),
+                    ),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .is_some();
             let head = view
                 .workspace()
-                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .head(WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?
                 .value;
-            if staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
+            if !completed
+                && staged.workspace_id == view.workspace().id()
+                && head.id() == staged.generation
+            {
                 self.capture_changes(
                     selected,
                     slot,
-                    OperationId::from_bytes(operation.into_bytes()),
+                    operation,
                     1,
                     permit,
+                    Some(staged.generation.digest()),
                 )?
                 .await?;
             }
@@ -189,6 +187,7 @@ impl CheckoutTools {
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
+        publication_context: Option<acyclic_fs::Digest>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let (physical, view) = selected;
@@ -230,12 +229,12 @@ impl CheckoutTools {
                 &cancellation,
             )?
             .await?;
-            if checkout.has_pending_mutations() {
+            if checkout.has_pending_mutations() || publication_context.is_some() {
                 let operation = capture_operation(operation, phase);
                 let committed = checkout
                     .commit(
                         operation,
-                        None,
+                        publication_context,
                         None,
                         None,
                         permit,

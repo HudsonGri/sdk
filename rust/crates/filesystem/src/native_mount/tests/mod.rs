@@ -7,6 +7,14 @@ use crate::model::{
 use crate::{ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget};
 use std::time::{Duration, Instant};
 
+pub(in crate::native_mount) mod fixture_access {
+    use crate as acyclic_fs;
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/native_access.rs"
+    ));
+}
+
 pub(super) async fn memory_volume(
     id: VolumeId,
     config: VolumeConfig,
@@ -105,3 +113,4 @@ mod capture;
 pub(super) mod fence;
 #[cfg(all(target_os = "linux", not(acyclic_fs_native_loom)))]
 mod recovery_bootstrap;
+pub(in crate::native_mount) mod retirement;

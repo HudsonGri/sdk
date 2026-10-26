@@ -1,5 +1,6 @@
 use super::*;
 use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
+use crate::native_mount::retirement::SourceRetirementWait;
 use crate::native_mount::{NativeMountRetirement, NativeSessionStopWork};
 use crate::{
     NativeAllocation, NativeMaterializationWork, NativeRootIdentity, NativeWorkReservation,
@@ -22,7 +23,7 @@ pub(super) struct FuseSessionState {
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
     pub(super) cleanup: NativeWorkReservation,
-    pub(super) failure: Option<NativeMountError>,
+    pub(super) failure: crate::native_mount::retirement::TerminalFailures,
     pub(super) _allocation: NativeAllocation,
 }
 
@@ -41,6 +42,7 @@ impl FuseSessionState {
         &mut self,
         core: &Arc<ProjectionCore>,
         work: Option<&NativeMaterializationWork>,
+        join: SourceRetirementWait,
     ) -> Result<(), NativeMountError> {
         if self.is_retired() {
             return Ok(());
@@ -82,17 +84,22 @@ impl FuseSessionState {
         self.before.take();
         if self.worker.is_some() {
             started(ReadOperations.delta(1))?;
-            self.worker
+            self.failure.producer = self
+                .worker
                 .take()
                 .ok_or(NativeMountError::FuseShutdownFailed)?
                 .join()
                 .map_err(|panic| NativeMountError::DriverPanicked {
                     operation: "FUSE SDK request worker",
                     panic: Mutex::new(panic),
-                })??;
+                })
+                .and_then(|result| result.map_err(NativeMountError::from))
+                .err();
+            // The worker has physically exited even when its terminal value
+            // failed. The same owner must still retire its source and fence.
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire(None)?;
+            retirement.retire(None, join)?;
         }
         Ok(())
     }
@@ -172,7 +179,7 @@ impl FuseSession {
             identity: None,
             retirement: None,
             cleanup,
-            failure: None,
+            failure: crate::native_mount::retirement::TerminalFailures::default(),
             _allocation: allocation,
         }));
         let job = (Arc::clone(&core), Arc::clone(&state));
@@ -295,25 +302,19 @@ impl FuseSession {
     pub(in crate::native_mount) fn stop(
         &mut self,
         work: &NativeSessionStopWork<'_>,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<crate::native_mount::retirement::TerminalFailures, NativeMountError> {
         let meter = match work {
             NativeSessionStopWork::Meter(work) => {
                 work.admit(WorkCounters::UNCHARGED)?;
                 Some(*work)
             }
-            NativeSessionStopWork::AcceptedWait(wait) => {
-                wait.check().map_err(|_| crate::DemandError::Cancelled)?;
+            NativeSessionStopWork::AcceptedWait(_) | NativeSessionStopWork::AcceptedDrop => {
+                work.check_wait()?;
                 None
             }
         };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if meter.is_none()
-            && let Some(error) = state.failure.take()
-        {
-            return Err(error);
-        }
-        state.stop(&self.core, meter)?;
-        state.failure.take();
+        state.stop(&self.core, meter, SourceRetirementWait::Caller)?;
         if self.invalidator.is_some() {
             state.cleanup.started_io(ReadOperations.delta(1), None)?;
         }
@@ -326,7 +327,8 @@ impl FuseSession {
                     panic: Mutex::new(panic),
                 })?;
         }
-        Ok(())
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(std::mem::take(&mut state.failure))
     }
 }
 
@@ -352,8 +354,10 @@ pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<Fu
         drop(projection);
     }
     let mut retiring = state.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Err(error) = retiring.stop(&core, None) {
-        retiring.failure.get_or_insert(error);
+    if let Err(error) = retiring.stop(&core, None, SourceRetirementWait::Physical) {
+        // This physical worker executes the retirement pass once. Its cleanup
+        // cause is distinct from the namespace worker's already-owned cause.
+        retiring.failure.cleanup = Some(error);
     }
     drop(retiring);
     // A refused cleanup keeps the original source, fence and join handles owned.

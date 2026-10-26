@@ -53,7 +53,7 @@ pub(super) use paths::update_time;
 use paths::*;
 
 #[cfg(test)]
-mod tests;
+pub(in crate::native_mount) mod tests;
 
 pub(super) use cleanup::DarwinRecoveryControl;
 pub(super) use session::DarwinMountSession;
@@ -74,6 +74,7 @@ use context::*;
 
 mod requests;
 use requests::*;
+pub(super) use requests::{callback_errno, fatal};
 
 mod protocol;
 use protocol::*;

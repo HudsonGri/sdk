@@ -238,65 +238,11 @@ impl ModelProvider for ScaleProvider {
     }
 }
 
-/// Process-wide OS resources, read from procfs where available.
-#[derive(Clone, Copy, Debug, Default)]
-struct Resources {
-    rss: u64,
-    threads: u64,
-    fds: u64,
-    mounts: u64,
-    watches: u64,
-    cpu_ticks: u64,
-}
-
-#[cfg(target_os = "linux")]
-fn resources() -> Resources {
-    Resources {
-        watches: std::fs::read_dir("/proc/self/fdinfo").map_or(0, |entries| {
-            entries
-                .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path()).ok())
-                .map(|info| {
-                    info.lines()
-                        .filter(|line| line.starts_with("inotify"))
-                        .count() as u64
-                })
-                .sum()
-        }),
-        ..sample()
-    }
-}
-
-/// Cheap counters for the concurrent sampler; inotify watches are read once at the end.
-#[cfg(target_os = "linux")]
-fn sample() -> Resources {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let field = |name: &str| {
-        status
-            .lines()
-            .find_map(|line| line.strip_prefix(name))
-            .and_then(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
-            .unwrap_or(0)
-    };
-    let fds = std::fs::read_dir("/proc/self/fd").map_or(0, |entries| entries.count() as u64);
-    let mounts =
-        std::fs::read_to_string("/proc/self/mountinfo").map_or(0, |m| m.lines().count() as u64);
-    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
-    let cpu_ticks = stat.rsplit(')').next().map_or(0, |rest| {
-        rest.split_whitespace()
-            .skip(11)
-            .take(2)
-            .filter_map(|tick| tick.parse::<u64>().ok())
-            .sum()
-    });
-    Resources {
-        rss: field("VmRSS:") * 1024,
-        threads: field("Threads:"),
-        fds,
-        mounts,
-        watches: 0,
-        cpu_ticks,
-    }
-}
+use acyclic_native_runtime::resources::ResourceSampler;
+use acyclic_native_runtime::resources::{
+    ProcessResources as Resources, process_resources as resources,
+    sample_process_resources as sample,
+};
 
 #[cfg(target_os = "linux")]
 fn diagnose(root: &Path) {
@@ -364,16 +310,6 @@ threads={threads:#?}"
 #[cfg(not(target_os = "linux"))]
 fn diagnose(_: &Path) {}
 
-#[cfg(not(target_os = "linux"))]
-fn resources() -> Resources {
-    Resources::default()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn sample() -> Resources {
-    Resources::default()
-}
-
 fn disk_bytes(path: &Path) -> (u64, u64) {
     let mut bytes = 0;
     let mut files = 0;
@@ -429,7 +365,7 @@ struct Report {
     baseline: Resources,
     peak: Resources,
     idle: Resources,
-    idle_cpu_ticks: u64,
+    idle_cpu_centiseconds: u64,
     disk_bytes: u64,
     disk_files: u64,
     first_p50: Duration,
@@ -446,17 +382,17 @@ impl Report {
         println!(
             "scale agents={} elapsed={:?} rss/agent idle={}B peak={}B threads={}->{} idle={} fds={}->{} idle={} \
              mounts={}->{} watches={}->{} disk/agent={}B files/agent={} spawn p50={:?} p99={:?} \
-             turn p50={:?} p99={:?} idle cpu ticks/s={}",
+             turn p50={:?} p99={:?} idle cpu centiseconds/s={}",
             self.agents,
             self.elapsed,
-            self.per_agent(|r| r.rss, &self.idle),
-            self.per_agent(|r| r.rss, &self.peak),
+            self.per_agent(|r| r.memory_bytes, &self.idle),
+            self.per_agent(|r| r.memory_bytes, &self.peak),
             self.baseline.threads,
             self.peak.threads,
             self.idle.threads,
-            self.baseline.fds,
-            self.peak.fds,
-            self.idle.fds,
+            self.baseline.descriptors,
+            self.peak.descriptors,
+            self.idle.descriptors,
             self.baseline.mounts,
             self.peak.mounts,
             self.baseline.watches,
@@ -467,7 +403,7 @@ impl Report {
             self.first_p99,
             self.turn_p50,
             self.turn_p99,
-            self.idle_cpu_ticks,
+            self.idle_cpu_centiseconds,
         );
     }
 }
@@ -490,24 +426,8 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
         timings: Arc::default(),
         content: None,
     });
-    let baseline = resources();
-    let peak = Arc::new(Mutex::new(baseline));
-    let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let sampler = {
-        let (peak, sampling) = (peak.clone(), sampling.clone());
-        std::thread::spawn(move || {
-            while sampling.load(std::sync::atomic::Ordering::Relaxed) {
-                let now = sample();
-                let mut peak = peak.lock().unwrap_or_else(PoisonError::into_inner);
-                peak.rss = peak.rss.max(now.rss);
-                peak.threads = peak.threads.max(now.threads);
-                peak.fds = peak.fds.max(now.fds);
-                peak.mounts = peak.mounts.max(now.mounts);
-                drop(peak);
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        })
-    };
+    let baseline = resources().map_err(storage)?;
+    let sampler = ResourceSampler::start(baseline, Duration::from_millis(100)).map_err(storage)?;
     let started = Instant::now();
     let mut running = tokio::task::JoinSet::new();
     for agent in 0..agents {
@@ -519,25 +439,33 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
             Ok::<_, Error>((harness, output))
         });
     }
-    let mut idle_agents = Vec::new();
-    while let Some(output) = running.join_next().await {
-        let (harness, output) = output.map_err(storage)??;
-        assert!(output.text.starts_with("done "), "{output:?}");
-        idle_agents.push(harness);
+    // Stop and join the sampler even when an agent fails. An external-tool
+    // failure must not leave a detached observer consuming process resources.
+    let completed = async {
+        let mut idle_agents = Vec::new();
+        while let Some(output) = running.join_next().await {
+            let (harness, output) = output.map_err(storage)??;
+            if !output.text.starts_with("done ") {
+                return Err(Error::Invalid(format!(
+                    "scale agent did not complete: {output:?}"
+                )));
+            }
+            idle_agents.push(harness);
+        }
+        Ok::<_, Error>(idle_agents)
     }
+    .await;
     let elapsed = started.elapsed();
-    sampling.store(false, std::sync::atomic::Ordering::Relaxed);
-    sampler
-        .join()
-        .map_err(|_| Error::Storage("resource sampler panicked".into()))?;
+    let mut peak = sampler.finish().map_err(storage)?;
+    let idle_agents = completed?;
     if crate::native_environment::variable("ACYCLIC_SCALE_DIAG").is_some() {
         diagnose(directory);
     }
-    let before_idle = resources();
+    let before_idle = resources().map_err(storage)?;
     let idle_ms = setting("ACYCLIC_SCALE_IDLE_MS").unwrap_or(500);
     println!("scale idle begin pid={}", std::process::id());
     tokio::time::sleep(Duration::from_millis(idle_ms)).await;
-    let idle = resources();
+    let idle = resources().map_err(storage)?;
     let (disk_bytes, disk_files) = disk_bytes(directory);
     let mut timings = std::mem::take(
         &mut *provider
@@ -546,7 +474,6 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
             .unwrap_or_else(PoisonError::into_inner),
     );
     drop(idle_agents);
-    let mut peak = *peak.lock().unwrap_or_else(PoisonError::into_inner);
     peak.watches = idle.watches;
     Ok(Report {
         agents: agents * (1 + children as u64),
@@ -554,7 +481,8 @@ async fn run_agents(agents: u64, children: usize, directory: &Path) -> Result<Re
         baseline,
         peak,
         idle,
-        idle_cpu_ticks: (idle.cpu_ticks - before_idle.cpu_ticks) * 1000 / idle_ms,
+        idle_cpu_centiseconds: (idle.cpu_centiseconds - before_idle.cpu_centiseconds) * 1000
+            / idle_ms,
         disk_bytes,
         disk_files,
         first_p50: percentile(&mut timings.first, 50),
@@ -604,8 +532,8 @@ mod bounds {
 impl Report {
     fn assert_bounds(&self) {
         use bounds::*;
-        let idle_rss = self.per_agent(|r| r.rss, &self.idle);
-        let idle_fds = self.per_agent(|r| r.fds, &self.idle);
+        let idle_rss = self.per_agent(|r| r.memory_bytes, &self.idle);
+        let idle_fds = self.per_agent(|r| r.descriptors, &self.idle);
         let watches = self.per_agent(|r| r.watches, &self.idle);
         let threads = PerAgent::of(
             self.idle
@@ -688,5 +616,34 @@ fn ramp() -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         let _ = report;
     }
+    Ok(())
+}
+
+#[test]
+fn scale_resource_sampling_observes_the_real_host() -> Result<()> {
+    let baseline = resources().map_err(storage)?;
+    assert!(
+        baseline.memory_bytes > 0,
+        "scale must measure resident/private memory on this host"
+    );
+    assert!(
+        baseline.threads > 0,
+        "scale must measure actual process threads"
+    );
+    assert!(
+        baseline.descriptors > 0,
+        "scale must measure actual descriptors/handles"
+    );
+    assert!(
+        baseline.mounts > 0,
+        "scale must measure actual mounted volumes"
+    );
+    let file = tempfile::NamedTempFile::new().map_err(storage)?;
+    assert!(
+        acyclic_native_runtime::resources::descriptors_naming(file.path()).map_err(storage)? > 0,
+        "the shared sampler must observe the live fixture handle"
+    );
+    let sampled = sample().map_err(storage)?;
+    assert!(sampled.memory_bytes > 0 && sampled.threads > 0 && sampled.descriptors > 0);
     Ok(())
 }
