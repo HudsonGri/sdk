@@ -1,37 +1,218 @@
 use super::*;
 
 #[cfg(not(acyclic_loom))]
+fn alarm(
+    generation: u64,
+    deadline_unix_ms: Option<u64>,
+    delivered_generation: Option<u64>,
+) -> super::super::Alarm {
+    super::super::Alarm {
+        generation,
+        deadline_unix_ms,
+        delivered_generation,
+    }
+}
+
+#[cfg(not(acyclic_loom))]
 #[test]
-fn replay_coalescing_and_hibernation_have_bounded_ownership() -> Result<(), super::super::Error> {
+fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
+-> Result<(), super::super::Error> {
     let set = ReadySet::default();
-    let registration = set.register(7)?;
-    assert_eq!(set.counts(), (1, 1), "registered subscriptions must start with replay");
-    let wake = registration.waker();
-    for _ in 0..100 { wake.wake_by_ref(); }
-    assert_eq!(set.counts(), (1, 1));
-    let work = set.take().ok_or(super::super::Error::Invalid("missing initial replay"))?;
-    assert_eq!(*work.key(), 7);
-    wake.wake_by_ref();
+    let first = set.register(1)?;
+    let second = set.register(2)?;
+    let third = set.register(3)?;
+    while let Some(work) = set.take() {
+        drop(work);
+    }
+    first.update_alarm(&alarm(1, Some(20), None))?;
+    second.update_alarm(&alarm(1, Some(30), None))?;
+    third.update_alarm(&alarm(1, Some(40), None))?;
+    first.update_alarm(&alarm(2, Some(50), None))?;
+    assert_eq!(
+        set.alarm_count(),
+        3,
+        "replacement must remove the old timer node"
+    );
+    assert_eq!(set.next_deadline(), Some(30));
+    assert_eq!(
+        set.wake_due(25, 10),
+        0,
+        "replaced deadline must never become ready"
+    );
+    assert_eq!(
+        set.wake_due(100, 1),
+        1,
+        "work budget must bound overdue processing"
+    );
+    let work = set
+        .take()
+        .ok_or(super::super::Error::Invalid("missing due work"))?;
+    assert_eq!(*work.key(), 2);
     drop(work);
-    assert_eq!(set.counts(), (1, 1), "append during replay must survive parking");
-    drop(set.take());
-    assert_eq!(set.counts(), (1, 0));
-    drop(registration);
-    wake.wake_by_ref();
-    assert_eq!(set.counts(), (0, 0), "retired wake cannot recreate registration");
+    assert_eq!(set.alarm_count(), 2);
+    second.update_alarm(&alarm(1, Some(30), Some(1)))?;
+    assert!(
+        matches!(
+            second.update_alarm(&alarm(1, Some(30), None)),
+            Err(super::super::Error::Conflict)
+        ),
+        "consumed generation cannot be made eligible again"
+    );
+    drop(third);
+    assert_eq!(
+        set.alarm_count(),
+        1,
+        "cancellation must unlink the actual due node"
+    );
+    assert_eq!(set.next_deadline(), Some(50));
+    assert_eq!(set.wake_due(50, 0), 0);
+    assert_eq!(set.wake_due(50, 1), 1);
+    assert_eq!(set.alarm_count(), 0);
+    assert!(set.next_deadline().is_none());
     Ok(())
 }
 
 #[cfg(not(acyclic_loom))]
 #[test]
-fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries() -> Result<(), super::super::Error> {
+fn due_wake_survives_running_work_but_cleared_and_stale_generations_do_not_rearm()
+-> Result<(), super::super::Error> {
+    let set = ReadySet::default();
+    let registration = set.register(7)?;
+    let work = set
+        .take()
+        .ok_or(super::super::Error::Invalid("missing replay"))?;
+    registration.update_alarm(&alarm(1, Some(10), None))?;
+    assert_eq!(set.wake_due(10, 1), 1);
+    registration.update_alarm(&alarm(2, Some(20), None))?;
+    assert!(
+        matches!(
+            registration.update_alarm(&alarm(1, Some(10), None)),
+            Err(super::super::Error::Conflict)
+        ),
+        "old durable observations cannot replace a newer alarm"
+    );
+    drop(work);
+    assert_eq!(
+        set.counts(),
+        (1, 1),
+        "due while running must survive parking"
+    );
+    drop(set.take());
+    registration.update_alarm(&alarm(3, None, None))?;
+    assert_eq!(
+        set.wake_due(100, 10),
+        0,
+        "clear must remove the replacement's due node"
+    );
+    assert_eq!(set.counts(), (1, 0));
+    assert_eq!(set.alarm_count(), 0);
+    Ok(())
+}
+
+#[cfg(not(acyclic_loom))]
+#[test]
+fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), super::super::Error> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Signal {
+        core: Arc<Core<u64>>,
+        wakes: AtomicUsize,
+    }
+    impl Wake for Signal {
+        fn wake(self: Arc<Self>) {
+            assert!(
+                self.core.index.try_lock().is_ok(),
+                "dispatcher callback must run after publication unlock"
+            );
+            self.wakes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let mut set = ReadySet::default();
+    let registration = set.register(7_u64)?;
+    drop(set.take());
+    let signal = Arc::new(Signal {
+        core: Arc::clone(&set.core),
+        wakes: AtomicUsize::new(0),
+    });
+    let waker = Waker::from(Arc::clone(&signal));
+    assert!(
+        set.poll_ready(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    registration.update_alarm(&alarm(1, Some(100), None))?;
+    assert!(
+        set.poll_ready(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    registration.update_alarm(&alarm(2, Some(50), None))?;
+    assert_eq!(
+        signal.wakes.load(Ordering::SeqCst),
+        2,
+        "an earlier committed deadline must rearm the shared dispatcher"
+    );
+    assert_eq!(set.next_deadline(), Some(50));
+    assert_eq!(
+        set.counts(),
+        (1, 0),
+        "installing a future alarm does not execute a handler"
+    );
+    Ok(())
+}
+
+#[cfg(not(acyclic_loom))]
+#[test]
+fn replay_coalescing_and_hibernation_have_bounded_ownership() -> Result<(), super::super::Error> {
+    let set = ReadySet::default();
+    let registration = set.register(7)?;
+    assert_eq!(
+        set.counts(),
+        (1, 1),
+        "registered subscriptions must start with replay"
+    );
+    let wake = registration.waker();
+    for _ in 0..100 {
+        wake.wake_by_ref();
+    }
+    assert_eq!(set.counts(), (1, 1));
+    let work = set
+        .take()
+        .ok_or(super::super::Error::Invalid("missing initial replay"))?;
+    assert_eq!(*work.key(), 7);
+    wake.wake_by_ref();
+    drop(work);
+    assert_eq!(
+        set.counts(),
+        (1, 1),
+        "append during replay must survive parking"
+    );
+    drop(set.take());
+    assert_eq!(set.counts(), (1, 0));
+    drop(registration);
+    wake.wake_by_ref();
+    assert_eq!(
+        set.counts(),
+        (0, 0),
+        "retired wake cannot recreate registration"
+    );
+    Ok(())
+}
+
+#[cfg(not(acyclic_loom))]
+#[test]
+fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries()
+-> Result<(), super::super::Error> {
     let set = ReadySet::default();
     let mut registrations = Vec::new();
-    for id in 0..100_000 { registrations.push(set.register(id)?); }
+    for id in 0..100_000 {
+        registrations.push(set.register(id)?);
+    }
     assert_eq!(set.counts(), (100_000, 100_000));
-    while let Some(work) = set.take() { drop(work); }
+    while let Some(work) = set.take() {
+        drop(work);
+    }
     assert_eq!(set.counts(), (100_000, 0));
-    for registration in &registrations { registration.waker().wake(); }
+    for registration in &registrations {
+        registration.waker().wake();
+    }
     // Removal unlinks any position directly; no tombstone is retained in a queue.
     registrations.reverse();
     drop(registrations);
@@ -42,7 +223,10 @@ fn dormant_population_retains_no_work_and_unlinks_cancelled_ready_entries() -> R
 #[cfg(acyclic_loom)]
 mod schedules {
     use super::*;
-    use loom::{sync::atomic::{AtomicUsize, Ordering}, thread};
+    use loom::{
+        sync::atomic::{AtomicUsize, Ordering},
+        thread,
+    };
 
     #[test]
     fn append_racing_replay_and_park_cannot_lose_ready_work() {
@@ -63,9 +247,12 @@ mod schedules {
                 tail.store(1, Ordering::SeqCst);
                 wake.wake();
             });
-            reader.join().unwrap();writer.join().unwrap();
-            assert!(consumed.load(Ordering::SeqCst) == 1 || set.counts().1 == 1,
-                "committed input must be replayed or remain ready across parking");
+            reader.join().unwrap();
+            writer.join().unwrap();
+            assert!(
+                consumed.load(Ordering::SeqCst) == 1 || set.counts().1 == 1,
+                "committed input must be replayed or remain ready across parking"
+            );
         });
     }
 
@@ -80,19 +267,23 @@ mod schedules {
             let wake = stale.clone();
             let writer = thread::spawn(move || wake.wake());
             let cancel = thread::spawn(move || drop(old));
-            writer.join().unwrap();cancel.join().unwrap();
+            writer.join().unwrap();
+            cancel.join().unwrap();
             stale.wake();
             assert_eq!(set.counts(), (1, 1));
             let work = set.take().unwrap();
             assert_eq!(*work.key(), 2, "stale wake cannot substitute old placement");
-            drop(work);drop(current);
+            drop(work);
+            drop(current);
             assert_eq!(set.counts(), (0, 0));
         });
     }
 
     struct Counter(AtomicUsize);
     impl Wake for Counter {
-        fn wake(self: Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     #[test]
@@ -106,12 +297,18 @@ mod schedules {
             let consumer_counter = Arc::clone(&counter);
             let consumer = thread::spawn(move || {
                 let waiter = Waker::from(consumer_counter);
-                let pending = set.poll_ready(&mut Context::from_waker(&waiter)).is_pending();
+                let pending = set
+                    .poll_ready(&mut Context::from_waker(&waiter))
+                    .is_pending();
                 (set, pending)
             });
             let producer = thread::spawn(move || wake.wake());
-            let (_set, pending) = consumer.join().unwrap();producer.join().unwrap();
-            assert!(!pending || counter.0.load(Ordering::SeqCst) > 0, "empty-to-wait handoff must retain append notification");
+            let (_set, pending) = consumer.join().unwrap();
+            producer.join().unwrap();
+            assert!(
+                !pending || counter.0.load(Ordering::SeqCst) > 0,
+                "empty-to-wait handoff must retain append notification"
+            );
             drop(registration);
         });
     }
