@@ -18,7 +18,7 @@ fn lazy_read_decode_retains_shared_heap_custody() -> Result<()> {
     for input in [json!({"file": file}), json!({"source": source})] {
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
-            &tokio_util::sync::CancellationToken::new(),
+            &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
