@@ -182,13 +182,13 @@ where
             // the child's own file, retained like every other staged file,
             // under the child's one brief operation, so a replayed adoption
             // names the identical file.
-            let authority = super::agent_turns::agent_authority(
+            let authority = super::agent_turns::AdmittedAgent::verify(
                 &self.issuer,
                 &self.admission,
                 child,
                 volumes,
-                &[],
             )
+            .and_then(|admitted| admitted.authority(&[]))
             .map_err(invalid)?;
             let writer = super::FilesystemContentPublisher::new(
                 Arc::clone(&self.host),
