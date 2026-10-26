@@ -6,9 +6,8 @@ use crate::{
     agent::{Control, Delivered, InboxRecord, IntentId, Sender},
     conversation::ContentResidencyVerifier,
     executor::TurnOutput,
-    local::LocalHarness,
+    local::{LOCAL_SESSION_CREDENTIAL_SLOT, LocalHarness},
 };
-use acyclic_stream::session::Client;
 use std::sync::Arc;
 
 /// Keep host, provider and client refusals typed through the native boundary.
@@ -54,17 +53,22 @@ impl LocalAgentClient {
     /// Explicit cursors come from the caller's retained page/window selection.
     pub async fn connect(
         local: Arc<LocalHarness>,
-        pool: Client,
         conversation_from: u64,
         status_from: u64,
-        credential: u32,
         maximum_output_bytes: u64,
     ) -> Result<Self> {
         if maximum_output_bytes == 0 || maximum_output_bytes > 16 * 1024 * 1024 {
             return Err(Error::Invalid("agent output byte limit must be 1..=16777216".into()).into());
         }
         let (_, root) = local.agents().await?;
-        let client = AgentClient::new(pool, root.clone(), conversation_from, status_from, credential)?;
+        let pool = local.session_client().await?.clone();
+        let client = AgentClient::new(
+            pool,
+            root.clone(),
+            conversation_from,
+            status_from,
+            LOCAL_SESSION_CREDENTIAL_SLOT,
+        )?;
         let reader = local.client_reader()?;
         Ok(Self { local, client, reader, maximum_output_bytes })
     }

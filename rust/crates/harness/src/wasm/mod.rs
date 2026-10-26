@@ -75,6 +75,8 @@ mod query;
 pub(crate) mod swarm;
 #[cfg(target_arch = "wasm32")]
 mod wire_session;
+#[cfg(target_arch = "wasm32")]
+mod agent_client;
 mod task_views;
 mod wire;
 
