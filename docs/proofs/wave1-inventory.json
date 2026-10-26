@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T04:01:45.797047+00:00",
+  "generated_at": "2026-10-26T04:20:16.781328+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -113,6 +113,13 @@
       "repo_receipt": "docs/proofs/evidence/streams-checkpoint-v3/receipt.json",
       "sha256": "56ae2d123fb14767ba3e09c9a2ec4c3f7538c75b4b3c636e61699a8e531b8b02",
       "qualification": "partial native/Loom and Bun source-log joins only; binary/WASM/input identities and full modes pending; page split control is model postprocessing"
+    }
+  },
+  "targeted_source_observations": {
+    "fs-publication-4b972": {
+      "summary": "docs/proofs/fs-publication-observations.json",
+      "sha256": "a7c9f1626fcf8aaf07686bd171b66e7f6e9dd956b654f80114b23721fa3cb0c0",
+      "qualification": "none; targeted historical Linux source/oracle observations, not complete wave1/runtime/mode proof"
     }
   },
   "runner": {
@@ -229,6 +236,11 @@
         "file": "docs/proofs/streams-checkpoint.md",
         "line": 1,
         "sha256": "c65e996b30f40501b4fc84e909ae90ab9a42e551b3879997ba32ad78917fb4de"
+      },
+      {
+        "file": "docs/proofs/fs-publication-observations.json",
+        "line": 2,
+        "sha256": "a7c9f1626fcf8aaf07686bd171b66e7f6e9dd956b654f80114b23721fa3cb0c0"
       },
       {
         "file": "scripts/proof_export_join.py",
@@ -1342,7 +1354,7 @@
       "id": "streams.keys.lifetime",
       "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
-      "invariant": "Successful key\u00c3\u00a2\u00e2\u20ac\u00a0\u00e2\u20ac\u2122digest/receipt bindings last for namespace lifetime and remain retained by reachable fork history; a key is never expired then replayed as fresh.",
+      "invariant": "Successful key\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a0\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2digest/receipt bindings last for namespace lifetime and remain retained by reachable fork history; a key is never expired then replayed as fresh.",
       "proof_specification": "Injected production clock, >120s retention witness, restart/snapshot and exact retry/changed digest.",
       "negative_controls": [
         {
@@ -1501,7 +1513,7 @@
       "owner": "rb-identity",
       "risk": "authority_or_security",
       "invariant": "Verified scope cannot authorize publication after revision/lease fence moves; typed access errors remain exhaustive through every surface; audit failure policy explicit.",
-      "proof_specification": "Real cache/fence loom and ingress\u00c3\u00a2\u00e2\u20ac\u00a0\u00e2\u20ac\u2122revocation\u00c3\u00a2\u00e2\u20ac\u00a0\u00e2\u20ac\u2122commit DST across stream/mount/facade/S3/tool.",
+      "proof_specification": "Real cache/fence loom and ingress\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a0\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2revocation\u00c3\u0192\u00c2\u00a2\u00c3\u00a2\u00e2\u201a\u00ac\u00c2\u00a0\u00c3\u00a2\u00e2\u201a\u00ac\u00e2\u201e\u00a2commit DST across stream/mount/facade/S3/tool.",
       "negative_controls": [
         {
           "mutation": "stale cached decision",
