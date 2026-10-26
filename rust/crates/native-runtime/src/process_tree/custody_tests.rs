@@ -296,7 +296,10 @@ fn leased_successor_fences_the_killed_native_owner_before_admission() {
     }
     assert!(exited, "successor admitted before physical retirement");
     #[cfg(windows)]
-    assert!(custodian.exited(), "successor admitted before pipe custody retired");
+    assert!(
+        custodian.exited(),
+        "successor admitted before pipe custody retired"
+    );
     assert_eq!(successor.custody().fence_stale().expect("empty fence"), 0);
 }
 

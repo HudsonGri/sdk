@@ -38,9 +38,7 @@ impl Invocation {
         while let Some(argument) = arguments.next() {
             if argument == "--inherit-input" && !inherit_input {
                 inherit_input = true;
-            } else if argument == "--custody"
-                || argument == "--completion"
-                || argument == "--lease"
+            } else if argument == "--custody" || argument == "--completion" || argument == "--lease"
             {
                 let path = arguments.next().ok_or_else(invalid_arguments)?;
                 if !Path::new(&path).is_absolute() {
@@ -97,7 +95,12 @@ impl Completion {
         .map(Self)
     }
 
-    fn retired(&mut self, code: i32, cancelled: bool, lease_wait: std::time::Duration) -> io::Result<()> {
+    fn retired(
+        &mut self,
+        code: i32,
+        cancelled: bool,
+        lease_wait: std::time::Duration,
+    ) -> io::Result<()> {
         if let Some(file) = &mut self.0 {
             let lease_wait_seconds = lease_wait.as_secs_f64();
             writeln!(
@@ -453,11 +456,8 @@ mod tests {
         std::fs::create_dir(&record).unwrap();
         let child = tree.child.take().unwrap();
         tree.cleanup_on_drop = false;
-        let error = reject_control_admission(
-            &mut tree,
-            child,
-            io::Error::from(io::ErrorKind::WouldBlock),
-        );
+        let error =
+            reject_control_admission(&mut tree, child, io::Error::from(io::ErrorKind::WouldBlock));
         let retained = tree.custody.is_some() && !tree.is_reaped();
         std::fs::remove_dir(&record).unwrap();
         std::fs::write(&record, captured).unwrap();
@@ -710,7 +710,9 @@ mod tests {
             Completion::open(Some(&path)).err().unwrap().kind(),
             io::ErrorKind::AlreadyExists
         );
-        completion.retired(17, false, std::time::Duration::ZERO).unwrap();
+        completion
+            .retired(17, false, std::time::Duration::ZERO)
+            .unwrap();
         let receipt = std::fs::read_to_string(path).unwrap();
         assert!(receipt.contains("\"exit_code\":17"));
         assert!(receipt.contains("\"process_tree_retired\":true"));
