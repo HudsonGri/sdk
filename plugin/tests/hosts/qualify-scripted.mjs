@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {stageArtifacts} from '../../../scripts/graphcoder-e2e/artifacts.mjs';
 import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {environment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
+import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 const here=fileURLToPath(new URL('.',import.meta.url));
 export const scriptedSelections=Object.freeze([
   ...['lifecycle','recursive','resume','bounded-framing'].map(name=>'managed:'+name),
@@ -60,13 +61,11 @@ async function main(){
  const receipts=[];
  for(const selection of selections){
   const entry=scriptedScenario(artifacts,codex,selection);
-  const home=scratchDirectory('fixture-'+entry.name+'-',{E2E_SCRATCH_ROOT:directory});
+  const home=scratchDirectory('fixture-'+entry.name+'-');
   const env=environment(home,{PATH:process.env.PATH,RUST_TEST_THREADS:'4'});
-  const scope=new Processes(),started=performance.now();let expired=false,run;
-  const deadline=setTimeout(()=>{expired=true;scope.close().catch(error=>console.error(error));},9500);
-  try{run=await runScriptedScenario({scenario:entry,processes:scope,directory,env,expired:()=>expired});}
-  finally{clearTimeout(deadline);await scope.close();}
-  const seconds=(performance.now()-started)/1000;
+  const scope=new Processes();
+  const {run,seconds,expired}=await withOwnedCase({processes:scope,
+   run:()=>runScriptedScenario({scenario:entry,processes:scope,directory,env})});
   const receipt={...run,seconds,expired,accepted:run.accepted&&!expired&&seconds<10};
   receipts.push(receipt);await writeFile(join(directory,'results.json'),JSON.stringify(receipts,null,2));
   console.log(JSON.stringify(receipt));
