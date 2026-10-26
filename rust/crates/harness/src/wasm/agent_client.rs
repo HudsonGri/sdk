@@ -3,7 +3,7 @@
 use super::json::to_js;
 use crate::{
     agent::AgentPath,
-    client::{AgentClient, AgentClientError},
+    client::{AgentClient, AgentClientError, AgentSelection},
 };
 use acyclic_stream::WasmStream;
 use js_sys::JsString;
@@ -28,6 +28,15 @@ fn client_error(cause: AgentClientError) -> JsValue {
     error(code, cause)
 }
 
+fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
+    if agent.length() as usize > acyclic_stream::MAX_PATH_BYTES {
+        return Err(error("invalid_agent_path", "agent path exceeds byte bound"));
+    }
+    AgentPath::try_from(agent.as_string()
+        .ok_or_else(|| error("invalid_agent_path", "agent path is not a string"))?)
+        .map_err(|cause| error("invalid_agent_path", cause))
+}
+
 struct Reading<'a> {
     busy: &'a Cell<bool>,
     waker: &'a RefCell<Option<Waker>>,
@@ -41,7 +50,7 @@ impl Drop for Reading<'_> {
     }
 }
 
-/// The focused agent's bounded conversation/status fold. The platform supplies
+/// Selected agents' bounded conversation/status fold. The platform supplies
 /// its existing authenticated pool; this object creates no transport or queue.
 #[wasm_bindgen]
 pub struct WasmAgentClient {
@@ -62,13 +71,7 @@ impl WasmAgentClient {
         status_from: u64,
         credential: u32,
     ) -> Result<Self, JsValue> {
-        // Admit UTF-16 length before copying an untrusted JavaScript string.
-        if agent.length() as usize > acyclic_stream::MAX_PATH_BYTES {
-            return Err(error("invalid_agent_path", "agent path exceeds byte bound"));
-        }
-        let agent = AgentPath::try_from(agent.as_string()
-            .ok_or_else(|| error("invalid_agent_path", "agent path is not a string"))?)
-            .map_err(|cause| error("invalid_agent_path", cause))?;
+        let agent = agent_path(agent)?;
         let pool = stream.session_client()
             .ok_or_else(|| error("client_no_session", "provider has no authenticated session"))?;
         let client = AgentClient::new(pool, agent, conversation_from, status_from, credential)
@@ -78,6 +81,95 @@ impl WasmAgentClient {
             reading: Cell::new(false),
             waker: RefCell::new(None),
         })
+    }
+
+    /// Replace focus (first row) and visible agents in the shared Rust core.
+    /// Lengths are admitted before copying any array. Full-width initial
+    /// cursors stay BigInt; overlapping interests retain their actual cursors.
+    /// A pending next() wakes to observe the replacement, with no second loop.
+    #[wasm_bindgen(js_name = setView)]
+    pub fn set_view(
+        &self,
+        agents: js_sys::Array,
+        conversation_from: js_sys::BigUint64Array,
+        status_from: js_sys::BigUint64Array,
+    ) -> Result<(), JsValue> {
+        let length = agents.length();
+        if length == 0 || length as usize > AgentClient::selected_capacity()
+            || conversation_from.length() != length || status_from.length() != length
+        {
+            return Err(error("selected_capacity", "view requires 1..=8 agents and matching cursor arrays"));
+        }
+        let mut selections = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            let agent = agents.get(index).dyn_into::<JsString>()
+                .map_err(|_| error("invalid_agent_path", "agent path is not a string"))?;
+            selections.push(AgentSelection {
+                agent: agent_path(agent)?,
+                conversation_from: conversation_from.get_index(index),
+                status_from: status_from.get_index(index),
+            });
+        }
+        let mut selections = selections.into_iter();
+        let focused = selections.next().ok_or_else(|| error("selected_capacity", "view is empty"))?;
+        {
+            let mut client = self.client.borrow_mut();
+            client.as_mut().ok_or_else(|| error("client_closed", "agent client is closed"))?
+                .set_view(focused, selections).map_err(client_error)?;
+        }
+        let waker = self.waker.borrow_mut().take();
+        if let Some(waker) = waker { waker.wake(); }
+        Ok(())
+    }
+
+    /// Selected identities only, bounded by the same Rust interest policy.
+    #[wasm_bindgen(js_name = selectedAgents)]
+    pub fn selected_agents(&self) -> Result<JsValue, JsValue> {
+        self.with_client(|client| to_js(&client.selected_agents().collect::<Vec<_>>()))?
+    }
+
+    /// Copy one displayed turn, never the complete selected history.
+    #[wasm_bindgen(js_name = agentRecord)]
+    pub fn agent_record(&self, agent: JsString, index: usize) -> Result<JsValue, JsValue> {
+        let agent = agent_path(agent)?;
+        let record = self.with_client(|client| client.agent_entry(&agent, index))?.map_err(client_error)?;
+        to_js(&record)
+    }
+
+    /// Read one actual lifecycle state directly from the shared Rust fold.
+    #[wasm_bindgen(js_name = agentStatus)]
+    pub fn agent_status(&self, agent: JsString) -> Result<JsValue, JsValue> {
+        let agent = agent_path(agent)?;
+        let status = self.with_client(|client| client.agent_status(&agent))?.map_err(client_error)?;
+        to_js(&status)
+    }
+
+    /// Window metadata for one selected conversation, without copying its
+    /// records. Unknown agents are typed refusals rather than revision zero.
+    #[wasm_bindgen(js_name = agentWindow)]
+    pub fn agent_window(&self, agent: JsString) -> Result<JsValue, JsValue> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Window {
+            first_sequence: u64,
+            next_sequence: u64,
+            record_count: usize,
+            retained_bytes: usize,
+            revision: u64,
+        }
+        let agent = agent_path(agent)?;
+        let window = self.with_client(|client| {
+            let view = client.agent_conversation(&agent)
+                .ok_or_else(|| error("not_requested", "agent was not selected"))?;
+            to_js(&Window {
+                first_sequence: view.first_sequence(),
+                next_sequence: view.next_sequence(),
+                record_count: view.records().len(),
+                retained_bytes: view.retained_bytes(),
+                revision: client.session().revision(),
+            })
+        })??;
+        Ok(window)
     }
 
     /// One transition decoded and folded by the exact native Rust core. There
