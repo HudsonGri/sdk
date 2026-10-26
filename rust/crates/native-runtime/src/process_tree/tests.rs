@@ -399,7 +399,9 @@ fn process_tree_helper() {
             }
             std::process::exit(0);
         }
-        "stdin-stall" | "stdin-handshake" | "stdin-cancel" | "stdin-save" => stdin_helper(&mode, &root),
+        "stdin-stall" | "stdin-handshake" | "stdin-cancel" | "stdin-save" => {
+            stdin_helper(&mode, &root)
+        }
         "stream-notify" => stream_notify_helper(&root),
         "exit-code" => std::process::exit(7),
         _ => assert_eq!(mode, "known helper mode"),

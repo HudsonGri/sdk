@@ -22,9 +22,9 @@ if [ "$rc" != 0 ]; then
   exit "$rc"
 fi
 # The job-owned target plus the host sccache authority keeps rebuilds warm.
-cargo check --locked --all-features --tests --message-format=short "${args[@]}"; rc=$?
+cargo check --locked --all-features --bins --tests --message-format=short "${args[@]}"; rc=$?
 if [ "$rc" != 0 ]; then
-  printf 'GATE_LITE_COMPILE_FAILED rc=%s; recovery: cargo check --locked --all-features --tests --message-format=short' "$rc"
+  printf 'GATE_LITE_COMPILE_FAILED rc=%s; recovery: cargo check --locked --all-features --bins --tests --message-format=short' "$rc"
   printf ' %q' "${args[@]}"
   printf '\n'
 fi
