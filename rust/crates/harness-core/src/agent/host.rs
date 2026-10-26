@@ -104,8 +104,8 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
 
     /// Append `record` to `to`'s inbox in one conditional commit: a prompt
     /// (`Message`), `Cancel`, an `Approval` response or a `Hook`. The key binds
-    /// recipient, sender and record intent: on [`Error::Unknown`] resubmit the
-    /// carried request with [`submit`]; calling `send` again re-reads the tail.
+    /// recipient, sender and record intent, so resending an intent never
+    /// appends it twice; on [`Error::Unknown`] call `send` again.
     pub async fn send(
         &self,
         to: &AgentPath,
@@ -142,6 +142,11 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
     }
 
     /// One inbox commit, re-decided only when the recipient's tail moved.
+    ///
+    /// The key binds recipient, sender and intent, and streams keeps keys of
+    /// successful commits only: a key that names another request means this
+    /// intent is already in the inbox, so a resend (after a crash, from any
+    /// tail) reports [`Delivered::Committed`] and writes nothing.
     async fn deliver(
         &self,
         to: &AgentPath,
@@ -149,11 +154,15 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
     ) -> Result<Delivered, Error> {
         loop {
             let tail = inbox_tail(&*self.provider, to).await?;
-            match submit(&*self.provider, request(tail)?).await? {
-                Submitted::Committed(_) => return Ok(Delivered::Committed),
-                Submitted::RecipientClosed(_) => return Ok(Delivered::Closed),
-                Submitted::InboxMoved(_) => {}
-                Submitted::Conflict(_) => return Err(Error::Record("inbox commit conflicted")),
+            match submit(&*self.provider, request(tail)?).await {
+                Ok(Submitted::Committed(_))
+                | Err(Error::Stream(acyclic_stream::StreamError::IdempotencyMismatch)) => {
+                    return Ok(Delivered::Committed);
+                }
+                Err(error) => return Err(error),
+                Ok(Submitted::RecipientClosed(_)) => return Ok(Delivered::Closed),
+                Ok(Submitted::InboxMoved(_)) => {}
+                Ok(Submitted::Conflict(_)) => return Err(Error::Record("inbox commit conflicted")),
             }
         }
     }
