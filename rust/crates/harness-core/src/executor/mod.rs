@@ -494,6 +494,16 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>>;
 
+    /// Executes or resumes one turn, keeping a pending or refused approval and a
+    /// recorded tool failure distinct from an uncertain outcome.
+    fn execute_progress<'a>(
+        &'a self,
+        input: TurnInput,
+        journal: &'a dyn ExecutionJournal,
+    ) -> BoxFuture<'a, Result<ExecutionProgress<TurnOutput>>> {
+        Box::pin(async move { self.execute(input, journal).await.map(ExecutionProgress::Ready) })
+    }
+
     /// Runs with the original ordinary task admission.
     fn execute_with_context<'a>(
         &'a self,
