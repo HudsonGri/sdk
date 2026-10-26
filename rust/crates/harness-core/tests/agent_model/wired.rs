@@ -5,6 +5,7 @@ use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_harness_core::{
     OperationId,
     agent::*,
+    core::{AggregateKind, Authority, AuthorityRoot},
     context::{CompactionPolicy, ContextPipeline},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     executor::StockExecutor,
@@ -108,7 +109,14 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         Arc::new(MemoryStream::default()),
         host,
-        ("agents".into(), [7; 32]),
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
         executors(model.clone())?,
         LIMITS,
     ));
@@ -152,7 +160,14 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
         host,
-        ("agents".into(), [7; 32]),
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "agents".into(),
+            },
+        ),
         executors(model.clone())?,
         LIMITS,
     ));
