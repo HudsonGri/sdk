@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    ops::Bound,
     sync::Arc,
 };
 
@@ -31,20 +30,17 @@ pub(crate) mod parking_model;
 mod snapshot;
 
 use crate::{
-    AppendOutcome, AppendReceipt, AppendRecord, AppendRequest, Child, ChildStream, ChildrenPage,
-    ChildrenPageRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitId,
-    CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, CommittedFork,
-    CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    IdempotencyOutcome, MAX_ITEMS, ReadRequest, Record, RecordStream, StreamBounds, StreamError,
-    StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
+    AppendOutcome, AppendReceipt, AppendRecord, AppendRequest, Child, ChildrenPage,
+    ChildrenPageRequest, CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome,
+    CommitRequest, CommittedEnvelope, CommittedFork, CommittedMutation, ForkReceipt, ForkRequest,
+    IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, ReadRequest, Record,
+    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
+    UnixMillisClock,
 };
 
 #[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
 /// Models checked cursor preparation and publication interests against recovery.
 pub mod browser_follow_model;
-#[cfg(all(acyclic_loom, feature = "local"))]
-/// Models the actual indexed child discovery and its local visibility adapter.
-pub mod discovery_model;
 #[cfg(test)]
 mod tests;
 
@@ -60,8 +56,8 @@ include!("provider.rs");
 include!("follow.rs");
 include!("follow_progress.rs");
 
+include!("namespace.rs");
 include!("state.rs");
-include!("children.rs");
 
 include!("retained.rs");
 

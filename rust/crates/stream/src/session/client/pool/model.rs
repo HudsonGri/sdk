@@ -293,8 +293,9 @@ pub fn verify_link_isolation(broken: bool) {
                             }),
                             accepted: 1,
                             durable: 0,
-                            item: Some(Item::Child(wire::Child {
-                                path: "other/child".into(),
+                            item: Some(Item::Record(wire::Record {
+                                sequence: 99,
+                                ..Default::default()
                             })),
                         }),
                     ),

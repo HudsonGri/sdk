@@ -419,6 +419,7 @@ impl StreamProvider for HttpStream {
         let source = request.source.clone();
         let destination = request.destination.clone();
         let wire = wire::ForkRequest {
+            exclude: request.exclude.iter().map(ToString::to_string).collect(),
             source: source.to_string(),
             destination: destination.to_string(),
             at_tail: request.at_tail,
@@ -465,9 +466,7 @@ impl StreamProvider for HttpStream {
             .follow_checked(path, from, preceding, filter)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.session_client()?.children(request).await
-    }
+
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
@@ -477,6 +476,7 @@ impl StreamProvider for HttpStream {
             .request(
                 "children/page",
                 wire::ChildrenPageRequest {
+                    tail_stream: request.tail_stream.map(|path| path.to_string()),
                     parent: request.parent.map(|path| path.to_string()),
                     after: request.after.map(|path| path.to_string()),
                     hierarchy_version: request

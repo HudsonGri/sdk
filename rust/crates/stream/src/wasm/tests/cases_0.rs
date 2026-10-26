@@ -130,12 +130,14 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
         "invalid_path"
     );
 
-    let invalid_limit = wire::ChildrenRequest {
+    let invalid_limit = wire::ChildrenPageRequest {
+        tail_stream: None,
         parent: Some("events".to_owned()),
         limit: 0,
+        ..Default::default()
     };
     assert_eq!(
-        validate_request("children", &invalid_limit.encode_to_vec()),
+        validate_request("children_page", &invalid_limit.encode_to_vec()),
         "limit_exceeded"
     );
     assert_eq!(validate_request("unknown", &[]), "invalid_argument");
@@ -144,6 +146,7 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
 #[test]
 fn fork_validation_rejects_same_paths_and_oversized_payloads() {
     let same = wire::ForkRequest {
+        exclude: Vec::new(),
         source: "events".to_owned(),
         destination: "events".to_owned(),
         at_tail: None,
@@ -155,6 +158,7 @@ fn fork_validation_rejects_same_paths_and_oversized_payloads() {
     );
 
     let oversized = wire::ForkRequest {
+        exclude: Vec::new(),
         source: "a".repeat(crate::MAX_PATH_BYTES + 1),
         destination: "b".to_owned(),
         at_tail: None,
@@ -163,5 +167,40 @@ fn fork_validation_rejects_same_paths_and_oversized_payloads() {
     assert_eq!(
         validate_request("fork", &oversized.encode_to_vec()),
         "invalid_path"
+    );
+}
+
+#[wasm_bindgen_test::wasm_bindgen_test]
+fn page_tail_records_keep_keys_and_attributes() {
+    let response = wire::ChildrenPageResponse {
+        hierarchy_version: vec![7; 32].into(),
+        children: vec![wire::Child {
+            path: "agents/a".to_owned(),
+            tail_record: Some(wire::Record {
+                sequence: 0,
+                value: b"running".to_vec().into(),
+                commit_id: vec![9; 32].into(),
+                committed_at_micros: 1,
+                keys: vec![b"agent".to_vec().into()],
+                attributes: vec![wire::Attribute {
+                    name: "kind".to_owned(),
+                    value: b"status".to_vec().into(),
+                }],
+            }),
+        }],
+        next_after: None,
+    };
+    let page =
+        http::decode_wire_response("children_page", &response.encode_to_vec()).expect("valid page");
+    let get = |value: &JsValue, name: &str| Reflect::get(value, &JsValue::from_str(name)).unwrap();
+    let children = get(&page, "children");
+    let record = get(&Array::from(&children).get(0), "tailRecord");
+    let keys = Array::from(&get(&record, "keys"));
+    assert_eq!(Uint8Array::from(keys.get(0)).to_vec(), b"agent");
+    let attribute = Array::from(&get(&record, "attributes")).get(0);
+    assert_eq!(get(&attribute, "name").as_string().as_deref(), Some("kind"));
+    assert_eq!(
+        Uint8Array::from(get(&attribute, "value")).to_vec(),
+        b"status"
     );
 }

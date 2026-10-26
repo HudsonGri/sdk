@@ -140,6 +140,7 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
     loop {
         let page = provider
             .children_page(ChildrenPageRequest {
+                tail_stream: None,
                 parent: Some(path("agents")?),
                 after,
                 hierarchy_version: revision,
@@ -178,6 +179,7 @@ async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result
         let destination = path(&format!("deep/fork-{depth}"))?;
         provider
             .fork(ForkRequest {
+                exclude: Vec::new(),
                 source,
                 destination: destination.clone(),
                 at_tail: None,
@@ -256,6 +258,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
     let destination = path("seek/prefix")?;
     provider
         .fork(ForkRequest {
+            exclude: Vec::new(),
             source: source.clone(),
             destination: destination.clone(),
             at_tail: Some(128),
@@ -283,6 +286,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
     let child = path("seek/header-cut")?;
     provider
         .fork(ForkRequest {
+            exclude: Vec::new(),
             source: source.clone(),
             destination: child.clone(),
             at_tail: Some(1),
@@ -402,6 +406,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
         let destination = path(&format!("lineage/forks/{cut}"))?;
         provider
             .fork(ForkRequest {
+                exclude: Vec::new(),
                 source: source.clone(),
                 destination: destination.clone(),
                 at_tail: Some(cut),
@@ -619,7 +624,7 @@ proptest::proptest! {
             let (mut found, mut after, mut version) = (Vec::new(), None, None);
             loop {
                 let page = provider
-                    .children_page(ChildrenPageRequest {
+                    .children_page(ChildrenPageRequest { tail_stream: None,
                         parent: Some(path("root")?),
                         after,
                         hierarchy_version: version,
@@ -656,6 +661,7 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
     }
     let page = provider
         .children_page(ChildrenPageRequest {
+            tail_stream: None,
             parent: Some(path("a")?),
             after: None,
             hierarchy_version: None,

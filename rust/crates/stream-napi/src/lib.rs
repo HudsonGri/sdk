@@ -172,24 +172,8 @@ impl NativeStreamNextResult {
 }
 
 fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
-    let code = match &error {
-        StreamError::InvalidPath => "invalid_path",
-        StreamError::InvalidArgument => "invalid_argument",
-        StreamError::LimitExceeded => "limit_exceeded",
-        StreamError::NotFound => "not_found",
-        StreamError::AlreadyExists => "already_exists",
-        StreamError::PrefixNotRetained => "prefix_not_retained",
-        StreamError::OutOfRange => "out_of_range",
-        StreamError::HierarchyChanged => "hierarchy_changed",
-        StreamError::IdempotencyMismatch => "idempotency_mismatch",
-        StreamError::Capacity => "capacity",
-        StreamError::AccessDenied => "access_denied",
-        StreamError::Unavailable => "unavailable",
-        StreamError::DeadlineElapsed => "deadline_elapsed",
-        StreamError::Unsupported => "unsupported",
-    };
     NativeStreamErrorMetadata {
-        code: code.to_owned(),
+        code: error.code().to_owned(),
         message: error.to_string(),
     }
 }
@@ -506,8 +490,11 @@ impl NativeStreamClient {
     /// Uses a request-local credential while retaining the existing TLS channel.
     #[napi(js_name = "withCredential")]
     pub fn with_credential(&self, token: String) -> Result<Self> {
-        self.provider
-            .with_credential(&token)
+        let client = self.provider.with_credential(&token);
+        // N-API requires an owned string. Release that raw credential before
+        // constructing the returned wrapper around the validated client.
+        drop(token);
+        client
             .map(Self::from_client)
             .map_err(|error| napi_error(&connect_error(&error)))
     }
@@ -686,30 +673,6 @@ impl NativeStreamClient {
         env.spawn_future(work)
     }
 
-    /// Opens live child discovery using the client's shared Streams session.
-    #[napi(js_name = "openChildrenResult")]
-    pub fn open_children_result<'env>(
-        &self,
-        env: &'env Env,
-        request: Buffer,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<PromiseRaw<'env, NativeStreamFollowResult>> {
-        let client = Arc::clone(&self.provider);
-        let cancellation = cancellation.map(|value| NativeStreamCancellation {
-            token: value.token.clone(),
-        });
-        let work = async move {
-            Ok(
-                match open_children(&client, request, cancellation.as_ref()).await {
-                    Ok(follow) => NativeStreamFollowResult::success(follow),
-                    Err(error) => NativeStreamFollowResult::failure(error),
-                },
-            )
-        };
-        let work = napi::bindgen_prelude::within_runtime_if_available(|| eager::start(work));
-        env.spawn_future(work)
-    }
-
     /// Executes a canonical children-page request.
     #[napi(js_name = "childrenPageResult")]
     pub async fn children_page_result(
@@ -738,21 +701,6 @@ impl NativeStreamClient {
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
         operation_result(read_commit(&self.provider, request, cancellation)).await
-    }
-
-    /// Reads all children from one fixed snapshot as encoded responses.
-    #[napi(js_name = "childrenResult")]
-    pub async fn children_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<NativeStreamSequenceResult> {
-        Ok(
-            match children(&self.provider, request, cancellation).await {
-                Ok(values) => NativeStreamSequenceResult::success(values),
-                Err(error) => NativeStreamSequenceResult::failure(error),
-            },
-        )
     }
 }
 

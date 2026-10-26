@@ -42,6 +42,38 @@ pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
     Ok(hash.finalize().into())
 }
 
+/// Canonical exclusions are segment prefixes, never textual prefixes.
+pub(crate) fn canonical_exclusions(
+    paths: &[crate::RelativePath],
+) -> Result<Vec<crate::RelativePath>, StreamError> {
+    if paths.len() > MAX_ITEMS {
+        return Err(StreamError::LimitExceeded);
+    }
+    let all: std::collections::BTreeSet<_> = paths.iter().cloned().collect();
+    Ok(all
+        .iter()
+        .filter(|path| {
+            let mut parent = path.parent();
+            while let Some(ancestor) = parent {
+                if all.contains(&ancestor) {
+                    return false;
+                }
+                parent = ancestor.parent();
+            }
+            true
+        })
+        .cloned()
+        .collect())
+}
+fn hash_exclusions(hash: &mut Sha256, paths: &[crate::RelativePath]) -> Result<(), StreamError> {
+    let canonical = canonical_exclusions(paths)?;
+    hash.update((canonical.len() as u64).to_le_bytes());
+    for path in &canonical {
+        hash_path(hash, path);
+    }
+    Ok(())
+}
+
 /// Validates a fork and returns its canonical retry digest.
 pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
     if request.source == request.destination {
@@ -52,6 +84,7 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
     hash_path(&mut hash, &request.source);
     hash_path(&mut hash, &request.destination);
     hash.update(request.at_tail.unwrap_or(u64::MAX).to_le_bytes());
+    hash_exclusions(&mut hash, &request.exclude)?;
     Ok(hash.finalize().into())
 }
 
@@ -61,7 +94,7 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
     validate_commit_shape(request)?;
     let mut hash = request_hasher(b"commit");
     hash_conditions(&mut hash, &request.conditions);
-    for mutation in &request.mutations {
+    for mutation in &mut request.mutations {
         match mutation {
             CommitMutation::Append { path, records } => {
                 hash.update([1]);
@@ -73,11 +106,13 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
                 destination,
                 at_tail,
                 records,
+                exclude,
             } => {
                 hash.update([2]);
                 hash_path(&mut hash, source);
                 hash_path(&mut hash, destination);
                 hash.update(at_tail.to_le_bytes());
+                hash_exclusions(&mut hash, exclude)?;
                 hash_records(&mut hash, records);
             }
         }
@@ -152,9 +187,12 @@ pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
                     source,
                     destination,
                     records,
+                    exclude,
                     ..
                 } => {
-                    1 + path_hash_bytes(source)
+                    8 + exclude.iter().map(path_hash_bytes).sum::<u64>()
+                        + 1
+                        + path_hash_bytes(source)
                         + path_hash_bytes(destination)
                         + 8
                         + records_hash_bytes(records)
@@ -228,6 +266,11 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
     {
         return Err(StreamError::InvalidArgument);
     }
+    for mutation in &mut request.mutations {
+        if let CommitMutation::Fork { exclude, .. } = mutation {
+            *exclude = canonical_exclusions(exclude)?;
+        }
+    }
     request.conditions.sort_unstable_by(|left, right| {
         condition_path(left)
             .cmp(condition_path(right))
@@ -258,15 +301,33 @@ fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
 
 pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
     for mutation in &request.mutations {
-        let condition = request
-            .conditions
-            .binary_search_by(|condition| condition_path(condition).cmp(mutation_path(mutation)))
-            .ok()
-            .and_then(|index| request.conditions.get(index));
-        match (mutation, condition) {
-            (CommitMutation::Append { .. }, Some(_))
-            | (CommitMutation::Fork { .. }, Some(CommitCondition::Absent { .. })) => {}
-            _ => return Err(StreamError::InvalidArgument),
+        if let CommitMutation::Fork {
+            source,
+            destination,
+            ..
+        } = mutation
+            && (source == destination
+                || request.mutations.iter().any(|other| {
+                    let path = mutation_path(other).as_str();
+                    path.strip_prefix(destination.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+                }))
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        // An append may ride on conditions over other paths (a send guarded only
+        // by the recipient's closed marker). A fork must prove its destination absent.
+        if matches!(mutation, CommitMutation::Fork { .. }) {
+            let condition = request
+                .conditions
+                .binary_search_by(|condition| {
+                    condition_path(condition).cmp(mutation_path(mutation))
+                })
+                .ok()
+                .and_then(|index| request.conditions.get(index));
+            if !matches!(condition, Some(CommitCondition::Absent { .. })) {
+                return Err(StreamError::InvalidArgument);
+            }
         }
     }
     Ok(())

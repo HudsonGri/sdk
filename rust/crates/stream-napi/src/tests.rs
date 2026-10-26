@@ -1,9 +1,9 @@
 use super::*;
 mod reconnect;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
-    CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, RecordStream, StreamBounds, StreamProvider,
+    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
+    CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    ReadRequest, RecordStream, StreamBounds, StreamProvider,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -155,23 +155,23 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
 }
 
 #[tokio::test]
-async fn terminal_unavailable_is_reported_before_end() {
-    let records = futures::stream::once(async { Err(StreamError::Unavailable) }).boxed();
-    let follow = NativeStreamFollow {
-        state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records)))),
-            token: CancellationToken::new(),
-            closed: Arc::new(AtomicBool::new(false)),
-        },
-    };
-    let result = follow.next_result().await.expect("follow read rejected");
-    assert!(result.value.is_none());
-    assert_eq!(
-        result.error.expect("terminal error swallowed").code,
-        "unavailable"
-    );
-    let end = follow.next_result().await.expect("follow end rejected");
-    assert!(end.value.is_none() && end.error.is_none());
+async fn terminal_peer_and_transport_errors_keep_their_codes_before_end() {
+    for error in [StreamError::InvalidResponse, StreamError::Unavailable] {
+        let code = error.code();
+        let records = futures::stream::once(async move { Err(error) }).boxed();
+        let follow = NativeStreamFollow {
+            state: FollowState {
+                records: Arc::new(Mutex::new(Some(record_frames(records)))),
+                token: CancellationToken::new(),
+                closed: Arc::new(AtomicBool::new(false)),
+            },
+        };
+        let result = follow.next_result().await.expect("follow read rejected");
+        assert!(result.value.is_none());
+        assert_eq!(result.error.expect("terminal error swallowed").code, code);
+        let end = follow.next_result().await.expect("follow end rejected");
+        assert!(end.value.is_none() && end.error.is_none());
+    }
 }
 
 #[tokio::test]
@@ -300,23 +300,6 @@ impl StreamProvider for TcpDropProbe {
         Ok(Box::pin(records.map(|item| {
             item.map(acyclic_stream::FollowUpdate::Record)
         })))
-    }
-
-    async fn children(
-        &self,
-        _request: ChildrenRequest,
-    ) -> std::result::Result<ChildStream, StreamError> {
-        let sentinel = TcpDropped(Arc::clone(&self.dropped));
-        Ok(futures::stream::once(async {
-            Ok(acyclic_stream::Child {
-                path: StreamPath::new("agents/new")?,
-            })
-        })
-        .chain(futures::stream::poll_fn(move |_| {
-            let _sentinel = &sentinel;
-            Poll::Pending
-        }))
-        .boxed())
     }
 
     async fn children_page(
@@ -459,28 +442,6 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             .await
             .map_err(|_| "server follow stream was not dropped after close")?;
 
-        let children = open_children(
-            &client.provider,
-            Buffer::from(
-                wire::ChildrenRequest {
-                    parent: Some("agents".into()),
-                    limit: 1,
-                }
-                .encode_to_vec(),
-            ),
-            None,
-        )
-        .await
-        .map_err(|error| error.message)?;
-        let value = children.next_result().await?;
-        assert!(value.error.is_none());
-        let value = value.value.ok_or("child response missing")?;
-        let value = wire::ChildrenResponse::decode(value.as_ref())?;
-        assert_eq!(value.child.ok_or("child missing")?.path, "agents/new");
-        children.close().await;
-        tokio::time::timeout(Duration::from_secs(1), dropped.notified()).await?;
-
-        drop(children);
         drop(follow);
         drop(client);
 

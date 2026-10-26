@@ -114,9 +114,8 @@ impl StreamProvider for LocalStream {
             self.exclusive(&span, move |stream| async move {
                 let command = Command::Append(request.clone());
                 let frame = stream.prepare(&command)?;
-                let retain_conflict = request.idempotency_key.is_some();
                 let outcome = stream.inner.provider.append(request).await?;
-                if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
+                if matches!(outcome, AppendOutcome::Committed(_)) {
                     stream.persist(frame).await?;
                 }
                 if let AppendOutcome::Committed(receipt) = &outcome {
@@ -191,10 +190,6 @@ impl StreamProvider for LocalStream {
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         self.progress_from(path, from, preceding, filter).await
-    }
-
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.follow_children(request).await
     }
 
     async fn children_page(
@@ -348,7 +343,9 @@ async fn commit<const ELIDE_REPLAY: bool>(
                     .provider
                     .commit_inner(request, deadline)
                     .await?;
-                if let Some(frame) = frame {
+                if let Some(frame) = frame
+                    && matches!(outcome, CommitOutcome::Committed(_))
+                {
                     stream.persist(frame).await?;
                 } else {
                     stream.require_accepted::<true>()?;

@@ -103,6 +103,7 @@ fn mutation_value(value: &wire::CommittedMutation) -> Result<Value> {
             "type": "fork",
             "source": value.source,
             "destination": value.destination,
+            "exclude": value.exclude,
             "forkedAt": value.forked_at.to_string(),
             "tail": value.tail.to_string(),
             "records": value.records.iter().map(record_json).collect::<Vec<_>>(),
@@ -127,7 +128,13 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
     let children: Vec<_> = value
         .children
         .into_iter()
-        .map(|child| json!({ "path": child.path }))
+        .map(|child| {
+            let mut value = serde_json::Map::from_iter([("path".into(), json!(child.path))]);
+            if let Some(record) = child.tail_record {
+                value.insert("tailRecord".into(), record_json(&record));
+            }
+            Value::Object(value)
+        })
         .collect();
     let mut result = serde_json::Map::from_iter([
         (

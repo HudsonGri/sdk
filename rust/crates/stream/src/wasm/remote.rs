@@ -166,6 +166,11 @@ impl StreamProvider for Remote {
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let body = wire::ForkRequest {
+            exclude: request
+                .exclude
+                .into_iter()
+                .map(|path| path.to_string())
+                .collect(),
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
@@ -260,14 +265,13 @@ impl StreamProvider for Remote {
             .follow_checked(path, from, preceding, filter)
             .await
     }
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.sessions.children(request).await
-    }
+
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
         let body = wire::ChildrenPageRequest {
+            tail_stream: request.tail_stream.map(|path| path.to_string()),
             parent: request.parent.map(|p| p.to_string()),
             after: request.after.map(|p| p.to_string()),
             hierarchy_version: request
@@ -288,6 +292,7 @@ impl StreamProvider for Remote {
                 .into_iter()
                 .map(|c| {
                     Ok(Child {
+                        tail_record: c.tail_record.map(wire_codec::record).transpose()?,
                         path: wire_codec::path(c.path)?,
                     })
                 })

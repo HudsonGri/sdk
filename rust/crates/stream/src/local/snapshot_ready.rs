@@ -21,7 +21,7 @@ impl UnixMillisClock for Clock {
     }
 }
 
-async fn seed(provider: &impl StreamProvider, children: bool) {
+async fn seed(provider: &impl StreamProvider) {
     provider
         .append(AppendRequest {
             path: StreamPath::new("root").unwrap(),
@@ -33,19 +33,6 @@ async fn seed(provider: &impl StreamProvider, children: bool) {
         })
         .await
         .unwrap();
-    if children {
-        for i in 0..COUNT {
-            provider
-                .append(AppendRequest {
-                    path: StreamPath::new(format!("root/c{i:03}")).unwrap(),
-                    records: vec![(OwnedBytes::from_static(b"child")).into()],
-                    if_tail: None,
-                    idempotency_key: None,
-                })
-                .await
-                .unwrap();
-        }
-    }
 }
 
 // Independent pre-fix cursors: LocalStream boxes each step; MemoryStream does
@@ -133,46 +120,6 @@ async fn records(provider: BaselineProvider) -> RecordStream {
     }
 }
 
-async fn children(provider: BaselineProvider) -> ChildStream {
-    let local = matches!(&provider, BaselineProvider::Local(_));
-    let parent = Some(StreamPath::new("root").unwrap());
-    let changed = provider.memory().child_changes(parent.as_ref()).await;
-    stream::unfold(
-        (provider, parent, None, changed),
-        move |(provider, parent, previous, mut changed)| async move {
-            let read = async {
-                match &provider {
-                    BaselineProvider::Memory(provider) => {
-                        provider
-                            .next_child_snapshot(parent.as_ref(), previous.as_ref(), &mut changed)
-                            .await
-                    }
-                    BaselineProvider::Local(provider) => {
-                        provider
-                            .accepted(provider.inner.provider.next_child_snapshot(
-                                parent.as_ref(),
-                                previous.as_ref(),
-                                &mut changed,
-                            ))
-                            .await?
-                    }
-                }
-            };
-            let path = if local {
-                read.boxed().await
-            } else {
-                read.await
-            }
-            .unwrap()?;
-            Some((
-                Ok(Child { path: path.clone() }),
-                (provider, parent, Some(path), changed),
-            ))
-        },
-    )
-    .boxed()
-}
-
 fn compare<T: Send + Debug + Eq + 'static>(
     old: BoxStream<'static, Result<T, StreamError>>,
     candidate: BoxStream<'static, Result<T, StreamError>>,
@@ -203,7 +150,8 @@ fn compare<T: Send + Debug + Eq + 'static>(
                 trace.push((step, true));
             }
             let mut times = elapsed.get();
-            times[index] = start.elapsed().as_nanos();
+            *times.get_mut(index).expect("one of two compared streams") =
+                start.elapsed().as_nanos();
             elapsed.set(times);
             (output, trace)
         }
@@ -234,8 +182,7 @@ fn compare<T: Send + Debug + Eq + 'static>(
 async fn prepare<P: StreamProvider>(
     old: &P,
     candidate: &P,
-    baseline: BaselineProvider,
-    child: bool,
+    baseline: &BaselineProvider,
 ) -> ReadyPair {
     let path = StreamPath::new("root").unwrap();
     // Compare exact errors as well as all record bytes/metadata and observer order.
@@ -249,20 +196,9 @@ async fn prepare<P: StreamProvider>(
     let [old_error, candidate_error] = errors;
     assert_eq!(old_error.await.err(), Some(StreamError::OutOfRange));
     assert_eq!(candidate_error.await.err(), Some(StreamError::OutOfRange));
-    if child {
-        ReadyPair::Children(
-            children(baseline).await,
-            candidate
-                .children(ChildrenRequest {
-                    parent: Some(StreamPath::new("root").unwrap()),
-                    limit: COUNT as u32,
-                })
-                .await
-                .unwrap(),
-        )
-    } else {
+    {
         ReadyPair::Records(
-            records(baseline).await,
+            records(baseline.clone()).await,
             candidate
                 .follow(
                     StreamPath::new("root").unwrap(),
@@ -277,13 +213,11 @@ async fn prepare<P: StreamProvider>(
 
 enum ReadyPair {
     Records(RecordStream, RecordStream),
-    Children(ChildStream, ChildStream),
 }
 impl ReadyPair {
     fn measure(self, negative: bool, label: &str) -> (u128, u128) {
         match self {
             Self::Records(old, candidate) => compare(old, candidate, negative, label),
-            Self::Children(old, candidate) => compare(old, candidate, negative, label),
         }
     }
 }
@@ -292,19 +226,18 @@ fn sample<P: StreamProvider>(
     runtime: &tokio::runtime::Runtime,
     old: &P,
     candidate: &P,
-    baseline: BaselineProvider,
-    child: bool,
+    baseline: &BaselineProvider,
     negative: bool,
     label: &str,
 ) {
     runtime.block_on(deferring_durability(async {
-        seed(old, child).await;
-        seed(candidate, child).await;
+        seed(old).await;
+        seed(candidate).await;
     }));
     let mut before = Vec::with_capacity(31);
     let mut after = Vec::with_capacity(31);
     for _ in 0..31 {
-        let ready = runtime.block_on(prepare(old, candidate, baseline.clone(), child));
+        let ready = runtime.block_on(prepare(old, candidate, baseline));
         // Ready polling is measured outside the executor's cooperative budget.
         let (old, candidate) = ready.measure(negative, label);
         before.push(old);
@@ -314,9 +247,9 @@ fn sample<P: StreamProvider>(
     after.sort_unstable();
     println!(
         "{label}: records={COUNT} samples=31 baseline_ns={} candidate_ns={} candidate_p95_ns={} baseline_allocations={} candidate_allocations=0 candidate_bytes=0",
-        before[15],
-        after[15],
-        after[29],
+        before.get(15).expect("31 samples"),
+        after.get(15).expect("31 samples"),
+        after.get(29).expect("31 samples"),
         if label.starts_with("local_") {
             COUNT
         } else {
@@ -330,21 +263,16 @@ fn run(negative: bool) {
         .enable_all()
         .build()
         .unwrap();
-    for child in [false, true] {
+    {
         let old = MemoryStream::new_with_clock(MemoryLimits::default(), Arc::new(Clock));
         let candidate = MemoryStream::new_with_clock(MemoryLimits::default(), Arc::new(Clock));
         sample(
             &runtime,
             &old,
             &candidate,
-            BaselineProvider::Memory(old.clone()),
-            child,
+            &BaselineProvider::Memory(old.clone()),
             negative,
-            if child {
-                "memory_children"
-            } else {
-                "memory_follow"
-            },
+            "memory_follow",
         );
         let old_root = tempfile::tempdir().unwrap();
         let candidate_root = tempfile::tempdir().unwrap();
@@ -366,14 +294,9 @@ fn run(negative: bool) {
             &runtime,
             &old,
             &candidate,
-            BaselineProvider::Local(old.clone()),
-            child,
+            &BaselineProvider::Local(old.clone()),
             negative,
-            if child {
-                "local_children"
-            } else {
-                "local_follow"
-            },
+            "local_follow",
         );
     }
 }

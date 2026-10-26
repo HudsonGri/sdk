@@ -131,6 +131,7 @@ async fn seed(
         forks.push(
             provider
                 .fork(ForkRequest {
+                    exclude: Vec::new(),
                     source,
                     destination: target.clone(),
                     at_tail: Some((batches / 2) as u64),
@@ -141,6 +142,7 @@ async fn seed(
         forks.push(
             provider
                 .fork(ForkRequest {
+                    exclude: Vec::new(),
                     source: StreamPath::new("history/source").unwrap(),
                     destination: target.clone(),
                     at_tail: None,

@@ -42,8 +42,10 @@ impl<P: StreamProvider> Stream<P> {
     pub async fn append(
         &self,
         value: impl Into<AppendRecord>,
+        idempotency_key: IdempotencyKey,
     ) -> Result<AppendOutcome, StreamError> {
-        self.append_batch(vec![value.into()], None, None).await
+        self.append_batch(vec![value.into()], None, idempotency_key)
+            .await
     }
 
     /// Appends one record only at the exact tail.
@@ -51,8 +53,9 @@ impl<P: StreamProvider> Stream<P> {
         &self,
         value: impl Into<AppendRecord>,
         if_tail: u64,
+        idempotency_key: IdempotencyKey,
     ) -> Result<AppendOutcome, StreamError> {
-        self.append_batch(vec![value.into()], Some(if_tail), None)
+        self.append_batch(vec![value.into()], Some(if_tail), idempotency_key)
             .await
     }
 
@@ -61,14 +64,14 @@ impl<P: StreamProvider> Stream<P> {
         &self,
         records: Vec<AppendRecord>,
         if_tail: Option<u64>,
-        idempotency_key: Option<IdempotencyKey>,
+        idempotency_key: IdempotencyKey,
     ) -> Result<AppendOutcome, StreamError> {
         self.provider
             .append(AppendRequest {
                 path: self.path.clone(),
                 records,
                 if_tail,
-                idempotency_key: Some(idempotency_key.unwrap_or_else(new_idempotency_key)),
+                idempotency_key: Some(idempotency_key),
             })
             .await
     }
@@ -78,14 +81,16 @@ impl<P: StreamProvider> Stream<P> {
         &self,
         destination: impl AsRef<str>,
         at_tail: Option<u64>,
-        idempotency_key: Option<IdempotencyKey>,
+        exclude: Vec<RelativePath>,
+        idempotency_key: IdempotencyKey,
     ) -> Result<ForkReceipt, StreamError> {
         self.provider
             .fork(ForkRequest {
+                exclude,
                 source: self.path.clone(),
                 destination: StreamPath::new(destination)?,
                 at_tail,
-                idempotency_key: Some(idempotency_key.unwrap_or_else(new_idempotency_key)),
+                idempotency_key: Some(idempotency_key),
             })
             .await
     }
@@ -157,12 +162,11 @@ impl<P: StreamProvider> Replay<P> {
     }
 }
 
-/// Every fresh Stream identity crosses this seam; replays draw seeded bytes.
-fn new_idempotency_key() -> IdempotencyKey {
-    IdempotencyKey(new_identity_bytes().into())
-}
-
 /// Transport callers keep this allocation instead of copying a domain wrapper.
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 fn new_identity_bytes() -> bytes::Bytes {
     bytes::Bytes::copy_from_slice(&new_identity())
 }

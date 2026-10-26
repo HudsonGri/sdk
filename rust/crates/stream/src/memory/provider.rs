@@ -1,3 +1,66 @@
+fn namespace_page(
+    index: &Index,
+    lower: Option<&str>,
+    parent: Option<&StreamPath>,
+    limit: usize,
+    out: &mut Vec<StreamPath>,
+) -> Result<(), StreamError> {
+    let Some(edge) = index else {
+        return Ok(());
+    };
+    if lower.is_none_or(|after| edge.name.text.as_str() > after) {
+        namespace_page(&edge.left, lower, parent, limit, out)?;
+        if out.len() == limit {
+            return Ok(());
+        }
+        out.push(StreamPath::new(parent.map_or_else(
+            || edge.name.text.to_string(),
+            |parent| format!("{}/{}", parent.as_str(), edge.name.text),
+        ))?);
+    }
+    if out.len() < limit {
+        namespace_page(&edge.right, lower, parent, limit, out)?;
+    }
+    Ok(())
+}
+
+fn projected_tail(
+    paths: &Namespace,
+    path: &StreamPath,
+    relative: Option<&StreamPath>,
+) -> Result<Option<Record>, StreamError> {
+    let Some(relative) = relative else {
+        return Ok(None);
+    };
+    // A combined path over the bound cannot exist, so that child has no tail;
+    // one long child never fails the page.
+    if path.as_str().len() + 1 + relative.as_str().len() > crate::MAX_PATH_BYTES {
+        return Ok(None);
+    }
+    let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
+    let Some(stream) = paths.get(&target) else {
+        return Ok(None);
+    };
+    let Some(from) = stream.tail.checked_sub(1) else {
+        return Ok(None);
+    };
+    if let Some(window) = stream.prefix_window(from, stream.tail) {
+        return Ok(window.records.records.get(window.start).cloned());
+    }
+    Ok(
+        HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
+            |(history, ceiling)| {
+                if let History::Batch { records, .. } = history {
+                    history_window(Arc::clone(records), ceiling, from)
+                        .and_then(|window| window.records.records.get(window.start).cloned())
+                } else {
+                    None
+                }
+            },
+        ),
+    )
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl StreamProvider for MemoryStream {
@@ -59,7 +122,7 @@ impl StreamProvider for MemoryStream {
             state.paths.get(&request.source).map(|path| path.tail),
             state.paths.get(&request.destination).map(|path| path.tail),
         )?;
-        reserve_paths(&state, &request.destination, self.limits)?;
+        reserve_fork(&state, &request, self.limits)?;
         reserve_commit(&state, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -74,6 +137,7 @@ impl StreamProvider for MemoryStream {
         let envelope = CommittedEnvelope {
             commit_id,
             mutations: vec![CommittedMutation::Fork(CommittedFork {
+                exclude: crate::request::canonical_exclusions(&request.exclude)?,
                 source: receipt.source.clone(),
                 destination: receipt.destination.clone(),
                 forked_at,
@@ -84,7 +148,13 @@ impl StreamProvider for MemoryStream {
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
         self.reserve_retained(&mut state)?;
-        publish(&mut state, paths, histories, &envelope)?;
+        publish(
+            &mut state,
+            paths,
+            histories,
+            &envelope,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+        )?;
         state.decision = decision;
         retain(
             &mut state,
@@ -149,10 +219,6 @@ impl StreamProvider for MemoryStream {
         self.progress_from(path, from, preceding, filter).await
     }
 
-    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.follow_children(request).await
-    }
-
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
@@ -176,37 +242,26 @@ impl StreamProvider for MemoryStream {
         {
             return Err(StreamError::HierarchyChanged);
         }
-        let parent_prefix = request
+        let children = request
             .parent
             .as_ref()
-            .map(|parent| format!("{}/", parent.as_str()));
-        let lower = request.after.as_ref().map_or_else(
-            || {
-                parent_prefix
-                    .as_deref()
-                    .map_or(Bound::Unbounded, Bound::Included)
-            },
-            |after| Bound::Excluded(after.as_str()),
-        );
-        let candidates = state
-            .paths
-            .range::<str, _>((lower, Bound::Unbounded))
-            .map(|(path, _)| path);
-        let mut paths = candidates
-            .take_while(|path| {
-                parent_prefix
-                    .as_ref()
-                    .is_none_or(|prefix| path.as_str().starts_with(prefix))
-            })
-            .filter(|path| {
-                request.parent.as_ref().map_or_else(
-                    || !path.as_str().contains('/'),
-                    |parent| path.parent().as_ref() == Some(parent),
-                )
-            })
-            .take(request.limit as usize + 1)
-            .cloned()
-            .collect::<Vec<_>>();
+            .map_or(Some(&state.paths.roots), |parent| {
+                state.paths.node(parent).map(|node| &node.children)
+            });
+        let lower = request
+            .after
+            .as_ref()
+            .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
+        let mut paths = Vec::new();
+        if let Some(children) = children {
+            namespace_page(
+                children,
+                lower,
+                request.parent.as_ref(),
+                request.limit as usize + 1,
+                &mut paths,
+            )?;
+        }
         let has_more = paths.len() > request.limit as usize;
         paths.truncate(request.limit as usize);
         let next_after = if has_more {
@@ -214,11 +269,44 @@ impl StreamProvider for MemoryStream {
         } else {
             None
         };
-        Ok(ChildrenPage {
+        let mut page_bytes =
+            64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
+        let children = paths
+            .into_iter()
+            .map(|path| {
+                let tail_record =
+                    projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+                let child = Child { path, tail_record };
+                let encoded = crate::wire::Child {
+                    path: child.path.to_string(),
+                    tail_record: child
+                        .tail_record
+                        .clone()
+                        .map(crate::wire_codec::record_wire),
+                };
+                #[cfg(all(acyclic_loom, feature = "local"))]
+                let size = if crate::verification::fault_is(
+                    crate::verification::Fault::IgnorePageRecordBytes,
+                ) {
+                    encoded.path.len()
+                } else {
+                    prost::Message::encoded_len(&encoded)
+                };
+                #[cfg(not(all(acyclic_loom, feature = "local")))]
+                let size = prost::Message::encoded_len(&encoded);
+                page_bytes = page_bytes.saturating_add(size).saturating_add(10);
+                if page_bytes > crate::MAX_COMMAND_BYTES {
+                    return Err(StreamError::LimitExceeded);
+                }
+                Ok(child)
+            })
+            .collect::<Result<Vec<_>, StreamError>>()?;
+        let result = ChildrenPage {
             hierarchy_version: state.hierarchy_version,
-            children: paths.into_iter().map(|path| Child { path }).collect(),
+            children,
             next_after,
-        })
+        };
+        Ok(result)
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {

@@ -15,17 +15,17 @@ use schedules::traces;
 // Rust engine in stream/tests/client_pool_loom.rs and stream/models. The
 // browser recovery sequence is qualified in session-latest.test.ts; these
 // remaining models exercise JavaScript provider selection and platform I/O.
-fn child_selection(fault: &str) {
+fn follow_selection(fault: &str) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     for trace in traces(&["releaseSelection"], &["abort"]) {
-        let mut driver = driver::Driver::configured(&root, "childSelect", fault);
+        let mut driver = driver::Driver::configured(&root, "followSelect", fault);
         driver.call(json!({"action":"ready"}));
         for action in trace {
             let state = driver.call(json!({"action":action}));
             if action == "abort" {
                 assert_eq!(
                     state["settled"], true,
-                    "child cancellation must not wait for provider selection"
+                    "follow cancellation must not wait for provider selection"
                 );
                 assert_eq!(state["active"], 0);
             }
@@ -193,13 +193,13 @@ fn a_long_lived_driver_is_renewed_between_runs_not_reset_per_input() {
     assert_eq!(driver.remaining, 14);
 }
 #[test]
-fn default_child_selection_and_cancellation_are_independent() {
-    child_selection("");
+fn default_follow_selection_and_cancellation_are_independent() {
+    follow_selection("");
 }
 #[test]
-#[should_panic(expected = "child cancellation must not wait for provider selection")]
-fn child_selection_negative_control_omits_the_selection_signal() {
-    child_selection("childSelect");
+#[should_panic(expected = "follow cancellation must not wait for provider selection")]
+fn follow_selection_negative_control_omits_the_selection_signal() {
+    follow_selection("followSelect");
 }
 
 fn rejected_subscription(fault: &str) {
@@ -396,24 +396,6 @@ fn deadline_cancels_a_blocked_subscription_write() {
     blocked_deadline("deadline-subscription", "");
 }
 #[test]
-fn child_deadline_cancels_a_blocked_subscription_write() {
-    blocked_deadline("deadline-subscription-children", "");
-}
-#[test]
-#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
-fn child_deadline_negative_control_omits_timeout() {
-    blocked_deadline("deadline-subscription-children", "deadline");
-}
-#[test]
-fn child_deadline_cancels_a_blocked_acknowledgement_write() {
-    blocked_deadline("deadline-ack-children", "");
-}
-#[test]
-#[should_panic(expected = "deadline must settle next without releasing the blocked write")]
-fn child_deadline_negative_control_waits_for_a_blocked_write() {
-    blocked_deadline("deadline-ack-children", "write");
-}
-#[test]
 #[should_panic(expected = "deadline must settle next without releasing the blocked write")]
 fn blocked_subscription_negative_control_awaits_the_write() {
     blocked_deadline("deadline-subscription", "write");
@@ -432,11 +414,6 @@ fn blocked_acknowledgement_negative_control_awaits_the_write() {
 #[should_panic(expected = "cancelling a blocked write must preserve the sibling")]
 fn blocked_subscription_negative_control_drops_the_platform_write_signal() {
     blocked_deadline("deadline-subscription", "writeSignal");
-}
-#[test]
-#[should_panic(expected = "cancelling a blocked write must preserve the sibling")]
-fn child_subscription_negative_control_drops_the_platform_write_signal() {
-    blocked_deadline("deadline-subscription-children", "writeSignal");
 }
 
 fn queue_cancellation(fault: &str) {
@@ -519,15 +496,6 @@ proptest::proptest! {
         let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
         let hex: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
         shared.lock().unwrap().run().call(json!({"action":"decode", "hex":hex}));
-    }
-
-    #[test]
-    fn child_frames_round_trip_and_enforce_the_direct_parent(name in "[a-z]{1,8}", nested in proptest::prelude::any::<bool>()) {
-        static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
-        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
-        let path = if nested { format!("parent/{name}") } else { name };
-        let result = shared.lock().unwrap().run().call(json!({"action":"child", "path":path}));
-        proptest::prop_assert_eq!(&result["outcome"], &json!(if nested { "unavailable" } else { "child" }));
     }
 
     #[test]

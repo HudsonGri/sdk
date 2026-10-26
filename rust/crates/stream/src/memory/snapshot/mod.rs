@@ -97,7 +97,7 @@ fn encode(state: &State) -> Vec<u8> {
     }
     put_len(&mut out, state.paths.len());
     for (path, stream) in &state.paths {
-        put_bytes(&mut out, path.as_str().as_bytes());
+        put_bytes(&mut out, path.as_bytes());
         put_len(&mut out, reference(&stream.history));
         put_u64(&mut out, stream.tail);
     }
@@ -205,7 +205,14 @@ fn decode(encoded: &[u8]) -> Option<State> {
                 }),
             )
             .ok()?;
-        publish(&mut state, paths, histories, envelope).ok()?;
+        publish(
+            &mut state,
+            paths,
+            histories,
+            envelope,
+            &mut super::NamespaceBuilder::new(&|_| Ok(None)),
+        )
+        .ok()?;
     }
     state.retained = inventory;
     state.decision = decision;
