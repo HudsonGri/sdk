@@ -282,4 +282,19 @@ mod tests {
         projection.bindings[0].captured.pointer = "/request".into();
         assert!(bind_selectors(&projection, &original, &decoded, Some(&request)).is_err());
     }
+
+    #[test]
+    fn a_declared_projection_cannot_fall_back_to_an_unbound_reply() {
+        let step = Step {
+            recording_projection: Some(policy()),
+            text: vec!["unbound".into()],
+            ..Step::default()
+        };
+        assert!(crate::reply_with_usage("responses", &step, 0).is_none());
+        let ordinary = Step {
+            recording_projection: None,
+            ..step
+        };
+        assert!(crate::reply_with_usage("responses", &ordinary, 0).is_some());
+    }
 }

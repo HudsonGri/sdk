@@ -179,6 +179,11 @@ pub fn reply(path: &str, step: &Step, input_tokens: u64) -> Option<Reply> {
         });
         return Some(reply);
     }
+    // A declared projection can only emit its bound derivation. Calling the
+    // codec before binding must not silently serve captured, stale selectors.
+    if step.recording_projection.is_some() {
+        return None;
+    }
     if let Some(replay) = &step.replay {
         return Some(Reply {
             origin: Some(ReplayOrigin {
