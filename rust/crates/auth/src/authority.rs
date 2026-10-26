@@ -69,6 +69,7 @@ pub struct Request<'a> {
 /// Strict canonical ingress: unknown fields, duplicate fields and old bearer
 /// payloads fail closed rather than becoming an unsigned semantic projection.
 pub fn decode_block(bytes: &[u8]) -> Result<Block, Error> {
+    crate::validation::encoded(bytes)?;
     let wire = BlockProto::decode(bytes).map_err(|_| Error::Invalid)?;
     if wire.encode_to_vec() != bytes {
         return Err(Error::Invalid);
@@ -78,6 +79,7 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, Error> {
 
 /// Strict single-caveat ingress shared by native and browser holders.
 pub fn decode_caveat(bytes: &[u8]) -> Result<Caveat, Error> {
+    crate::validation::encoded(bytes)?;
     let wire = CaveatProto::decode(bytes).map_err(|_| Error::Invalid)?;
     if wire.encode_to_vec() != bytes {
         return Err(Error::Invalid);
@@ -87,6 +89,7 @@ pub fn decode_caveat(bytes: &[u8]) -> Result<Caveat, Error> {
 
 /// Strict envelope ingress, including block position, version and depth checks.
 pub fn decode_capability(bytes: &[u8]) -> Result<Capability, Error> {
+    crate::validation::encoded(bytes)?;
     let wire = CapabilityProto::decode(bytes).map_err(|_| Error::Invalid)?;
     if wire.version != crate::VERSION {
         return Err(Error::UnsupportedVersion(wire.version));
@@ -283,7 +286,10 @@ pub(crate) fn permits_subtree(
         && blocks.iter().all(|block| {
             block.caveats.iter().all(|caveat| match &caveat.kind {
                 CaveatKind::Grants(grants) => grants_allow(grants, r, true, true),
-                CaveatKind::Filter(_) | CaveatKind::Pin(_) => false,
+                CaveatKind::Filter(filter) => {
+                    filter.keys.is_empty() && filter.attributes.is_empty()
+                }
+                CaveatKind::Pin(_) => false,
                 _ => true,
             })
         })

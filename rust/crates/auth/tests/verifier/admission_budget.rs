@@ -42,3 +42,15 @@ fn direct_verification_refuses_oversized_signed_input_without_decode_allocations
     assert_eq!(measured.count_total, 0);
     assert_eq!(measured.bytes_total, 0);
 }
+
+#[test]
+fn standalone_authority_decoders_share_preallocation_byte_admission() {
+    let bytes = vec![0; MAX_CREDENTIAL_BYTES + 1];
+    let measured = acyclic_test_support::measure(|| {
+        assert!(acyclic_auth::authority::decode_capability(&bytes).is_err());
+        assert!(acyclic_auth::authority::decode_block(&bytes).is_err());
+        assert!(acyclic_auth::authority::decode_caveat(&bytes).is_err());
+    });
+    assert_eq!(measured.count_total, 0);
+    assert_eq!(measured.bytes_total, 0);
+}

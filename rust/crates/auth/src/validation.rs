@@ -5,6 +5,12 @@ fn require(valid: bool) -> Result<(), Error> {
     if valid { Ok(()) } else { Err(Error::Invalid) }
 }
 
+/// Admit encoded authority before any protobuf allocation, including callers
+/// that enter through the standalone block or caveat decoders.
+pub(crate) fn encoded(bytes: &[u8]) -> Result<(), Error> {
+    require(bytes.len() <= crate::credential::MAX_CREDENTIAL_BYTES)
+}
+
 pub(crate) fn resource(value: &ResourcePattern) -> Result<(), Error> {
     require(valid_resource(&value.name))
 }

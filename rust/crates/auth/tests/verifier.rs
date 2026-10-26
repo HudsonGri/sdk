@@ -6,6 +6,8 @@ mod admission_budget;
 mod current_trust;
 #[path = "verifier/proof_storage.rs"]
 mod proof_storage;
+#[path = "verifier/subtree.rs"]
+mod subtree;
 #[path = "common/signed.rs"]
 mod signed;
 use acyclic_auth::{authority::PolicyDecision, contract::*, verify::*};
