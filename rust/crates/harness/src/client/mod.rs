@@ -73,6 +73,20 @@ pub use acyclic_harness_client::{
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use acyclic_harness_client::{StreamView, StreamViewPolicy, WireSession, WireSessionError};
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+mod agents;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use agents::{AgentClient, AgentClientError, AgentEvent};
+#[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod agent_local;
+#[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use agent_local::{AgentTurn, LocalAgentClient, LocalAgentError};
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;
