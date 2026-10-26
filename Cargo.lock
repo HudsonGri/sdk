@@ -420,10 +420,15 @@ dependencies = [
 name = "acyclic-harness-client"
 version = "0.2.0"
 dependencies = [
+ "acyclic-harness-core",
  "acyclic-stream",
  "bytes",
  "futures",
  "proptest",
+ "serde",
+ "thiserror 2.0.21",
+ "tsify",
+ "wasm-bindgen",
 ]
 
 [[package]]
