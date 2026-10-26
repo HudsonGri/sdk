@@ -26,6 +26,7 @@ use std::{
 // Unit fixtures exercise the native owner even for portable feature checks.
 // Its providers are ordinary dev-dependencies; the library never depends on itself.
 mod admission;
+mod agents;
 mod bind;
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout_tools;
@@ -54,6 +55,7 @@ mod turn;
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
 mod workspace;
+pub use agents::{LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
 #[cfg(any(test, feature = "native-execution"))]
@@ -69,6 +71,11 @@ pub type LocalTaskRuntime<P = LocalStream, A = LocalAuthorityBackend, O = LocalO
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
+    /// The root agent's identity and signing key; its agents start on first
+    /// use. An embedded `bind` has no signing custody, so it hosts no agents.
+    agent: AgentId,
+    agent_key: Option<[u8; 32]>,
+    agents: tokio::sync::OnceCell<agents::Hosted>,
     task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
