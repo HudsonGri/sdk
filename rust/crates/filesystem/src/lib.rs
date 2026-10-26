@@ -197,9 +197,9 @@ pub use facade::{
     DirectoryBindingChange, DirectoryRecordEntry, DirectoryRecordPage, EmbeddedCapabilities,
     FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError, FsResult, GenerationDiff,
     JoinCommitWitness, LiveMutationOutcome, LivePublicationObservation, MergeConflict,
-    MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, PreparedJoinCheckpoint,
-    ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest,
-    StagedContent, Volume, VolumeInitialization,
+    MergePreparation, NamedAttributeWriteMode, PathMetadataLookup, PinnedReader,
+    PreparedJoinCheckpoint, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
+    ResolvedFileRangeReadRequest, StagedContent, Volume, VolumeInitialization,
 };
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use facade::{

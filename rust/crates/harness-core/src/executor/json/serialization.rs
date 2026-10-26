@@ -289,7 +289,7 @@ fn raw_fragment_value(fragment: &str, scope: &mut Scope<'_>) -> Result<(Value, u
     }
     let shape = JsonValueShape {
         input_bytes: fragment.len() as u64,
-        value_string_bytes: 0,
+        longest_string: 0,
         lexical_items: lexical.items,
         containers: lexical.containers,
         virtual_items: 0,

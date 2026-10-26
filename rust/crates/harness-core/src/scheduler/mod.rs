@@ -48,7 +48,7 @@ impl TaskModelClaims {
 
 // Immutable ancestry and root-local counters are projected by the same event
 // application as operations. No caller maintains or reconstructs a second tree.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 struct TreeEntry {
     root: OperationId,
     depth: u32,
