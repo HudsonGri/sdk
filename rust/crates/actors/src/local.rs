@@ -1,4 +1,6 @@
 //! Single-node Actors runtime primitives over the canonical Stream transaction.
+/// Shared readiness registration and hibernation handoff.
+pub mod ready;
 use crate::addressing::ActorReference;
 use crate::guest::{AlarmChange, Checkpoint, Transition, Trigger};
 use acyclic_stream::{
