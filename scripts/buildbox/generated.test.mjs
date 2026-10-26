@@ -1,10 +1,80 @@
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
 const here=path.dirname(new URL(import.meta.url).pathname);
+test('launch acknowledgement follows observable wrapper readiness, including slow recovery and early death',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'wrapper-readiness-'));
+ try{
+  fs.writeFileSync(path.join(cwd,'generator.mjs'),fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport {launchScript};\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {launchScript}=await import(path.join(cwd,'generator.mjs'));
+  const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
+  const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{});
+  const encoded=script.match(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.wrap\b/);
+  const wrapper=Buffer.from(encoded[1],'base64').toString();
+  const start=wrapper.indexOf('echo $$ > $J.wpid');
+  const close=wrapper.indexOf('exec 3>&-',start);
+  assert.ok(start>=0&&close>start);
+  const acknowledgement=wrapper.slice(start,close+'exec 3>&-'.length);
+  assert.doesNotMatch(acknowledgement,/bb-admit|receipt-meta/u,'fixture executes only the generated acknowledgement');
+  assert.ok(start>wrapper.indexOf('node $J.receipt-tool.mjs arm'),'receipt custody precedes acknowledgement');
+  const current=script.slice(script.lastIndexOf('ready=$(setsid'));
+  const directory=path.join(here,'fixtures/startup-readiness');
+  const origin=JSON.parse(fs.readFileSync(path.join(directory,'origin.json')));
+  const former=fs.readFileSync(path.join(directory,'former-launch.sh.txt'),'utf8');
+  const {createHash}=await import('node:crypto');
+  assert.equal(createHash('sha256').update(former).digest('hex'),origin.sha256);
+  function waitPath(file){
+   return new Promise((resolve,reject)=>{
+    const watcher=fs.watch(cwd,()=>{if(fs.existsSync(file)){watcher.close();resolve();}});
+    watcher.on('error',reject);
+    if(fs.existsSync(file)){watcher.close();resolve();}
+   });
+  }
+  function launch(prefix,body){
+   const child=spawn('bash',['-c',`set -eu\nJ='${prefix}'\n${body}`],{stdio:['ignore','pipe','pipe']});
+   let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);
+   const completed=new Promise((resolve,reject)=>child.on('error',reject).on('close',status=>resolve({status,stdout,stderr})));
+   return {child,completed};
+  }
+  for(const negative of [true,false]){
+   const prefix=path.join(cwd,negative?'former':'current');
+   assert.equal(spawnSync('mkfifo',[prefix+'.release']).status,0);
+   // An OS FIFO is a deterministic barrier for the wrapper's pre-readiness
+   // recovery, not fabricated provider output or a raised production budget.
+   fs.writeFileSync(prefix+'.wrap',`J='${prefix}'\ntouch "$J.blocked"\nread -r release < "$J.release"\n${negative?'echo $$ > $J.wpid':acknowledgement}\ntouch "$J.ran"\n`);
+   const blocked=waitPath(prefix+'.blocked'),ran=waitPath(prefix+'.ran');
+   const job=launch(prefix,negative?former:current);
+   await blocked;
+   if(negative){
+    const result=await job.completed;
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.trim(),'launched');
+    assert.equal(fs.existsSync(prefix+'.wpid'),false,'actual former launch reports readiness before the wrapper is observable');
+    assert.equal(fs.existsSync(prefix+'.ran'),false);
+   }else{
+    assert.equal(job.child.exitCode,null,'acknowledgement remains blocked by actual wrapper readiness');
+   }
+   fs.writeFileSync(prefix+'.release','release\n');
+   await ran;
+   if(!negative){
+    const result=await job.completed;
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.trim(),'launched');
+    assert.ok(fs.existsSync(prefix+'.wpid'));
+   }
+  }
+  const prefix=path.join(cwd,'early-death');
+  fs.writeFileSync(prefix+'.wrap','exit 73\n');
+  const refused=await launch(prefix,current).completed;
+  assert.equal(refused.status,224,refused.stdout+refused.stderr);
+  assert.equal(refused.stdout,'');
+  assert.match(refused.stderr,/kind=LAUNCH_INFRA step=wrapper-readiness owner=gate-speed recovery=build-slot --remote/u);
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
 // Test callers name their tenant explicitly, exactly as production callers
 // must at cut-over; the launcher has no repository/name inference fallback.
 process.env.BUILD_SLOT_TENANT='graphcoder';

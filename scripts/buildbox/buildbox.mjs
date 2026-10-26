@@ -719,6 +719,8 @@ mkdir -p /mnt/bb/locks/wt-sdk
 exec 6>${leaseFile}
 flock -s 6
 echo $$ > $J.wpid
+printf '%s\\n' BB-WRAPPER-READY >&3
+exec 3>&-
 while [ "$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)" -lt 24 ] || [ "$(awk -F'[= ]' '/^some/{print int($3)}' /proc/pressure/memory 2>/dev/null || echo 0)" -gt 10 ]; do sleep 5; done
 # Warm restore (2026-10-18, crit-bslot): after a fresh /mnt/bb, bb-warm restore copies sccache back from the persistent disk
 # /mnt/bbp first; jobs wait for it (max 10 min) so no sccache server starts on a half-copied dir.
@@ -812,8 +814,14 @@ echo ${Buffer.from(inner).toString('base64')} | base64 -d > $J.sh
 echo ${Buffer.from(admitted).toString('base64')} | base64 -d > $J.admitted
 echo ${Buffer.from(wrapper).toString('base64')} | base64 -d > $J.wrap
 touch $J.t0 $J.hb $J.out $J.err
-setsid nohup bash $J.wrap > /dev/null 2>&1 < /dev/null &
-for i in $(seq 50); do [ -s $J.wpid ] && break; sleep 0.1; done
+# The wrapper closes this private pipe after publishing its observable PID.
+# Slow receipt recovery cannot be mistaken for a vanished job; death before
+# acknowledgement closes the pipe without admitting a payload.
+ready=$(setsid nohup bash $J.wrap 3>&1 > /dev/null 2>&1 < /dev/null &)
+[ "$ready" = BB-WRAPPER-READY ] || {
+  echo >&2 ${q('kind=LAUNCH_INFRA step=wrapper-readiness owner=gate-speed recovery=build-slot --remote ' + argv.map(q).join(' '))}
+  exit 224
+}
 echo launched`;
 }
 

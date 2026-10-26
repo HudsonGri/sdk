@@ -197,3 +197,12 @@ A candidate payload that already finished before baseline admission was moved
 retains its original log and receipts. There is currently no canonical
 verdict-only continuation API, so preservation alone grants no PASS or merge
 and does not authorize automatically rebuilding that candidate.
+
+Remote launch acknowledges through one private pipe after the wrapper has
+armed receipt custody and published its observable PID. The wrapper closes
+the acknowledgement descriptor before admission or payload work. Slow receipt
+recovery therefore keeps launch pending instead of announcing a nonexistent
+job after a fixed poll. Death before acknowledgement returns typed
+`LAUNCH_INFRA` with the original recovery command. The generated-wrapper suite
+exercises the captured former launcher, a blocked recovery barrier and early
+wrapper death; no production polling or timeout is added.
