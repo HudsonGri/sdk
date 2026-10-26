@@ -98,7 +98,7 @@ pub use service::{
     SERVICE_READY_ARGUMENT, ServiceReadiness, ServiceReadySignal, ServiceStartOutcome,
     process_output, process_status, spawn_service_process, take_service_ready_signal,
 };
-pub use shell::shell_command;
+pub use shell::{host_command, shell_command};
 mod meter;
 pub use meter::{
     NativeByteReservation, NativeCodecReservation, NativeCodecWork, NativeOperationKind,

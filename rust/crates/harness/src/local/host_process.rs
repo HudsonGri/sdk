@@ -30,7 +30,7 @@ pub fn run_root_session(
             .ok_or_else(|| Error::Invalid("native root task absent".into()))?,
     )
     .map_err(storage)?;
-    let status = std::process::Command::new(program)
+    let status = acyclic_native_runtime::host_command(program)
         .args(arguments)
         .current_dir(cwd)
         .env(

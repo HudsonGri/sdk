@@ -1,6 +1,7 @@
 //! Installation uses native host configuration and never changes its sandbox.
 use super::*;
-use std::{fs, process::Command};
+use acyclic_native_runtime::host_command;
+use std::fs;
 
 pub(super) fn run(args: &[String]) -> Result<()> {
     let command = args
@@ -141,7 +142,7 @@ fn home() -> Result<PathBuf> {
 }
 
 fn check_codex() -> Result<()> {
-    let output = Command::new("codex").arg("--version").output()?;
+    let output = host_command("codex").arg("--version").output()?;
     if !output.status.success() {
         return Err("cannot identify Codex; requires Codex >= 0.164.0".into());
     }
@@ -151,7 +152,7 @@ fn check_codex() -> Result<()> {
 }
 
 fn codex(args: &[&str]) -> Result<()> {
-    let status = Command::new("codex").args(args).status()?;
+    let status = host_command("codex").args(args).status()?;
     if !status.success() {
         return Err(format!("Codex plugin manager failed: {status}").into());
     }

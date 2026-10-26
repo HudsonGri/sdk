@@ -124,7 +124,7 @@ pub(super) fn child(
     if session.is_some_and(|reference| reference.starts_with('-')) {
         return Err("native resume reference cannot be an option".into());
     }
-    let mut command = Command::new(program(host)?);
+    let mut command = acyclic_native_runtime::host_command(program(host)?);
     command
         .current_dir(cwd)
         .stdin(Stdio::piped())

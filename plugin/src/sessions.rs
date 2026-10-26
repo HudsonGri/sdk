@@ -38,12 +38,14 @@ impl Default for EventLines {
     }
 }
 impl EventLines {
-    fn push(&mut self, chunk: &[u8]) -> Vec<Value> {
+    fn push(&mut self, chunk: &[u8]) -> Vec<io::Result<Value>> {
         self.0
             .push(chunk)
             .into_iter()
-            .filter_map(std::result::Result::ok)
-            .filter_map(|line| serde_json::from_str(&line).ok())
+            .filter_map(|line| match line {
+                Ok(line) => serde_json::from_str(&line).ok().map(Ok),
+                Err(error) => Some(Err(error)),
+            })
             .collect()
     }
 }
@@ -184,6 +186,16 @@ impl Sessions {
                 .events
                 .push(chunk.get(..count).ok_or("native output count invalid")?)
             {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(_) => {
+                        // A dropped answer must replace an earlier preview.
+                        // Keep draining through the same bounded framer and
+                        // process owner; later complete answers remain usable.
+                        running.answer = "[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into();
+                        continue;
+                    }
+                };
                 let id = event
                     .get("thread_id")
                     .or_else(|| event.get("session_id"))
@@ -592,12 +604,21 @@ mod tests {
     #[test]
     fn oversized_native_tool_output_does_not_kill_or_wedge_the_host() {
         let mut events = EventLines::default();
+        let mut omitted = 0;
         for _ in 0..16 {
-            assert!(events.push(&[b'x'; 8192]).is_empty());
+            for event in events.push(&[b'x'; 8192]) {
+                assert!(event.is_err());
+                omitted += 1;
+            }
             assert!(events.0.buffered_bytes() <= 65_536);
         }
+        assert_eq!(omitted, 1, "oversized output must be reported once");
         assert_eq!(
-            events.push(b"\n{\"probe\":true}\n"),
+            events
+                .push(b"\n{\"probe\":true}\n")
+                .into_iter()
+                .collect::<io::Result<Vec<_>>>()
+                .expect("valid frame after omitted event"),
             vec![json!({"probe":true})]
         );
     }
