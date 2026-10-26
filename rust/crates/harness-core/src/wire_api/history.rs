@@ -1,6 +1,6 @@
 use super::*;
 use crate::{core::AuthorityVerifier, store::HistoryReader, wire_codec::encode_event_envelope};
-use acyclic_stream::StreamProvider;
+use acyclic_stream::{BoxProviderStream as BoxStream, StreamProvider};
 use futures::{StreamExt, stream};
 use std::sync::Arc;
 

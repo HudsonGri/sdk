@@ -240,15 +240,6 @@ message SchedulerEventEnvelope {
   optional uint64 committed_at_ms = 7;
 }
 
-service HarnessService {
-  rpc Handshake(acyclic.protocol.v1.HandshakeRequest) returns (acyclic.protocol.v1.HandshakeResponse);
-  rpc Submit(CommandEnvelope) returns (Admission);
-  rpc Replay(ResumeRequest) returns (stream Delivery);
-  rpc Observe(ObserveRequest) returns (OperationStatus);
-  rpc WatchOperation(ObserveRequest) returns (stream OperationStatus);
-  rpc Cancel(CancelRequest) returns (CancelResponse);
-}
-
 // Canonical ref-only conversation values. File bodies are never protocol events.
 message ProviderRef {
   string namespace = 1;
