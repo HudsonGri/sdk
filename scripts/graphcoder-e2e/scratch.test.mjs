@@ -6,23 +6,30 @@ import test from "node:test";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { Processes } from "./process.mjs";
 
-test("fixture descendants cannot inherit a temporary directory outside their lease", async () => {
+test("fixture descendants cannot inherit host profiles or temporary directories outside their lease", async () => {
   const root = mkdtempSync(join(tmpdir(), "scratch-contract-")), processes = new Processes();
   try {
     const outside = join(root, "unowned"), settings = join(root, "leased", "settings");
-    const inherited = { ...process.env, TEMP: outside, TMP: outside, TMPDIR: outside };
+    const keys = ["TEMP", "TMP", "TMPDIR", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR"];
+    const inherited = { ...process.env, ...Object.fromEntries(keys.map(key => [key, outside])) };
     const env = environment(settings, inherited);
     for (const key of ["TEMP", "TMP", "TMPDIR"]) assert.equal(env[key], join(settings, "tmp"));
-    for (const key of ["HOME", "USERPROFILE", "CODEX_HOME", "APPDATA", "LOCALAPPDATA", "TEMP"])
+    for (const [key, path] of [["CODEX_HOME", ".codex"], ["CLAUDE_CONFIG_DIR", ".claude"], ["PI_CODING_AGENT_DIR", ".pi/agent"]])
+      assert.equal(env[key], join(settings, path), `${key} must stay inside its fixture`);
+    for (const key of ["HOME", "USERPROFILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "APPDATA", "LOCALAPPDATA", "TEMP"])
       assert.ok(existsSync(env[key]), `${key} must exist before native host discovery`);
-    // Real Node temp discovery and a real child write, rather than an env-only assertion.
-    const code = "const p=require('node:path').join(require('node:os').tmpdir(),'child.txt');require('node:fs').writeFileSync(p,'leased');console.log(p)";
+    // Real Node temp discovery and real writes through every inherited host selector.
+    const code = `const fs=require('node:fs'),path=require('node:path');
+      const roots=[require('node:os').tmpdir(),...${JSON.stringify(keys)}.map(key=>process.env[key])];
+      const files=roots.map((root,index)=>{const file=path.join(root,index+'.txt');fs.writeFileSync(file,'leased');return file});
+      console.log(JSON.stringify(files))`;
     const child = await processes.run(process.execPath, ["-e", code], { env });
     assert.equal(child.code, 0, child.stderr);
-    assert.equal(child.stdout.trim(), join(settings, "tmp", "child.txt"));
-    assert.equal(readFileSync(child.stdout.trim(), "utf8"), "leased");
+    const files = JSON.parse(child.stdout);
+    assert.deepEqual(files, [join(settings, "tmp"), ...keys.map(key => env[key])].map((root, index) => join(root, `${index}.txt`)));
+    for (const file of files) assert.equal(readFileSync(file, "utf8"), "leased");
     assert.equal(existsSync(outside), false, "the inherited directory must never be touched");
-    assert.equal(inherited.TEMP, outside, "the caller's environment stays unchanged");
+    for (const key of keys) assert.equal(inherited[key], outside, "the caller's environment stays unchanged");
   } finally { await processes.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
