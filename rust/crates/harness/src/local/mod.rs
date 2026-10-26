@@ -88,8 +88,8 @@ pub struct LocalHarness {
     runtime: Arc<LocalTaskRuntime>,
     /// The root agent's identity and signing key; its agents start on first
     /// use. An embedded `bind` has no signing custody, so it hosts no agents.
-    agent: AgentId,
-    agent_authority: Option<crate::core::AuthorityRoot>,
+    root: AgentId,
+    root_authority: Option<crate::core::AuthorityRoot>,
     agents: tokio::sync::OnceCell<agents::Hosted>,
     #[cfg(feature = "grpc")]
     session: tokio::sync::OnceCell<LocalSession>,

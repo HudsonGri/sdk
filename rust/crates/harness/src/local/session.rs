@@ -37,12 +37,12 @@ impl LocalHarness {
     pub async fn session_binding(&self) -> Result<&LocalSession> {
         self.session
             .get_or_try_init(|| async {
-                let root = self.agent_authority.as_ref().ok_or_else(|| {
+                let root = self.root_authority.as_ref().ok_or_else(|| {
                     Error::Unsupported("embedded harness has no local session issuer".into())
                 })?;
                 let (authority, credential) = root.stream_session(
                     &self.signed,
-                    format!("harness:/sessions/{}", self.agent),
+                    format!("harness:/sessions/{}", self.root),
                     &acyclic_stream::StreamPath::new("harness").map_err(storage)?,
                 )?;
                 let client = Client::in_process(
