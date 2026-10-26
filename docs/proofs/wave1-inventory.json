@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T01:12:11.260368+00:00",
+  "generated_at": "2026-10-26T01:16:29.108790+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -12,6 +12,17 @@
     "path": "Q:/lanes/redesign/cloud-review/verify.md",
     "cloud_source_pin": "a80dd0b8d96a5af569a14fd05df01277ffdfee5a",
     "state": "source_review_resolved_proofs_pending"
+  },
+  "resolved_design_decisions": {
+    "sources": [
+      "Q:/lanes/redesign/streams.review2.md",
+      "Q:/lanes/redesign/fs.review1.md"
+    ],
+    "domain": "one versioned persistent namespace root per account tree; agent subtree and its volume authorities share domain; O(S) cross-domain serializable composition; never cross-cell",
+    "successful_keys": "namespace lifetime; retained with committed history reachable from live forks; never expired then replayed fresh",
+    "inspect": "terminal Committed(receipt) or Unknown; Unknown retries identical request; definitive conflict retry has internal attempt-generation fence",
+    "spawn": "fork_many contributes to caller CommitRequest together with subtree fork and ForkAdopted",
+    "query": "prefix plus glob, optional multiple volumes within same domain/cut; indexed work"
   },
   "entrypoints": [
     {
@@ -259,7 +270,7 @@
       "id": "fs.changefeed-cut",
       "owner": "fs-concurrency",
       "risk": "data_loss_or_corruption",
-      "invariant": "Snapshot cut plus exclusive follow cover each change exactly once in applied order; reconnect validates anchor and caps residency/subscriptions.",
+      "invariant": "Snapshot cut plus exclusive follow cover each change exactly once in applied order; reconnect validates anchor and caps residency/subscriptions. Query is path prefix plus glob, optionally across same-domain volumes; approvals/*/request.json uses indexed traversal rather than a whole-tree scan.",
       "proof_specification": "Append between each snapshot/register/replay boundary under real providers; bounded reference-history DST and decoder fuzz.",
       "negative_controls": [
         {
@@ -273,10 +284,15 @@
         {
           "mutation": "join replaced history",
           "status": "not_executed"
+        },
+        {
+          "mutation": "scan entire tree before applying prefix/glob",
+          "status": "not_executed"
         }
       ],
       "required_hooks_or_decisions": [
-        "query snapshot cut/cursor types",
+        "prefix/glob multi-volume query signature",
+        "snapshot cut/cursor and visited-index-entry counters",
         "append-segment changefeed API"
       ],
       "implementation_state": "specified_pending_owner_api",
@@ -351,7 +367,7 @@
       "id": "fs.fork-many",
       "owner": "fs-concurrency",
       "risk": "data_loss_or_corruption",
-      "invariant": "All requested roots and authority-owned lineage publish at one cut or none; retry preserves identities; no intermediate destination visible.",
+      "invariant": "All requested roots and authority-owned lineage publish at one cut or none; retry preserves identities; no intermediate destination visible. Agent and volume authority streams share the decided domain; fork_many contributes to the caller's composed CommitRequest with subtree fork and ForkAdopted, never opens its own commit.",
       "proof_specification": "Crash-cut canonical authority DST plus production root publication loom; cost counters scale with requested roots.",
       "negative_controls": [
         {
@@ -365,11 +381,16 @@
         {
           "mutation": "change identity on retry",
           "status": "not_executed"
+        },
+        {
+          "mutation": "open independent fork_many commit before subtree/ForkAdopted",
+          "status": "not_executed"
         }
       ],
       "required_hooks_or_decisions": [
-        "fork_many API/cut/receipt",
-        "explicit authority transaction domain"
+        "caller-supplied CommitRequest composition API",
+        "actual domain/participant identity",
+        "spawn-shaped crash cuts"
       ],
       "implementation_state": "specified_pending_owner_api",
       "source": [],
@@ -427,9 +448,9 @@
         }
       ],
       "required_hooks_or_decisions": [
-        "namespace consistency domain/global cut",
-        "existing Fork type extended, no new parallel mutation",
-        "captured cut identity"
+        "decided account-tree namespace domain; actual authority/domain observation",
+        "existing Fork extended with canonical exclusions",
+        "captured pre-commit cut identity and membership fence hooks"
       ],
       "implementation_state": "fixed_oracles_detect_old_source_concurrency_crash_proofs_pending",
       "source": [
@@ -663,7 +684,7 @@
       "id": "streams.keys.lifetime",
       "owner": "streams",
       "risk": "data_loss_or_corruption",
-      "invariant": "Successful intent remains exactly recoverable for promised lifetime; expiry never silently reexecutes an old intent.",
+      "invariant": "Successful key\u2192digest/receipt bindings last for namespace lifetime and remain retained by reachable fork history; a key is never expired then replayed as fresh.",
       "proof_specification": "Injected production clock, >120s retention witness, restart/snapshot and exact retry/changed digest.",
       "negative_controls": [
         {
@@ -676,8 +697,9 @@
         }
       ],
       "required_hooks_or_decisions": [
-        "coordinator/Streams choice: authority lifetime or explicit rejected-expiry fence",
-        "durable paged key ledger/admission"
+        "namespace-lifetime binding retention decided in streams.review2.md",
+        "production replicated clock and GC/retirement hooks",
+        "durable paged successful-key index/admission"
       ],
       "implementation_state": "specified_pending_owner_api",
       "source": [],
