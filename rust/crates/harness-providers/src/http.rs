@@ -8,9 +8,14 @@ use std::collections::BTreeMap;
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod owned_bytes;
+#[cfg(not(target_arch = "wasm32"))]
+mod recording;
 
 /// One streaming JSON request. Headers may contain credentials; deliberately not Debug.
 pub struct HttpRequest {
+    /// Model-only recording identity. OAuth credential exchanges leave this absent.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub recording: Option<std::sync::Arc<acyclic_harness_core::http::recording::Identity>>,
     /// Fully resolved endpoint.
     pub url: String,
     /// Protocol and authentication headers.
@@ -51,6 +56,11 @@ impl HttpResponse {
 
 /// Platform HTTP boundary, also used by scripted fixtures.
 pub trait HttpTransport: ProviderPlatform {
+    /// Whether model exchanges should carry recording identity. Off by default.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn recording_enabled(&self) -> bool {
+        false
+    }
     /// Sends exactly one request without retries.
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>>;
     /// Waits `duration` on the platform timer: a redelivery backoff, or a deadline's wake-up.
@@ -115,7 +125,10 @@ pub(crate) fn native_now() -> std::time::Duration {
 
 /// Pooled native HTTP with redirects disabled.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct ReqwestTransport(reqwest::Client);
+pub struct ReqwestTransport {
+    client: acyclic_harness_core::http::native::Client,
+    recording: Option<recording::Recorder>,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ReqwestTransport {
@@ -128,29 +141,64 @@ impl ReqwestTransport {
         let native = work.is_some();
         #[cfg(target_arch = "wasm32")]
         let native = false;
-        let mut builder = self
-            .0
-            .post(request.url)
-            .header("content-type", "application/json");
-        for (name, value) in request.headers {
-            builder = builder.header(name, value);
+        let mut capture = match (&self.recording, request.recording.as_ref()) {
+            (Some(recorder), Some(identity)) => Some(recorder.begin(
+                identity,
+                &request.url,
+                request.headers.keys(),
+                &request.body,
+                work,
+            )?),
+            _ => None,
+        };
+        let response = acyclic_harness_core::http::native::exchange(
+            &self.client,
+            acyclic_harness_core::http::native::Request {
+                method: reqwest::Method::POST,
+                url: request.url,
+                headers: {
+                    let mut headers = request.headers;
+                    headers
+                        .entry("content-type".into())
+                        .or_insert_with(|| "application/json".into());
+                    headers
+                },
+                body: request.body,
+                timeout: None,
+            },
+        )
+        .await
+        .map_err(|failure| {
+            if failure.request_invalid() {
+                crate::invalid("invalid HTTP request")
+            } else {
+                crate::transport_failure(native, failure.kind(), failure.cause())
+            }
+        })?;
+        let status = response.status;
+        if let Some(capture) = capture.as_mut() {
+            let content_type = response.headers.get(reqwest::header::CONTENT_TYPE).map(|v| v.to_str()).transpose()
+                .map_err(|_| crate::invalid("STEP record response content type failed; recovery: recapture a provider response with a valid Content-Type"))?;
+            capture.headers(status, content_type, || {
+                response
+                    .headers
+                    .keys()
+                    .map(reqwest::header::HeaderName::as_str)
+            })?;
         }
-        let response = builder
-            .body(request.body)
-            .send()
-            .await
-            .map_err(|error| reqwest_failure(native, &error))?;
-        let status = response.status().as_u16();
         let retry_after = response
-            .headers()
+            .headers
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(crate::retry::retry_after);
-        let body = response
-            .bytes_stream()
-            .map(move |chunk| chunk.map_err(|error| reqwest_failure(native, &error)));
+        let body = response.body.map(move |chunk| {
+            chunk.map_err(|failure| {
+                crate::transport_failure(native, failure.kind(), failure.cause())
+            })
+        });
         #[cfg(not(target_arch = "wasm32"))]
         let body = native::body(body, work)?;
+        let body = recording::body(body, capture)?;
         #[cfg(target_arch = "wasm32")]
         let body = Box::pin(body);
         Ok(HttpResponse {
@@ -161,54 +209,36 @@ impl ReqwestTransport {
     }
     /// Creates the platform transport. Credentials are never forwarded across redirects.
     pub fn new() -> Result<Self> {
-        let builder = reqwest::Client::builder();
-        #[cfg(not(target_arch = "wasm32"))]
-        let builder = builder
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never());
-        Ok(Self(builder.build().map_err(|_| {
-            super::invalid("HTTP client initialization failed")
-        })?))
+        let builder = Self::client_builder();
+        let client = builder
+            .build()
+            .map_err(|_| super::invalid("HTTP client initialization failed"))?;
+        let recording = std::env::var_os("ACYCLIC_PROVIDER_RECORD")
+            .map(recording::Recorder::new)
+            .transpose()?;
+        Ok(Self { client, recording })
     }
-}
 
-/// Classifies a send or body error by its source chain, keeping only the root cause's text: the
-/// outer layers name the URL, which can carry credentials.
-#[cfg(not(target_arch = "wasm32"))]
-fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness_core::Error {
-    use acyclic_harness_core::ModelTransportFailure;
-    let mut root: &(dyn std::error::Error + 'static) = error;
-    let mut tls = false;
-    loop {
-        tls |= root.is::<rustls::Error>();
-        // An `io::Error`'s `source` skips the error it wraps, and rustls reports through nested
-        // ones, so descend into the wrapped error first.
-        let next = match root
-            .downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::get_ref)
-        {
-            Some(wrapped) => Some(wrapped as &(dyn std::error::Error + 'static)),
-            None => root.source(),
-        };
-        match next {
-            Some(next) => root = next,
-            None => break,
-        }
+    /// Explicit recording configuration, shared by embedders and tests. Does not change routing.
+    pub fn with_recording(directory: impl Into<std::path::PathBuf>) -> Result<Self> {
+        Ok(Self {
+            client: Self::client_builder()
+                .build()
+                .map_err(|_| super::invalid("HTTP client initialization failed"))?,
+            recording: Some(recording::Recorder::new(directory.into())?),
+        })
     }
-    let failure = if tls {
-        ModelTransportFailure::Tls
-    } else if error.is_timeout() {
-        ModelTransportFailure::Timeout
-    } else if error.is_connect() {
-        ModelTransportFailure::Connect
-    } else {
-        ModelTransportFailure::Interrupted
-    };
-    crate::transport_failure(native, failure, root)
+
+    fn client_builder() -> acyclic_harness_core::http::native::ClientBuilder {
+        acyclic_harness_core::http::native::client_builder()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HttpTransport for ReqwestTransport {
+    fn recording_enabled(&self) -> bool {
+        self.recording.is_some()
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(self.exchange(
             request,

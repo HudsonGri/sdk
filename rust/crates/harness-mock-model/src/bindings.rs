@@ -21,6 +21,9 @@ struct JsonSelection {
 /// text. Optional mutations replace existing selected leaves only; copied data
 /// remains opaque, including strings which resemble binding expressions.
 pub fn bind_result(step: &Step, body: &Value) -> Result<Step, String> {
+    if step.replay.is_some() {
+        return Ok(step.clone());
+    }
     let result = serde_json::from_str(&last_content(body, true)).unwrap_or(Value::Null);
     let mut value = serde_json::to_value(step).map_err(|error| error.to_string())?;
     // Guards have already matched; they are request data, not reply templates.
@@ -111,4 +114,33 @@ fn bind(value: &mut Value, request: &Value, result: &Value) -> Result<(), String
         _ => {}
     }
     Ok(())
+}
+
+/// Loads scripts and the single shared provider recording format before serving.
+/// Raw captures never pass through string templates or SSE generation.
+pub fn load_script(path: &std::path::Path) -> std::io::Result<crate::Script> {
+    let mut script: crate::Script =
+        serde_json::from_slice(&std::fs::read(path)?).map_err(std::io::Error::other)?;
+    let root = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    for case in script.cases.values_mut() {
+        for step in &mut case.steps {
+            if let Some(recording) = &step.recording {
+                if !step.text.is_empty()
+                    || !step.tools.is_empty()
+                    || !step.custom_tools.is_empty()
+                    || step.json.is_some()
+                    || step.status.is_some()
+                    || step.hold
+                {
+                    return Err(std::io::Error::other(
+                        "STEP load recording failed: raw and generated responses are mutually exclusive; recovery: keep only the recording and request guards in this script step",
+                    ));
+                }
+                step.replay = Some(acyclic_harness_core::http::recording::Exchange::load(
+                    &root.join(recording),
+                )?);
+            }
+        }
+    }
+    Ok(script)
 }

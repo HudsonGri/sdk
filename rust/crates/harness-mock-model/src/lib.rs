@@ -1,6 +1,6 @@
 //! # Shared deterministic model server
 //!
-//! Decision: a standalone test-support crate, independent of Harness internals, shared
+//! Decision: a standalone test-support crate sharing the provider recording contract, used
 //! by the GraphCoder and plugin e2e lanes. Build before timing the suite:
 //!
 //! ```sh
@@ -69,7 +69,8 @@
 //! keeps request-derived selectors and adversarial mutations in the one binder.
 mod bindings;
 mod wire;
-pub use bindings::bind_result;
+pub use bindings::{bind_result, load_script};
+pub use wire::{Reply, reply as reply_with_usage};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -118,6 +119,12 @@ pub struct Match {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Step {
+    /// A provider transport capture directory, relative to the script file.
+    /// Loaded and digest-checked once, before the server accepts requests.
+    pub recording: Option<std::path::PathBuf>,
+    /// Verified raw reply; never accepted as inline scripted data.
+    #[serde(skip)]
+    pub replay: Option<acyclic_harness_core::http::recording::Exchange>,
     /// Request guards.
     pub when: Match,
     /// Text chunks, encoded as separate SSE events.

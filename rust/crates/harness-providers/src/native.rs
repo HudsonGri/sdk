@@ -49,7 +49,7 @@ async fn encode(
     crate::http::owned_bytes::owned(body, allocation)
 }
 
-async fn send(
+pub(crate) async fn send(
     provider: &ResolvedModel,
     body: bytes::Bytes,
     dispatch_id: ModelDispatch,
@@ -84,7 +84,15 @@ async fn send(
     retain(&mut allocation, retained)?;
     let response = provider
         .transport
-        .send_with_native_work(crate::HttpRequest { url, headers, body }, work)?
+        .send_with_native_work(
+            crate::HttpRequest {
+                url,
+                headers,
+                body,
+                recording: provider.recording_identity(),
+            },
+            work,
+        )?
         .await?;
     drop(allocation);
     Ok(response)

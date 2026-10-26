@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) recording: Option<Arc<acyclic_harness_core::http::recording::Identity>>,
     pub(crate) files: crate::files::Files,
     /// Calibration shared by every reader-bound copy of this selection.
     pub(crate) estimator: Arc<crate::accounting::TokenEstimator>,
@@ -28,6 +30,32 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn recording_identity(
+        &self,
+    ) -> Option<Arc<acyclic_harness_core::http::recording::Identity>> {
+        self.recording.clone()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn recording_identity_for(
+        transport: &dyn HttpTransport,
+        model: &Model,
+        adapter: crate::Adapter,
+    ) -> Option<Arc<acyclic_harness_core::http::recording::Identity>> {
+        transport.recording_enabled().then(|| {
+            Arc::new(acyclic_harness_core::http::recording::Identity {
+                adapter: match adapter {
+                    crate::Adapter::Anthropic => "anthropic",
+                    crate::Adapter::Responses => "responses",
+                    crate::Adapter::Chat => "chat",
+                    crate::Adapter::Gemini => "gemini",
+                }
+                .into(),
+                provider: model.provider.clone(),
+                model: model.name.clone(),
+            })
+        })
+    }
     /// Borrows the immutable identity used to bind this provider into the harness.
     pub fn model(&self) -> &Model {
         &self.model
@@ -94,6 +122,8 @@ impl ModelProvider for ResolvedModel {
                 maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
             },
             estimator: Arc::clone(&self.estimator),
+            #[cfg(not(target_arch = "wasm32"))]
+            recording: self.recording.clone(),
             model: self.model.clone(),
             config: self.config.clone(),
             capacity: self.capacity,
