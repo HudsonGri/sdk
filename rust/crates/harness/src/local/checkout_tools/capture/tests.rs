@@ -526,6 +526,7 @@ fn capture_boundaries_retain_only_owned_polling_handles() {
             OperationId::from_bytes([1; 16]),
             0,
             PublicationPermit::Unrestricted,
+            None,
         )
     });
     eprintln!("capture retained bytes: [{capture}, {owed}, {changes}]");
