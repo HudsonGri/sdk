@@ -30,7 +30,7 @@ pub enum TurnInput {
     /// The adoption brief.
     Brief {
         /// Brief file.
-        brief: FileRef,
+        brief: Box<FileRef>,
     },
     /// A message.
     Message {
@@ -39,7 +39,7 @@ pub enum TurnInput {
         /// Message identity.
         id: IntentId,
         /// Body.
-        body: FileRef,
+        body: Box<FileRef>,
     },
     /// A child finished.
     ChildDone {
@@ -65,7 +65,7 @@ pub enum TurnInput {
         /// Hook identity.
         id: IntentId,
         /// Event file.
-        event: FileRef,
+        event: Box<FileRef>,
     },
 }
 
@@ -147,7 +147,7 @@ pub enum Out {
         /// Spawning intent; names the child.
         intent: IntentId,
         /// Task brief.
-        brief: Option<FileRef>,
+        brief: Option<Box<FileRef>>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
     },
@@ -249,7 +249,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
             let mut state = AgentState::adopted(path.clone(), &adopted);
             state
                 .queued
-                .extend(adopted.brief.map(|brief| TurnInput::Brief { brief }));
+                .extend(adopted.brief.map(|brief| TurnInput::Brief { brief: Box::new(brief) }));
             state
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),

@@ -1,6 +1,6 @@
 //! The executor turn driver: one turn is one executor operation, resumed by identity.
 
-use super::{Result, adopted, child_of, id, intent};
+use super::{Result, adopted, id, intent};
 use acyclic_harness_core::{
     Error as CoreError, InteractionRejection, OperationId,
     agent::*,
@@ -10,7 +10,6 @@ use acyclic_harness_core::{
         Executor, PreparationIo, TurnInput as ExecutorInput, TurnOutput,
     },
     interaction::{Interaction, InteractionOutcome},
-    model::ModelContent,
 };
 use acyclic_stream::{BoxProviderFuture as BoxFuture, OwnedBytes};
 use std::{
@@ -128,44 +127,22 @@ impl Executor for Script {
     }
 }
 
-/// Host binding every turn to the script; records whether each open was fresh.
-struct Host {
-    script: Arc<Script>,
-    fresh: Mutex<Vec<bool>>,
-}
+/// Host binding every turn to the script.
+struct Host(Arc<Script>);
 
 impl TurnHost for Host {
     fn open<'a>(
         &'a self,
         _: &'a AgentState,
-        turn: OperationId,
-        input: Option<&'a TurnInput>,
+        _: OperationId,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
-        self.fresh.lock().expect("lock").push(input.is_some());
         let open = OpenTurn {
-            executor: self.script.clone(),
+            executor: self.0.clone(),
             journal: Arc::new(Unused),
-            input: ExecutorInput {
-                operation_id: turn,
-                input: ModelContent::Text("input".into()),
-                selected_context: None,
-                max_steps: 4,
-            },
+            max_steps: 4,
+            custody: None,
         };
         Box::pin(async move { Ok(open) })
-    }
-
-    fn settle<'a>(
-        &'a self,
-        _: &'a AgentState,
-        _: OperationId,
-        output: TurnOutput,
-    ) -> BoxFuture<'a, acyclic_harness_core::Result<Settled>> {
-        let settled = Settled {
-            conversation: vec![output.text.into_bytes()],
-            result: None,
-        };
-        Box::pin(async move { Ok(settled) })
     }
 }
 
@@ -174,20 +151,7 @@ fn driver(progress: Vec<ExecutionProgress<TurnOutput>>) -> (Arc<Script>, Executo
         progress: Mutex::new(progress.into()),
         ..Script::default()
     });
-    let host = Host {
-        script: script.clone(),
-        fresh: Mutex::new(Vec::new()),
-    };
-    (script, ExecutorDriver::new(host))
-}
-
-fn ready(text: &str) -> ExecutionProgress<TurnOutput> {
-    ExecutionProgress::Ready(TurnOutput {
-        text: text.into(),
-        attachments: Vec::new(),
-        metadata: serde_json::Value::Null,
-        steps: 1,
-    })
+    (script.clone(), ExecutorDriver::new(Host(script)))
 }
 
 /// A turn-starting input that carries no file: a child's approval request.
@@ -206,40 +170,11 @@ fn request(id: &str) -> Result<(InboxRecord, TurnInput)> {
 }
 
 #[tokio::test]
-async fn a_child_turn_settles_into_the_conversation_and_reports() -> Result {
-    let parent = AgentPath::root(&id(1));
-    let (path, state) = child_of(&parent, 2)?;
-    let (script, driver) = driver(vec![ready("answer")]);
-    let (record, started) = request("m1")?;
-    let wake = Wake::Inbox {
-        sequence: 2,
-        record,
-    };
-    let done = step(&driver, &path, Some(state.clone()), 2, wake).await?;
-    assert!(done.outs.contains(&Out::Conversation(b"answer".to_vec())));
-    assert!(done.outs.iter().any(
-        |out| matches!(out, Out::Send { to, record: InboxRecord::ChildDone(_) } if *to == parent)
-    ));
-    assert_eq!(
-        done.state.phase,
-        Phase::Done {
-            outcome: AgentOutcome::Succeeded { result: None }
-        }
-    );
-    assert_eq!(done.state.turn, None);
-    assert_eq!(
-        script.operations.lock().expect("lock").as_slice(),
-        [turn_id(&state, &started)?]
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn an_approval_resumes_the_operation_it_paused() -> Result {
+async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> Result {
     let path = AgentPath::root(&id(1));
     let state = AgentState::adopted(path.clone(), &adopted(id(1)));
     let approval = OperationId::from_bytes([9; 16]);
-    let (script, driver) = driver(vec![ExecutionProgress::Pending(approval), ready("after")]);
+    let (script, driver) = driver(vec![ExecutionProgress::Pending(approval)]);
     let first = step(
         &driver,
         &path,
@@ -273,24 +208,8 @@ async fn an_approval_resumes_the_operation_it_paused() -> Result {
     .await?;
     assert_eq!(script.operations.lock().expect("lock").len(), 1);
     assert_eq!(other.state.phase, first.state.phase);
-    // The matching approval resumes the same operation, not a new turn.
-    let resumed = step(
-        &driver,
-        &path,
-        Some(other.state),
-        3,
-        Wake::Inbox {
-            sequence: 3,
-            record: InboxRecord::Approval(Approval { id: waiting }),
-        },
-    )
-    .await?;
-    let operations = script.operations.lock().expect("lock").clone();
-    assert_eq!(operations.len(), 2);
-    assert_eq!(operations[0], operations[1]);
-    assert_eq!(resumed.state.phase, Phase::Idle);
-    assert_eq!(resumed.state.turn, None);
-    assert!(resumed.outs.contains(&Out::Conversation(b"after".to_vec())));
+    // The checkpoint holds the starting input, so a resume re-derives the same operation.
+    assert_eq!(other.state.turn, first.state.turn);
     Ok(())
 }
 

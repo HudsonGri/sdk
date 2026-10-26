@@ -117,7 +117,7 @@ pub fn lower(
                     forked_at: cursor,
                     conversation_tail: prior_conversation,
                     volumes: volumes.clone(),
-                    brief: brief.clone(),
+                    brief: brief.as_deref().cloned(),
                     policy: state.policy.clone(),
                 },
             )?;
