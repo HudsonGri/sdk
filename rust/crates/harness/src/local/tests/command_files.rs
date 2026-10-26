@@ -195,7 +195,7 @@ async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> R
     // The native mount is composed by the default bash binding.
     let make = || {
         Ok::<_, Error>(
-            crate::test_support::local_harness_config(directory.path(), (model()?, scripted([])))?
+            checkout_config(directory.path(), (model()?, scripted([])))?
                 .state_directory(state.path()),
         )
     };

@@ -317,8 +317,8 @@ fn keep_first(first: &mut Result<()>, next: Result<()>) {
     }
 }
 
-/// Negative controls only: projects outside any execution scope, so nothing
-/// retires the projection until `retire`.
+/// Test projection outside an execution scope. Only explicit host retirement
+/// detaches it, so retained-owner tests exercise the physical destination.
 #[cfg(test)]
 pub(in crate::local) async fn project_unscoped(mounts: &Mounts) -> Result<()> {
     for (relative, mount) in mounts.mounts() {
