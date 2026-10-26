@@ -1,6 +1,7 @@
 /** One Rust file fold and cursor follow; the platform provider owns all I/O. */
 export {
   WasmAgentClient as AgentClient,
+  type AgentWindow,
   WasmWireSession as WireSession,
   WasmFileClient as FileClient,
   type FileClientError,
