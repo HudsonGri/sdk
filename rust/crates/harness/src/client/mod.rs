@@ -26,6 +26,7 @@ mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
 mod headless;
 pub mod jsonl;
+mod wire_bytes;
 pub use headless::{HeadlessClient, HeadlessOutcome, run_headless, run_jsonl};
 mod commands;
 pub use commands::*;

@@ -2,7 +2,7 @@
 //! differs from its task-volume type only in byte fields, which use the one
 //! canonical byte encoding. Conversions destructure every field, so a field
 //! added to a task-volume type cannot be silently left off the wire.
-use super::bytes;
+use crate::client::wire_bytes as bytes;
 use crate::{
     OperationId,
     task_volume::{
