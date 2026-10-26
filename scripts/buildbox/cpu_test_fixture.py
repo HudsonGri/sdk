@@ -7,9 +7,18 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import uuid
 
 HERE=Path(__file__).resolve().parent
+
+
+def stage_worker_bundle(destination, cpu_adapter=None):
+    """Keep isolated workers import-complete as the shared runtime evolves."""
+    for dependency in HERE.glob('*.py'):
+        shutil.copyfile(dependency,Path(destination)/dependency.name)
+    if cpu_adapter is not None:
+        shutil.copyfile(cpu_adapter,Path(destination)/'cpu_leases.py')
 
 
 class KernelFixture:
@@ -29,7 +38,7 @@ class KernelFixture:
 from pathlib import Path
 source,root,group=map(Path,sys.argv[1:]);root.mkdir(mode=0o755)
 for name in ['admission_policy.py','cpu_leases.py','bb-admit.py','bb-job.py',
-             'job_exports.py','bb_target_store.py','bb-cache.py']:
+             'job_exports.py','bb_target_store.py','bb-cache.py','input_closure.py']:
  data=(source/name).read_text()
  if name=='cpu_leases.py':
   data=re.sub(r'^CGROUP_ROOT = .*$',lambda m:'CGROUP_ROOT = Path('+repr(str(group))+')',data,flags=re.M)

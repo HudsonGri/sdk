@@ -206,3 +206,64 @@ job after a fixed poll. Death before acknowledgement returns typed
 `LAUNCH_INFRA` with the original recovery command. The generated-wrapper suite
 exercises the captured former launcher, a blocked recovery barrier and early
 wrapper death; no production polling or timeout is added.
+
+Every dispatched or native bb2 job uses `input_closure.py` before build
+admission. The client, host scheduler and final executor call the same parser;
+there is no adapter-specific list of comparison prerequisites. Opaque shell,
+Python and Node jobs must supply `BUILD_SLOT_INPUTS_FILE` or
+`BUILD_SLOT_INPUTS_JSON`, or a `<driver>.inputs.json` companion. Direct Cargo
+commands declare their source/base closure automatically; reference-consuming
+drivers must explicitly list their external inputs. A generated template is
+incomplete and cannot admit a job. An empty external-input list is an explicit
+producer-owned assertion that all inputs are in the source snapshot or are
+produced earlier in this same job, not an inference from script text.
+
+The version-1 declaration has `complete: true`, the full `base_sha` (null only
+outside a repository), and an `inputs` array. Each member names an `id`,
+`where` (`source` or `bb2`), `path`, producer-qualified `sha256`, and literal
+`producer` argv for the phase that creates that input. Use a baseline-only
+producer for a missing baseline, never the candidate's full producer. The
+consuming argv itself is refused as its own recovery. Source references are
+relative to the dispatched working directory; bb2-only references use absolute
+paths and are checked on bb2 before ticket acquisition. Both are rechecked
+after queue wait, before compilation. All diagnostics go to stderr.
+
+For example, a plugins driver declares its retained main-Clippy log with the
+exact baseline-only command `pwsh -NoProfile -File Q:/lanes/bs.ps1 bash
+.bb-plugins-consolidated-main-clippy.sh`. The captured actual consumer and
+producer are in `scripts/buildbox/fixtures/input-closure/`. Admission does not
+run that command; a missing/hash-mismatched input refuses with its name and
+that targeted recovery command. Producer owners remain responsible for
+complete declarations; admission cannot discover arbitrary script semantics.
+
+The existing source identity includes declared source inputs even when Git
+ignores their filenames. Its shared identity key includes the closure, and
+the existing upload/forced-file path transports those same bytes. bb2-only
+inputs cannot borrow a cached client verdict before host validation. The
+closure's base and canonical hash accompany terminal receipts; they do not
+qualify a baseline or introduce verdict reuse.
+
+PR gates snapshot the already-selected qualified test/Clippy/feature logs into
+the candidate upload and compare against those exact snapshots. `capture`
+deduplicates identical proof bytes, retains original commit basenames for the
+historical test-anchor policy, excludes proof bytes from Git text conversion and
+records a targeted `restore` command. Restoration copies the original retained
+proof and checks its admitted hash; it never compiles. The main and focused
+baseline producers declare their complete source/base with no external
+comparison inputs. Existing baseline selectors still own result completion
+and exact-source qualification.
+
+This is a coordinated generation change: install the input parser together
+with its client, scheduler/executor consumers and coordinator declarations.
+Cloud and opaque-job producers must provide their declarations at cut-over.
+Do not install only the refusing native adapter into old callers. The canonical
+installer includes the closure suite before publication. Kernel/runtime test
+fixtures likewise declare their complete source-only closure explicitly.
+
+The Windows coordinator and Linux admission share the same parser and atomic
+JSON publisher. Proof readers compare opened file identities and reject links
+and replacement on both OSes; Linux adds its no-follow flag. Windows can capture
+proof bytes without importing Linux's rlimit API. Trying to use that unavailable
+API still refuses. Isolated runtime tests stage the whole Python worker bundle
+through one shared fixture helper, so a new shared import cannot silently leave
+one adapter's test worker incomplete.

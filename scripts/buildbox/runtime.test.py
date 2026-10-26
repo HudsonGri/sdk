@@ -40,9 +40,8 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
-        shutil.copyfile(Path(job.cpu_leases.__file__),self.d/'cpu_leases.py')
-        shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
-        shutil.copyfile(HERE/'bb-cache.py',self.d/'bb-cache.py')
+        from cpu_test_fixture import stage_worker_bundle
+        stage_worker_bundle(self.d,cpu_adapter=Path(job.cpu_leases.__file__))
         self.real_home=self.d/'home'
         self.real_home.mkdir()
     def tearDown(self):
@@ -58,9 +57,6 @@ class RuntimeTests(unittest.TestCase):
             self.assertIs(self.cpu_fixture,factory.return_value)
             factory.assert_called_once_with()
     def worker(self,negative=False,cleanup_failure=False):
-        shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
-        shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
-        shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
         source=(HERE/'bb-job.py').read_text()
         (self.d/'jobs').mkdir(exist_ok=True)
         source=source.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(self.d/'jobs')!r})")

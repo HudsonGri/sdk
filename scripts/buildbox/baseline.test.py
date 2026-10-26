@@ -12,6 +12,7 @@ class BaselineTests(unittest.TestCase):
   (root/'hangs').write_text('');(root/'gate-baseline.py').write_text('def coverage(text,packages):return set()\n')
   shutil.copyfile(HERE.parent/'gate-test-runner.sh',root/'gate-test-runner.sh')
   shutil.copyfile(HERE/'coordinator/gate-hang.py',root/'gate-hang.py')
+  for name in ['input_closure.py','admission_policy.py']:shutil.copyfile(HERE/name,root/name)
   metadata={'workspace_members':['fixture'],'packages':[{'name':'acyclic-conformance','id':'fixture','targets':[]}]}
   cargo=root/'bin/cargo';cargo.write_text('''#!/bin/bash
 case "$1" in
@@ -42,6 +43,7 @@ esac
   module=types.ModuleType('fixture');module.__file__=str(root/'gate-test-baseline.py');exec(compile(source,module.__file__,'exec'),module.__dict__)
   def run(argv,**kw):
    if argv[0]=='git':return subprocess.CompletedProcess(argv,0)
+   if 'input_closure.py' in argv[1]:return subprocess.run(argv,**kw)
    raise AssertionError('native dispatch must use the single pipe writer')
   def popen(argv,**kw):
    env={**kw['env'],'PATH':str(root/'bin')+':'+os.environ['PATH'],'GATE_MAIN_TARGET_DIR':str(root/'cache')}

@@ -27,8 +27,8 @@ class CommandCustodyTests(unittest.TestCase):
         self.d = Path(self.temp.name)
         # The production worker imports sibling modules. Stage that complete
         # bundle once so new production imports cannot strand isolated workers.
-        for dependency in HERE.glob('*.py'):
-            shutil.copyfile(dependency, self.d / dependency.name)
+        from cpu_test_fixture import stage_worker_bundle
+        stage_worker_bundle(self.d,cpu_adapter=Path(job.cpu_leases.__file__))
 
     def tearDown(self):
         self.temp.cleanup()
@@ -46,7 +46,8 @@ class CommandCustodyTests(unittest.TestCase):
     def test_isolated_worker_owns_its_complete_module_bundle(self):
         worker = self.module()
         for dependency in HERE.glob('*.py'):
-            self.assertEqual((self.d / dependency.name).read_bytes(), dependency.read_bytes())
+            expected=Path(job.cpu_leases.__file__) if dependency.name=='cpu_leases.py' else dependency
+            self.assertEqual((self.d / dependency.name).read_bytes(), expected.read_bytes())
         code = '''import importlib.util,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(sys.argv[1]).parent))
@@ -326,6 +327,7 @@ print('retired',flush=True)
         env.pop('BB_JOB_EXPORT_SPEC',None)
         env.update(extra or {})
         result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure,export_negative=export_negative)),*argv],cwd=self.d,env=env,capture_output=True)
+        self.assertTrue(Path(str(meta)+'.runtime').is_file(),result.stderr.decode())
         return result,json.loads(Path(str(meta)+'.runtime').read_text())
 
     def test_failed_export_is_infra_and_does_not_contaminate_stdout(self):

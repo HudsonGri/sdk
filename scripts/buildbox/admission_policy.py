@@ -5,7 +5,10 @@ import os
 from pathlib import Path
 import shutil
 import shlex
-import resource
+try:
+    import resource
+except ImportError:  # The Windows coordinator shares only neutral file policy.
+    resource = None
 import ctypes
 import tempfile
 import select
@@ -34,12 +37,14 @@ def atomic_json(file, value, mode=0o600):
     descriptor, temporary = tempfile.mkstemp(prefix='.'+file.name+'.', dir=file.parent)
     try:
         with os.fdopen(descriptor, 'w') as stream:
-            os.fchmod(stream.fileno(), mode)
+            if callable(getattr(os, 'fchmod', None)):
+                os.fchmod(stream.fileno(), mode)
             json.dump(value, stream); stream.flush(); os.fsync(stream.fileno())
         os.replace(temporary, file)
-        descriptor = os.open(file.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try: os.fsync(descriptor)
-        finally: os.close(descriptor)
+        if getattr(os, 'O_DIRECTORY', None) is not None:
+            descriptor = os.open(file.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try: os.fsync(descriptor)
+            finally: os.close(descriptor)
     finally:
         Path(temporary).unlink(missing_ok=True)
 
@@ -152,11 +157,14 @@ LIMIT_ENV = 'BB_CALLER_RLIMITS_JSON'
 RLIM_MAX = (1 << (8 * ctypes.sizeof(ctypes.c_ulong))) - 1
 # Preserve every resource exposed by this kernel/Python, including the five
 # environment-parity limits. Collapse aliases such as OFILE/NOFILE by number.
-LIMIT_NAMES = {number: name for name, number in sorted(vars(resource).items(), reverse=True)
+LIMIT_NAMES = {number: name for name, number in sorted(vars(resource).items() if resource is not None else [], reverse=True)
                if name.startswith('RLIMIT_') and name != 'RLIMIT_OFILE'}
 
 
 def capture_limits():
+    if resource is None:
+        raise RuntimeError('kind=RLIMIT_UNAVAILABLE step=caller-limits recovery='+shlex.quote(
+            'pwsh -NoProfile -File Q:/lanes/bs.ps1 <command>')+' detail='+shlex.quote('resource limits require the Linux admission adapter'))
     return {name: list(resource.getrlimit(number)) for number, name in LIMIT_NAMES.items()}
 
 

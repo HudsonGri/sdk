@@ -71,6 +71,13 @@ if [ -z "$clippy_base" ] || [ -z "$features_base" ]; then
   exit 5
 fi
 echo "GATE_CHECKS_BASELINE clippy=$clippy_base features=$features_base" >> "$log"
+# The selected qualified references are part of the candidate's declared input
+# closure. Snapshot them into its upload and compare those same immutable bytes.
+python Q:/lanes/input_closure.py capture --base "$base" --output "$W/.gate-inputs.json" \
+  --input tests "$base_log" '[]' --input clippy "$clippy_base" '[]' --input features "$features_base" '[]' > "$log.inputs.json" || exit 5
+base_log=$(python Q:/lanes/input_closure.py path --manifest "$W/.gate-inputs.json" --input tests) || exit 5
+clippy_base=$(python Q:/lanes/input_closure.py path --manifest "$W/.gate-inputs.json" --input clippy) || exit 5
+features_base=$(python Q:/lanes/input_closure.py path --manifest "$W/.gate-inputs.json" --input features) || exit 5
 # The payload belongs to the reviewed candidate. An independently installed
 # runner can silently omit newly required phases, even with a green footer.
 cp "$W/scripts/pr-gate-checks.sh" "$W/.gate-checks.sh" || {
@@ -99,7 +106,7 @@ if [ ! -s "$W/.gate-tests-packages" ]; then
 else
   # Windows native stdout/stderr can reopen a redirected file at separate
   # positions. Give them a pipe; tee alone owns the append descriptor.
-  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) 2>&1 | tee -a "$log" >/dev/null
+  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_INPUTS_FILE=.gate-inputs.json --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) 2>&1 | tee -a "$log" >/dev/null
   capture_status=("${PIPESTATUS[@]}"); rc=${capture_status[0]}
   if [ "${capture_status[1]}" != 0 ]; then
     echo 'error: GATE_RUNNER_INFRA coordinator log writer failed' >> "$log"

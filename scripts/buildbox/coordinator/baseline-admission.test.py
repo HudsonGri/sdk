@@ -55,6 +55,8 @@ class BaselineAdmissionTests(unittest.TestCase):
         for name in ['gate-checks.sh','gate-test-runner.sh','gate-clippy.py']:
             original = HERE.parent.parent/name if name == 'gate-test-runner.sh' else HERE/name
             shutil.copyfile(original,self.lanes/name)
+        for name in ['input_closure.py','admission_policy.py']:
+            shutil.copyfile(HERE.parent/name,self.lanes/name)
         (self.repo/'scripts').mkdir()
         shutil.copyfile(HERE.parent.parent/'pr-gate-checks.sh',self.repo/'scripts/pr-gate-checks.sh')
         scope = json.loads((FIXTURE/'candidate-phases.txt').read_text().splitlines()[0].removeprefix('GATE_SCOPE '))
@@ -85,6 +87,7 @@ class BaselineAdmissionTests(unittest.TestCase):
         selector = (f'{shlex.quote(sys.executable)} {shlex.quote(str(HERE/"gate-baseline.py"))}'
                     f' --directory {shlex.quote(str(self.logs))} --alerts {shlex.quote(str(self.alerts))}')
         code = code.replace('python Q:/lanes/gate-baseline.py',selector)
+        code = code.replace('python Q:/lanes/input_closure.py',shlex.quote(sys.executable)+' '+shlex.quote(str(self.lanes/'input_closure.py')))
         code = code.replace('Q:/lanes/',str(self.lanes)+'/')
         log = self.root/'candidate.log'
         log.write_text('')

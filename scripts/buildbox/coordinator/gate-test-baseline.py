@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 
 def run_logged(command, log, cwd, env):
@@ -212,7 +213,11 @@ if [ "$rc" != 0 ]; then echo "GATE_TEST_BASELINE_COMPLETE rc=$rc"; exit "$rc"; f
 exit 0
 ''' if not failing_roots else '') if compiler_roots else '').replace('@BASE@', args.base).replace('@ROOTS@', ' '.join(existing)).replace('@PACKAGES@', ' '.join('-p ' + p for p in existing)).replace('@TARGET_TESTS@', '' if only_docs else 'run_tests --all-targets; rc=$?').replace('@SKIPS@', ' '.join('--skip ' + p for p in skips))
             (args.worktree / '.gate-test-baseline.sh').write_text(script, encoding='utf-8', newline='\n')
-            env = dict(os.environ, BUILD_SLOT_TIER='merge', WSLENV='BUILD_SLOT_TIER')
+            # This producer has no external comparison inputs: its complete
+            # source/base identity is the sole prerequisite of the focused run.
+            subprocess.run([sys.executable,str(lanes/'input_closure.py'),'capture','--base',args.base,
+                            '--output',str(args.worktree/'.gate-inputs.json')],check=True,stdout=subprocess.DEVNULL)
+            env = dict(os.environ, BUILD_SLOT_TIER='merge', WSLENV='BUILD_SLOT_TIER', BUILD_SLOT_INPUTS_FILE='.gate-inputs.json')
             result = run_logged([shutil.which('pwsh'), '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_BUILDBOX_HOST=bb2', '--env', 'BUILD_SLOT_TIER=merge', '--env', 'BUILD_SLOT_LABEL=pr-gate-baseline', '--env', 'BUILD_SLOT_PHASE=pr-baseline', '--env', 'BUILD_SLOT_PR=' + os.environ.get('GATE_BASELINE_PRS', ''), '--env', 'BUILD_SLOT_GATE_LOG=' + log.as_posix(), 'bash', '.gate-test-baseline.sh'], log, cwd=args.worktree, env=env)
             with log.open('a', encoding='utf-8', newline='\n') as output:
                 output.write(f'GATE_TEST_BASELINE_EXECUTOR rc={result}\n')

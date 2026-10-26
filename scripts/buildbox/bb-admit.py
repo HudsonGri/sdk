@@ -23,6 +23,7 @@ import uuid
 from admission_policy import cargo_query, canonical_argv, resolve_wrapper, capture_limits, LIMIT_ENV, cache_authority, disk_pressure, disk_free, disk_low
 from admission_policy import process_identity as identity, atomic_json as atomic, CPU_LEASE_SHAPE, require_tenant
 import cpu_leases
+import input_closure
 
 ROOT = Path(os.environ.get('BB_ADMIT_ROOT', '/mnt/bb/admit'))
 SOCKET = ROOT/'admit.sock'
@@ -187,6 +188,8 @@ def serve():
                     t['conn'].send(json.dumps({'rc':224}).encode());sched.release(t);close_client(t['conn']);return
             command=t['argv']
             actual=canonical_argv(command, env)
+            proof=input_closure.admit(actual,env)
+            os.write(t['fds'][2],('BB_INPUTS_ADMITTED '+json.dumps(proof)+'\n').encode())
             wrapper=resolve_wrapper(env, compiler=bool(actual and Path(actual[0]).name=='cargo'), cwd=t['cwd'])
             if wrapper: os.write(t['fds'][2],('BB_WRAPPER_ADMITTED '+json.dumps(wrapper)+'\n').encode())
             if env.get('BB_CACHE_DISABLED')!='1' and wrapper and Path(wrapper['path'])==Path(__file__).with_name('sccache-rustc').resolve():
@@ -303,6 +306,9 @@ def client(args):
     tier,tenant,sep,*argv=args
     if sep!='--' or not argv: raise ValueError('bb-admit <tier> <tenant> -- command ...')
     require_tenant(tenant,argv)
+    # Before daemon startup, queueing, cache startup or any CPU lease.
+    proof=input_closure.admit(canonical_argv(argv,os.environ))
+    print('BB_INPUTS_ADMITTED '+json.dumps(proof),file=sys.stderr,flush=True)
     owner=cpu_leases.current(required=False)
     if owner is not None:
         if tenant != owner['tenant']:

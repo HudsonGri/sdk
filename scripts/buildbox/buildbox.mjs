@@ -34,6 +34,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { arm, atomic, finish, recover } from './buildbox-receipt.mjs';
 const RECEIPT_TOOL = fs.readFileSync(new URL('./buildbox-receipt.mjs', import.meta.url), 'utf8');
 
@@ -264,7 +265,7 @@ function syncWith(top, key, rf, t0) {
 
 // BUILD_SLOT_REMOTE_ENV="K1 K2" (bs.ps1 --env K=V) forwards those names too, whatever their prefix.
 const extraEnv = () => new Set((process.env.BUILD_SLOT_REMOTE_ENV || '').split(/[\s,]+/).filter((k) => /^[A-Za-z_]\w*$/.test(k)));
-const passEnv = (extra = extraEnv()) => Object.entries(process.env).filter(([k]) => !/^(HOME|XDG_.*|TMPDIR|SCCACHE_.*|BB_JOB_.*|GATE_(MAIN|FEATURE|WINDOWS_RUNTIME)_TARGET_DIR|XWIN_CACHE_DIR|BB_ADMIT.*|BUILD_SLOT_RECEIPT_.*|BUILD_SLOT_DEFER_EXEC|BUILD_SLOT_EXEC_IN_PAYLOAD)$/.test(k) && (extra.has(k) || /^(RUST|CARGO_|NEXTEST_|CLOUD_|PROPTEST_|BB_CRIT_REASON$)/.test(k) &&
+const passEnv = (extra = extraEnv()) => Object.entries(process.env).filter(([k]) => !/^(HOME|XDG_.*|TMPDIR|SCCACHE_.*|BB_JOB_.*|GATE_(MAIN|FEATURE|WINDOWS_RUNTIME)_TARGET_DIR|XWIN_CACHE_DIR|BB_ADMIT.*|BUILD_SLOT_RECEIPT_.*|BUILD_SLOT_DEFER_EXEC|BUILD_SLOT_EXEC_IN_PAYLOAD)$/.test(k) && (extra.has(k) || /^(BUILD_SLOT_INPUTS_JSON$|BUILD_SLOT_INPUT_BASE$|RUST|CARGO_|NEXTEST_|CLOUD_|PROPTEST_|BB_CRIT_REASON$)/.test(k) &&
   !/^(CARGO_TARGET_DIR|CARGO_BUILD_TARGET_DIR|CARGO_HOME|RUSTUP_HOME|RUSTC|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_BUILD_RUSTC.*|CARGO_BUILD_RUSTDOC|CARGO_BUILD_JOBS|CARGO_INCREMENTAL|RUSTUP_TOOLCHAIN|CARGO_TARGET_.*|CARGO_HOST_.*|CARGO_BUILD_TARGET|CARGO_INSTALL_ROOT|CARGO_MAKEFLAGS)$/.test(k)))
   .map(([k, v]) => `export ${k}=${q(v)}`).join('\n');
 
@@ -402,6 +403,11 @@ function treeIdentity(co) {
     // core.autocrlf=input|true the client hashes it as LF (sdk checkouts on Windows drives, 2026-10-16).
     const autocrlf = (g(['config', '--get', 'core.autocrlf'], env, true) || '').trim().toLowerCase();
     g(['add', '-A', '--', '.', ...IDENT_ADD], env);
+    // Declared proof files (often ignored *.log files) belong to the upload's
+    // existing content identity. Never validate a local input and omit it from
+    // the remote snapshot. The remote's existing forced-path path handles it.
+    const inputFiles = sourceInputPaths(co);
+    if (inputFiles.length) g(['add', '-f', '--', ...inputFiles], env);
     // Dropped by path (IDENT_SKIP), not `git rm --cached`: git 2.34 leaves skip-worktree entries (sparse checkouts) in place.
     const recs = g(['ls-files', '-s', '-z'], env).split('\0').filter(Boolean).filter((r) => !IDENT_SKIP_RE.test(r));
     const content = crypto.createHash('sha256').update(recs.map((r) => `${r.slice(r.indexOf(' ') + 1)}\0`).join('')).digest('hex');
@@ -440,22 +446,34 @@ function treeIdentity(co) {
 // it for the same checkout within 15 min, so every phase runs exactly that snapshot (edits made meanwhile wait for the
 // next loop, as they would mid-sync). The VM still verifies the content digest.
 const idMemo = new Map();
+const inputKey = () => crypto.createHash('sha256').update(process.env.BUILD_SLOT_INPUTS_JSON || '').digest('hex');
+function sourceInputPaths(co) {
+  const closure = JSON.parse(process.env.BUILD_SLOT_INPUTS_JSON || '{"inputs":[]}');
+  return closure.inputs.filter(item => item.where === 'source').map(item => {
+    const file = path.relative(co.top, path.resolve(process.cwd(), item.path)).split(path.sep).join('/');
+    if (file.startsWith('../') || path.isAbsolute(file) || IDENT_SKIP_RE.test('\t'+file)) {
+      throw new Error(`kind=INPUT_CLOSURE step=upload-custody input=${q(item.id)} owner=gate-speed recovery=${q(item.producer.map(q).join(' '))} detail='declared source input is outside the uploaded source namespace'`);
+    }
+    return file;
+  });
+}
 function identityFor(co) {
-  const m = idMemo.get(co.top);
+  const key = co.top+'\0'+inputKey();
+  const m = idMemo.get(key);
   // A commit made meanwhile (e.g. during an admission wait) moves HEAD: the git sync ships a bundle cut from the live
   // HEAD, so identify again rather than fail on "HEAD moved".
   if (m && (m.commit === 'none' || String(co.git(['rev-parse', '-q', '--verify', 'HEAD'], { encoding: 'utf8' }).stdout || '').trim() === m.commit)) return m;
-  const id = identityShared(co); idMemo.set(co.top, id); return id;
+  const id = identityShared(co); idMemo.set(key, id); return id;
 }
 function identityShared(co) {
   const f = process.env.BUILD_SLOT_IDENTITY_FILE;
   if (f) try {
     const j = JSON.parse(fs.readFileSync(f, 'utf8'));
-    if (j.id.uploadedTree && j.id.overlay && j.top === co.top && Date.now() - j.at < 15 * 60e3 && (j.id.commit === 'none' || String(co.git(['rev-parse', '-q', '--verify', 'HEAD'], { encoding: 'utf8' }).stdout || '').trim() === j.id.commit)) { say(`tree identity shared from ${f}`); return { ...j.id, patch: j.id.patch == null ? null : Buffer.from(j.id.patch, 'base64') }; }
+    if (j.inputs === inputKey() && j.id.uploadedTree && j.id.overlay && j.top === co.top && Date.now() - j.at < 15 * 60e3 && (j.id.commit === 'none' || String(co.git(['rev-parse', '-q', '--verify', 'HEAD'], { encoding: 'utf8' }).stdout || '').trim() === j.id.commit)) { say(`tree identity shared from ${f}`); return { ...j.id, patch: j.id.patch == null ? null : Buffer.from(j.id.patch, 'base64') }; }
   } catch {}
   const id = treeIdentity(co);
   if (f) try {
-    fs.writeFileSync(`${f}.${process.pid}`, JSON.stringify({ top: co.top, at: Date.now(), id: { ...id, patch: id.patch == null ? null : Buffer.from(id.patch).toString('base64') } }));
+    fs.writeFileSync(`${f}.${process.pid}`, JSON.stringify({ top: co.top, inputs: inputKey(), at: Date.now(), id: { ...id, patch: id.patch == null ? null : Buffer.from(id.patch).toString('base64') } }));
     fs.renameSync(`${f}.${process.pid}`, f);
   } catch {}
   return id;
@@ -803,6 +821,7 @@ exit $rc`;
   const admitted = 'J=' + J + '\nexport PATH=/home/var/tools/node24/node-v24.3.0-linux-x64/bin:/home/var/.cargo/bin:/home/var/bin:/usr/bin:/bin\nnode --input-type=module -e ' + admissionSave + ' ' + J + '.receipt-meta.v2.json.admission\n' + wrapper.slice(boundary);
   const cls = jobClass(argv) || 'light';
   wrapper = wrapper.slice(0, boundary) + `export BUILD_SLOT_RECEIPT_META=${J}.receipt-meta.v2.json BB_ADMIT_CLASS=${q(cls)} BB_ADMIT_WRAPPED_COMMAND=1
+export BUILD_SLOT_INPUTS_JSON=${q(process.env.BUILD_SLOT_INPUTS_JSON || '')} BUILD_SLOT_INPUT_BASE=${q(process.env.BUILD_SLOT_INPUT_BASE || base || 'none')} BUILD_SLOT_INPUT_ROOT=${q(path.posix.join(src, rel))}
 /home/var/bin/bb-admit ${jobTier} ${q(tenant)} -- bash ${J}.admitted >> ${J}.out 2>> ${J}.err
 exit $?`;
   return `set -eu
@@ -1075,13 +1094,16 @@ async function runTracked(argv, ctx) {
   const top = co.top; const rel = path.relative(top, cwd) || '.';
   ctx.meta.repo = co.repo;
   argv = pinGlibc(nextestTimeout(dropCoveredCheck(argv)));
+  const comparisonBase = mergeBase(co); let verdictLock = null;
+  const prerequisites = admitInputs(argv, cwd, comparisonBase);
+  if (!prerequisites) return unavailable('input-closure', 'required input admission refused; see typed diagnostic above');
+  ctx.meta.input_closure = prerequisites;
   // Pin the dispatched source and comparison base to the same identity as its verdict lock.
   let id; try { id = identityFor(co); } catch (e) { return unavailable('sync-failed', `tree identity: ${e.message}`); }
   ctx.meta.argv = [...argv];
   ctx.meta.source = { commit: id.commit, git_tree: id.uploadedTree || id.tree, base_tree: id.tree,
     dirty_overlay_sha256: id.overlay || crypto.createHash('sha256').update(id.patch || id.content).digest('hex'), content_sha256: id.content };
   atomic(ctx.metaFile, { ...JSON.parse(fs.readFileSync(ctx.metaFile, 'utf8')), ...ctx.meta });
-  const comparisonBase = mergeBase(co); let verdictLock = null;
   try {
     if (cacheable(argv)) {
       const k = verdictKey(co.repo, id, rel, argv, comparisonBase); let m = verdictGet(k);
@@ -1104,6 +1126,24 @@ async function runTracked(argv, ctx) {
 
 // Client command classification is a dispatch hint; bb2 owns admission policy.
 const LIGHT_CARGO = new Set(['fmt', 'metadata', 'locate-project', 'tree', 'pkgid', 'version', '--version', '-V', 'search', 'verify-project']);
+function admitInputs(argv, root, base) {
+  const policy = fileURLToPath(new URL('./input_closure.py', import.meta.url));
+  const result = spawnSync('python3', ['-B', policy, 'validate', '--stage', 'client', '--root', root,
+    '--base', base || 'none', '--', ...argv], { encoding: 'utf8', env: process.env });
+  if (result.status !== 0) {
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (!/^kind=INPUT_CLOSURE /m.test(result.stderr || '')) process.stderr.write(`kind=INPUT_CLOSURE step=policy-exec input=declaration owner=gate-speed recovery=${q('python3 -B '+q(policy)+' --help')} detail=${q(result.error?.message || 'policy did not complete with a typed result')}\n`);
+    return null;
+  }
+  const { proof, declaration } = JSON.parse(result.stdout);
+  process.env.BUILD_SLOT_INPUTS_JSON = JSON.stringify(declaration);
+  process.env.BUILD_SLOT_INPUT_BASE = base || 'none';
+  delete process.env.BUILD_SLOT_INPUTS_FILE;
+  // bb2 references have not been observed on the client. Do not reuse a
+  // verdict before their actual host admission has occurred.
+  if (declaration.inputs.some(item => item.where === 'bb2')) process.env.BUILD_SLOT_VERDICT_CACHE = '0';
+  return proof;
+}
 const COMPILE_CARGO = /\bcargo\s+(\+\S+\s+)?(build|b|check|c|clippy|test|t|nextest|doc|d|run|r|bench|install|llvm-cov|miri|udeps|hack)\b|\bbuild-slot\b|\bnode-gate|\baffected-tests|\bbun run build|\bnpm run build|\bwasm-pack\b|\bjust\b|\bmake\b/;
 // Light class (2026-10-18, crit-bslot: a format check or git commit queued 20-25 min behind cargo in the compile FIFO):
 // a command, or a bash/sh -c script, every one of whose simple commands is light (format checks, git, node static checks,

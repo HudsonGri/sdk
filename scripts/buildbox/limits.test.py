@@ -19,8 +19,9 @@ PROBE = 'import json,resource;print(json.dumps({k:list(resource.getrlimit(v)) fo
 
 class LimitTests(unittest.TestCase):
     def setUp(self):
-        from cpu_test_fixture import KernelFixture
+        from cpu_test_fixture import KernelFixture, stage_worker_bundle
         self.fixture=KernelFixture()
+        self.stage_worker_bundle=stage_worker_bundle
 
     def tearDown(self):self.fixture.close()
     def test_generated_watcher_joins_exact_owner_exit_and_actual_old_sleep_retains_the_lease(self):
@@ -66,6 +67,7 @@ class LimitTests(unittest.TestCase):
     def test_public_entries_capture_before_nodes_libuv_and_nested_entry_recaptures(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root=Path(temporary);(root/'jobs').mkdir()
+            self.stage_worker_bundle(root)
             names=['build-slot','bb-admit','bb-admit.py','bb-job.py','admission_policy.py',
                    'bb_target_store.py','job_exports.py','buildbox-receipt.mjs']
             for name in names:
@@ -142,6 +144,7 @@ class LimitTests(unittest.TestCase):
     def test_native_ticket_captures_each_caller_not_daemon(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root = Path(temporary)
+            self.stage_worker_bundle(root)
             # Production entry/daemon/runtime, with only their fixture receipt
             # and namespace registry roots redirected outside shared JOBS.
             for name in ['admission_policy.py','bb_target_store.py','job_exports.py']:

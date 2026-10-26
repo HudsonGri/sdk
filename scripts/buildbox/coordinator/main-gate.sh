@@ -45,7 +45,8 @@ while :; do
     log=$L/.running.log  # renamed to <sha>.log only when complete, so the PR gate never baselines on a partial run
     # Tests, plus workspace clippy and every published crate's feature sets (each feature alone too): the PR gate's baseline.
     if ! python Q:/lanes/main-prepare.py Q:/sdk "$W" "$L" "$tip" Q:/lanes/gate-checks.sh > "$log" 2>&1 ||
-       ! cp Q:/lanes/gate-clippy.py "$W/.gate-clippy.py" 2>> "$log"; then
+       ! cp Q:/lanes/gate-clippy.py "$W/.gate-clippy.py" 2>> "$log" ||
+       ! python Q:/lanes/input_closure.py capture --base "$tip" --output "$W/.gate-inputs.json" >> "$log" 2>&1; then
       echo 'preparation-INFRA: main preparation/Clippy adapter copy step failed; recovery command: touch Q:/lanes/main-gate/.rerun after restoring Q:/lanes/gate-clippy.py' >> "$log"
       infra_log="$L/infra/$tip-preparation-$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
       mv -f "$log" "$infra_log"
@@ -53,7 +54,7 @@ while :; do
       sleep 300; continue
     fi
     # Keep Windows native streams on a pipe; one writer owns the log file.
-    (cd $W && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_LABEL=main-gate --env BUILD_SLOT_PHASE=main-wide --env BUILD_SLOT_GATE_LOG="$log" python3 .gate-clippy.py run bash .gate-checks.sh --each-feature --locked $(bash Q:/lanes/gate-pkgs.sh .)                                                      --all-features --no-fail-fast -- $(grep -v '^#' Q:/lanes/hangs.txt | sed 's/^/--skip /' | paste -sd' ')) 2>&1 | tee -a "$log" >/dev/null
+    (cd $W && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BUILD_SLOT_INPUTS_FILE=.gate-inputs.json --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_LABEL=main-gate --env BUILD_SLOT_PHASE=main-wide --env BUILD_SLOT_GATE_LOG="$log" python3 .gate-clippy.py run bash .gate-checks.sh --each-feature --locked $(bash Q:/lanes/gate-pkgs.sh .)                                                      --all-features --no-fail-fast -- $(grep -v '^#' Q:/lanes/hangs.txt | sed 's/^/--skip /' | paste -sd' ')) 2>&1 | tee -a "$log" >/dev/null
     capture_status=("${PIPESTATUS[@]}"); rc=${capture_status[0]}
     if [ "${capture_status[1]}" != 0 ]; then
       echo 'error: GATE_RUNNER_INFRA coordinator log writer failed' >> "$log"
