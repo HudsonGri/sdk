@@ -181,7 +181,7 @@ impl LocalAgentClient {
         );
         // Bounded by StreamView policy, even when the agent has a long history.
         for index in 0..self.client.conversation().records().len() {
-            if let Some(AgentEvent::Conversation { sequence, entry }) = self.client.conversation_entry(index)? {
+            if let Some(AgentEvent::Conversation { sequence, entry, .. }) = self.client.conversation_entry(index)? {
                 if matches(&entry) {
                     return self.read_turn(sequence, entry).await;
                 }
@@ -210,13 +210,13 @@ impl LocalAgentClient {
                 });
             }
             match self.next().await? {
-                AgentEvent::Conversation { sequence, entry } => {
+                AgentEvent::Conversation { sequence, entry, .. } => {
                     if matches(&entry) {
                         return self.read_turn(sequence, entry).await;
                     }
                     self.check_not_overtaken(&entry, inbox)?;
                 }
-                AgentEvent::Status { status } if status.cursor > inbox => {
+                AgentEvent::Status { status, .. } if status.cursor > inbox => {
                     if matches!(&status.phase, Phase::Running) {
                         barrier = None;
                     } else {
