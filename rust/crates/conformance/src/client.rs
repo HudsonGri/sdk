@@ -149,6 +149,9 @@ pub async fn verify<P: StreamProvider + ?Sized>(
                 status = true;
             }
             AgentEvent::Progress => {}
+            AgentEvent::Resource { .. } => {
+                return Err(failure("not_requested", "unrequested resource delivery"));
+            }
         }
     }
     let cursor = client.conversation().next_sequence();

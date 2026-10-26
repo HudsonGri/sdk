@@ -26,4 +26,4 @@ export {
   WasmStream,
   WasmSessionAuthority,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-export { ensureHarnessWasm as initializeClientQueries } from "./wasm-runtime.js";
+export { ensureClientWasm as initializeClientQueries } from "./wasm-runtime.js";

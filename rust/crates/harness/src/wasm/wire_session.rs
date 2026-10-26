@@ -18,6 +18,13 @@ enum ReadKey {
     Resource(String),
 }
 
+pub(super) fn resource(value: JsString) -> Result<String, JsValue> {
+    let ReadKey::Resource(resource) = ReadKey::parse(value)? else {
+        return Err(error("CLIENT_INVALID_RESOURCE"));
+    };
+    Ok(resource)
+}
+
 impl ReadKey {
     fn parse(value: JsString) -> Result<Self, JsValue> {
         if value.length() as usize > acyclic_stream::MAX_PATH_BYTES + 4 {
@@ -208,15 +215,17 @@ impl WasmWireSession {
     /// Release output custody and wake any pending read of this generation.
     #[wasm_bindgen(js_name = releaseResource)]
     pub fn release_resource(&self, resource: JsString) -> Result<bool, JsValue> {
-        let ReadKey::Resource(resource) = ReadKey::parse(resource)? else {
-            return Err(error("CLIENT_INVALID_RESOURCE"));
-        };
+        let resource = self::resource(resource)?;
         let released = self
             .session
             .borrow_mut()
             .release_resource(&resource)
             .map_err(session_error)?;
-        if let Some(state) = self.readers.borrow_mut().get_mut(&ReadKey::Resource(resource)) {
+        if let Some(state) = self
+            .readers
+            .borrow_mut()
+            .get_mut(&ReadKey::Resource(resource))
+        {
             state.cancelled = true;
         }
         self.wake_readers();

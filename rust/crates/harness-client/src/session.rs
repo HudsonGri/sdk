@@ -5,6 +5,7 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use futures::StreamExt;
+use prost::Message as _;
 use std::{
     borrow::Borrow,
     collections::BTreeMap,
@@ -467,12 +468,19 @@ impl WireSession {
     pub fn is_following(&self, stream: &StreamPath) -> bool {
         self.follows.contains_key(stream)
     }
+
+    /// A failed resource keeps its final view but must never be polled again.
+    #[must_use]
+    pub fn is_resource_following(&self, resource: &str) -> bool {
+        self.resources.contains_key(resource)
+    }
 }
 
 fn validate_subscription(
     path: &StreamPath,
     subscription: &wire::SessionSubscription,
 ) -> Result<u64, WireSessionError> {
+    validate_subscription_bytes(subscription)?;
     let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
         return Err(WireSessionError::InvalidSubscription);
     };
@@ -588,6 +596,7 @@ fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
 fn validate_resource_subscription(
     subscription: &wire::SessionSubscription,
 ) -> Result<(String, u64), WireSessionError> {
+    validate_subscription_bytes(subscription)?;
     let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
         return Err(WireSessionError::InvalidSubscription);
     };
@@ -603,4 +612,13 @@ fn validate_resource_subscription(
         .ok_or(WireSessionError::InvalidSubscription)?;
     wire_codec::session::validate_follow(follow, resume).map_err(WireSessionError::Stream)?;
     Ok((follow.resource.clone(), resume.next))
+}
+
+fn validate_subscription_bytes(
+    subscription: &wire::SessionSubscription,
+) -> Result<(), WireSessionError> {
+    if subscription.encoded_len() > acyclic_stream::MAX_COMMAND_BYTES {
+        return Err(WireSessionError::Stream(StreamError::LimitExceeded));
+    }
+    Ok(())
 }

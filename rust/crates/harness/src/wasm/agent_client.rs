@@ -117,6 +117,78 @@ pub struct WasmAgentClient {
 
 #[wasm_bindgen]
 impl WasmAgentClient {
+    /// Tool-output follows share this observer's bounded fold and next().
+    #[wasm_bindgen(js_name = openResource)]
+    pub fn open_resource(&self, encoded: &js_sys::Uint8Array) -> Result<(), JsValue> {
+        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+            if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
+                Err(error(
+                    "client_subscription_capacity",
+                    "subscription exceeds byte bound",
+                ))
+            } else {
+                Ok(())
+            }
+        })?;
+        let subscription = acyclic_stream::wire::SessionSubscription::decode(bytes.as_slice())
+            .map_err(|cause| error("invalid_subscription", cause))?;
+        self.client
+            .borrow_mut()
+            .as_mut()
+            .ok_or_else(|| error("client_closed", "agent client is closed"))?
+            .open_resource(subscription)
+            .map_err(client_error)?;
+        self.wake_reader();
+        Ok(())
+    }
+
+    /// Release retained output and let a pending combined read see the change.
+    #[wasm_bindgen(js_name = releaseResource)]
+    pub fn release_resource(&self, resource: JsString) -> Result<bool, JsValue> {
+        let resource = super::wire_session::resource(resource)?;
+        let released = self
+            .client
+            .borrow_mut()
+            .as_mut()
+            .ok_or_else(|| error("client_closed", "agent client is closed"))?
+            .release_resource(&resource)
+            .map_err(client_error)?;
+        self.wake_reader();
+        Ok(released)
+    }
+
+    /// Metadata only; no full output history crosses the WASM boundary.
+    #[wasm_bindgen(js_name = resourceWindow, unchecked_return_type = "AgentWindow")]
+    pub fn resource_window(&self, resource: JsString) -> Result<JsValue, JsValue> {
+        let resource = super::wire_session::resource(resource)?;
+        self.with_client(|client| {
+            let view = client.resource_view(&resource).map_err(client_error)?;
+            to_js(&AgentWindow {
+                first_sequence: view.first_sequence(),
+                next_sequence: view.next_sequence(),
+                record_count: view.records().len(),
+                retained_bytes: view.retained_bytes(),
+                revision: view.revision(),
+            })
+        })?
+    }
+
+    /// Copy one displayed canonical record, rather than joining tool output.
+    #[wasm_bindgen(js_name = resourceRecord)]
+    pub fn resource_record(
+        &self,
+        resource: JsString,
+        index: usize,
+    ) -> Result<Option<js_sys::Uint8Array>, JsValue> {
+        let resource = super::wire_session::resource(resource)?;
+        self.with_client(|client| {
+            let view = client.resource_view(&resource).map_err(client_error)?;
+            Ok(view
+                .record(index)
+                .map(|record| js_sys::Uint8Array::from(record.encode_to_vec().as_slice())))
+        })?
+    }
+
     /// Attach host-published controls to this observer's exact pool and slot.
     pub fn controls(
         &self,
@@ -324,6 +396,13 @@ impl WasmAgentClient {
 }
 
 impl WasmAgentClient {
+    fn wake_reader(&self) {
+        let waker = self.waker.borrow_mut().take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
     /// Browser hosts return the same client over their one authenticated pool.
     /// The host retains credential custody; no second WasmStream or transport
     /// is needed to observe agents created by that host.
