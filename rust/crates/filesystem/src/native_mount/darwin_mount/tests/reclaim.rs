@@ -1,5 +1,4 @@
 use super::*;
-use std::io::{BufRead as _, Write as _};
 use std::process::Stdio;
 
 const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::crashed_owner";
@@ -36,8 +35,7 @@ fn crashed_owner() -> TestResult {
         &mut None,
         |_| Ok(()),
     )?;
-    println!("RECLAIM_READY");
-    std::io::stdout().flush()?;
+    acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), "RECLAIM_READY")?;
     let mut command = String::new();
     std::io::stdin().read_line(&mut command)?;
     Err("crash fixture must be killed".into())
@@ -75,15 +73,7 @@ fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -
         .stdout(Stdio::piped())
         .spawn()?;
     let output = child.stdout.take().ok_or("missing child stdout")?;
-    let ready = std::io::BufReader::new(output)
-        .lines()
-        .find_map(|line| match line {
-            Ok(line) if line == "RECLAIM_READY" => Some(Ok(())),
-            Ok(_) => None,
-            Err(error) => Some(Err(error)),
-        })
-        .ok_or("child exited before mounting")?;
-    ready?;
+    acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "RECLAIM_READY")?;
     child.kill()?;
     child.wait()?;
     // Negative witness: SIGKILL itself leaves both kernel mounts behind.

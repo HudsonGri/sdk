@@ -8,6 +8,9 @@ pub mod differential;
 mod fixtures;
 pub use fixtures::source_path;
 pub mod module_cases;
+pub mod partitions;
+pub mod readiness;
+pub mod snapshot;
 /// Compiler observations made on the build host for every module path case.
 /// Target tests compare their actual source traversal with this independent proof.
 pub const MODULE_COMPILER_REACHED: [bool; module_cases::CASES.len()] =

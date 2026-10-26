@@ -10,6 +10,8 @@ publish = false
 acyclic-differential = { path = "../differential" }
 
 [dev-dependencies]
+acyclic-native-runtime = { path = "../native-runtime" }
+tempfile = "3.27.0"
 proptest.workspace = true
 
 [lints.rust]

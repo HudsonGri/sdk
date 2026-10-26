@@ -161,14 +161,6 @@ where
         self.retiring
             .store(true, std::sync::atomic::Ordering::Release);
         session.stop_with_context(&cleanup)?;
-        #[cfg(windows)]
-        if let Some((cause, _)) = session
-            .namespace_outcome
-            .as_mut()
-            .and_then(super::super::projfs::ProjFsNamespaceOutcome::take_capture_failures)
-        {
-            return Err(cause.into());
-        }
         owner.take();
         self.source.cancel();
         Ok(())

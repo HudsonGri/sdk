@@ -9,27 +9,12 @@ type Candidate = Checkout<LocalAuthorityBackend, LocalObjectBackend>;
 pub(super) const MAXIMUM_RESCANS: usize = 4;
 
 impl Cursor {
-    fn poll(
-        &mut self,
-        cancellation: &CancellationToken,
-    ) -> Result<(WatchBatch, Option<acyclic_fs::NativeAllocation>)> {
-        #[cfg(target_os = "macos")]
-        {
-            let (batch, owner) = self
-                .watcher
-                .poll_with_native_work_guarded(MAXIMUM_PATHS, &self.work, |_| Ok(()))
-                .map_err(storage)?;
-            let _ = cancellation;
-            Ok((batch, Some(owner)))
-        }
-        #[cfg(not(target_os = "macos"))]
-        Ok((
-            self.watcher
-                .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, cancellation)
-                .map_err(storage)?
-                .value,
-            None,
-        ))
+    fn poll(&mut self, cancellation: &CancellationToken) -> Result<WatchBatch> {
+        Ok(self
+            .watcher
+            .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, cancellation)
+            .map_err(storage)?
+            .value)
     }
 
     async fn baseline(
@@ -39,7 +24,7 @@ impl Cursor {
         cancellation: &CancellationToken,
         optional_before_images: bool,
     ) -> Result<WatchBatch> {
-        self.watcher.begin_rescan().map_err(storage)?;
+        let rescan = self.watcher.begin_rescan().map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("begin")?;
         self.watcher.watch_tree(EXCLUDED).map_err(storage)?;
@@ -69,7 +54,7 @@ impl Cursor {
         }
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("baseline")?;
-        let batch = self.watcher.finish_rescan().map_err(storage)?;
+        let batch = self.watcher.finish_rescan(rescan).map_err(storage)?;
         #[cfg(all(test, not(acyclic_harness_loom)))]
         self.inject("finish")?;
         Ok(batch)
@@ -122,33 +107,16 @@ pub(super) async fn capture(
                     optional_before_images && rescans == 1,
                 )
                 .await?;
-            if !replay(
-                cursor,
-                checkout,
-                batch,
-                physical,
-                configuration,
-                cancellation,
-            )
-            .await?
-            {
+            if !replay(cursor, checkout, batch, configuration, cancellation).await? {
                 continue;
             }
         } else if let Some(batch) = initial.take()
-            && !replay(
-                cursor,
-                checkout,
-                batch,
-                physical,
-                configuration,
-                cancellation,
-            )
-            .await?
+            && !replay(cursor, checkout, batch, configuration, cancellation).await?
         {
             baseline = true;
             continue;
         }
-        if drain(cursor, checkout, physical, configuration, cancellation).await? {
+        if drain(cursor, checkout, configuration, cancellation).await? {
             return Ok(());
         }
         baseline = true;
@@ -158,15 +126,14 @@ pub(super) async fn capture(
 async fn drain(
     cursor: &mut Cursor,
     checkout: &mut Candidate,
-    physical: &LocalWorkspace,
     configuration: (&CaptureOptions, &CapturePolicy),
     cancellation: &CancellationToken,
 ) -> Result<bool> {
     let mut remaining = MAXIMUM_PATHS as usize;
     let mut pending = None;
     loop {
-        // Keep the producer's vector guard alive until replay has consumed it.
-        let (batch, _owner) = match pending.take() {
+        // The batch carries its vector custody through replay.
+        let batch = match pending.take() {
             Some(batch) => batch,
             None => cursor.poll(cancellation)?,
         };
@@ -181,23 +148,14 @@ async fn drain(
             }
             WatchBatch::RescanRequired { .. } => false,
         };
-        if !replay(
-            cursor,
-            checkout,
-            batch,
-            physical,
-            configuration,
-            cancellation,
-        )
-        .await?
-        {
+        if !replay(cursor, checkout, batch, configuration, cancellation).await? {
             return Ok(false);
         }
         // Recheck invalidation after replay, including an empty batch. Do not
         // fence here: FSEvents correctly cannot promise synchronous delivery.
         if empty {
             let validated = cursor.poll(cancellation)?;
-            if matches!(&validated.0, WatchBatch::Changes { changes, .. } if changes.is_empty()) {
+            if matches!(&validated, WatchBatch::Changes { changes, .. } if changes.is_empty()) {
                 return Ok(true);
             }
             pending = Some(validated);
@@ -209,7 +167,6 @@ pub(super) async fn replay(
     cursor: &mut Cursor,
     checkout: &mut Candidate,
     batch: WatchBatch,
-    physical: &LocalWorkspace,
     (options, policy): (&CaptureOptions, &CapturePolicy),
     cancellation: &CancellationToken,
 ) -> Result<bool> {
@@ -217,7 +174,10 @@ pub(super) async fn replay(
         require_rescan(reason)?;
         return Ok(false);
     }
-    arrivals::register(&mut cursor.watcher, &batch, physical, policy)?;
+    cursor
+        .watcher
+        .watch_arrivals(&batch, policy, MAXIMUM_PATHS)
+        .map_err(storage)?;
     #[cfg(all(test, not(acyclic_harness_loom)))]
     cursor.inject("register")?;
     let result = capture_watch_batch(

@@ -46,6 +46,7 @@ mod host_walk;
 #[cfg(feature = "memory")]
 mod leaf_path_tests;
 use host_walk::*;
+pub(crate) use host_walk::walk_watch_tree;
 #[cfg(test)]
 mod host_observation_tests;
 mod inline_reuse;

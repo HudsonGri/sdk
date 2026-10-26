@@ -149,10 +149,10 @@ where
         .map_err(|cause| (cause, work.receipt()))
 }
 
-async fn prepare_generation<'a, A, O, F, Fut>(
+async fn prepare_generation<A, O, F, Fut>(
     from: &crate::Generation<A, O>,
     to: &crate::Generation<A, O>,
-    state: &'a crate::LocalCoreStateStore,
+    state: &crate::LocalCoreStateStore,
     request: NativeWorkspacePublication<'_>,
     work: &NativeMaterializationWork,
     before_effect: &mut F,
@@ -169,6 +169,9 @@ where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
 {
+    // Admitted before the first open: planning, preparation and the backend
+    // all hold descriptors under this one admission.
+    let admission = NativeTreeMaterializationBackend::admission().await?;
     before_effect().await?;
     if work.budget() != request.budget || from.id() != request.from || to.id() != request.to {
         return Err(NativeWorkspacePublicationError::MismatchedJournal);
@@ -233,9 +236,37 @@ where
         })
         .await?;
     }
-    let backend = NativeTreeMaterializationBackend::new(root, operation, allocation, work.clone())?;
+    let backend = NativeTreeMaterializationBackend::new(
+        root,
+        operation,
+        allocation,
+        work.clone(),
+        admission,
+    )?;
     let materializer = JournaledMaterializer::new(store, backend);
     materializer.verify_allocation(&journal).await?;
+    let journal =
+        stage_generation(&materializer, to, journal, &request, work, before_effect).await?;
+    Ok((materializer, journal))
+}
+
+async fn stage_generation<A, O, F, Fut>(
+    materializer: &JournaledMaterializer<
+        crate::LocalCoreStateStore,
+        Arc<NativeTreeMaterializationBackend>,
+    >,
+    to: &crate::Generation<A, O>,
+    mut journal: MaterializationJournal,
+    request: &NativeWorkspacePublication<'_>,
+    work: &NativeMaterializationWork,
+    before_effect: &mut F,
+) -> Result<MaterializationJournal, NativeWorkspacePublicationError>
+where
+    A: crate::AsyncAuthorityStore,
+    O: crate::AsyncObjectStore,
+    F: FnMut() -> Fut + Send,
+    Fut: Future<Output = Result<(), NativeWorkspacePublicationError>> + Send,
+{
     if journal.phase == MaterializationPhase::Preparing && journal.preimages.is_empty() {
         before_effect().await?;
         materializer.verify_effect_context(&journal).await?;
@@ -265,7 +296,7 @@ where
             .await?;
         }
     }
-    Ok((materializer, journal))
+    Ok(journal)
 }
 
 fn publication_root_identity(
