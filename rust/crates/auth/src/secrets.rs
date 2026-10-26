@@ -260,6 +260,7 @@ impl HttpTransport {
         Ok(Self {
             endpoint: crate::credential::endpoint(origin).map_err(|_| Error::InvalidRequest)?,
             client: reqwest::Client::builder()
+                .timeout(crate::credential::HTTP_REQUEST_TIMEOUT)
                 .redirect(reqwest::redirect::Policy::none())
                 .retry(reqwest::retry::never())
                 .build()

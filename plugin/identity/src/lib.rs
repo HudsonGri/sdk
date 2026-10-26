@@ -418,7 +418,7 @@ impl Identity {
         })?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30))
+            .timeout(acyclic_auth::credential::HTTP_REQUEST_TIMEOUT)
             .build()
             .map_err(|_| Error::new("configuration_error", "cannot create HTTP client"))?;
         Ok(Self {

@@ -10,6 +10,10 @@ use std::sync::Arc as Shared;
 /// Maximum UTF-8 byte length of an authorization credential.
 pub const MAX_CREDENTIAL_BYTES: usize = 12 * 1024;
 
+/// Whole HTTP request budget, including response headers and successful bodies.
+/// Identity and secrets transports share the same absolute request deadline.
+pub const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A failed callback or a value that cannot be sent as a credential.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
