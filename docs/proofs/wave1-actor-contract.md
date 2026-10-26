@@ -1,6 +1,6 @@
-# Verify â†’ rb-actors: adopted A4 proof contract
+# Actors wave-1 proof contract
 
-2026-10-26. Single SDK+hosted Actors owner is rb-actors. b-runtime is retired; [actors/handover.md](actors/handover.md) is authoritative. The eight A4-01..08 histories in [verify-to-b-runtime.md](verify-to-b-runtime.md) remain the shared oracle, with the following refinement. No build is requested solely for this review. Cloud-owned requests go through the coordinator.
+2026-10-26. SDK Actors continuation belongs to Claude cl-a4; rb-actors owns the matching Cloud implementation. The [captured predecessor handover](../../scripts/tests/fixtures/proof-policy/actor-store-v1/handover.md) records b-runtime's earlier retirement and the inherited evidence. The eight A4-01..08 histories in the [captured predecessor contract](../../scripts/tests/fixtures/proof-policy/owner-handover-v2/actors/verify-contract.md) remain the shared oracle, with the following refinement. No build is requested solely for this review. Cloud-owned requests go through the coordinator.
 
 ## Decisions
 
@@ -23,7 +23,7 @@ Extend A4-03's same-provider history: set G/D, trigger G with Keep, crash at pre
 
 ## Admitted inherited scope
 
-Exact Store pin **252c28c27fd490186f7e17e1d55b47ffe82a9e9a**, signature G verified. Six formatted archive files byte-match that commit, including unchanged tests; restored six-file hashes match. Archive SHA256 **af96f5e9459b56961f5775c1352f4a7501457945a67f3ba4a073387755fe876d**. Mirrored admission: `Q:/worktrees/redesign-verify/scripts/tests/fixtures/proof-policy/actor-store-v1/receipt.json`.
+Exact Store pin **252c28c27fd490186f7e17e1d55b47ffe82a9e9a**, signature G verified. Six formatted archive files byte-match that commit, including unchanged tests; restored six-file hashes match. Archive SHA256 **af96f5e9459b56961f5775c1352f4a7501457945a67f3ba4a073387755fe876d**. [Mirrored admission](../../scripts/tests/fixtures/proof-policy/actor-store-v1/receipt.json).
 
 | Entry / invariant | Captured source at252c | Existing proof / limitation |
 |---|---|---|
@@ -40,6 +40,8 @@ The six positive tests report0.05s total; each of three actual mutation runs sel
 Source audit of the new local.rs and guest/handler.rs at252c found no unsafe, unwrap/expect/panic, or catch-all typed status mapper; public items have doc comments. Invalid(&'static str) remains a coarse transition error, and no end-to-end UI error conversion proof is implied. Miri/Kani and strict current-source Clippy are absent.
 
 ## Current unqualified work and done criteria
+
+An accepted but unresolved publication must retain its exact prepared request, digest, key and original custody. Reloading an unchanged visible state is insufficient to prove that the first attempt was never accepted. Extend A4-01/A4-06 at the private accepted-before-publication fault cut: lose the response, advance injected time and supply a handler whose next call produces different effect bytes. Drive Runtime retry, cancellation and restart; assert byte-identical unresolved retries and exactly one committed tuple/effect. The production control drops/recomputes the retained request and must fail that identity assertion. Discarding an already-successful reply does not cover this cut. Source review of the unqualified `ae2f73875a761e90aef7be84eb35e16385e192da` Runtime finds held records/follows but no retained prepared request before its error return; this is an inference requiring execution, not a demonstrated failure.
 
 Adopted readiness transfer **4056b65d72ed901caef674a3ec01d93d630800fe** is signed but uncompiled; test source is not a Loom receipt. Read-only inspection of the new owner worktree observes signed local **3f0eb97a509b40e06b27f580ce34577ebc947ecb** adding `delivered_generation` and preserving Keep. This observation is not qualification or a tested pin. Keep the corrected oracle above when qualifying it; retain exact positive/control compiled manifests, unchanged test hashes, executable hashes, selected cases, fixed seeds and runtimes.
 

@@ -14,6 +14,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+# Imported helpers must not create artifacts before the checker loads.
+sys.dont_write_bytecode = True
 from proof_fixture_paths import repository_path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -278,8 +281,6 @@ class EvidencePolicy(unittest.TestCase):
 
 if __name__ == "__main__":
     try:
-        # Loading the sibling checker must not dirty a clean proof worktree.
-        sys.dont_write_bytecode = True
         SPEC = importlib.util.spec_from_file_location("wave1_inventory", ROOT / "scripts/check-wave1-inventory.py")
         POLICY = importlib.util.module_from_spec(SPEC)
         SPEC.loader.exec_module(POLICY)
