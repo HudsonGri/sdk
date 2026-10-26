@@ -20,7 +20,8 @@ use acyclic_actors::{
     },
     local::{PreparedPublish, Store, Subscription},
 };
-use acyclic_stream::{CommitRequest, StreamProvider};
+use acyclic_stream::{CommitRequest, ReadRequest, StreamProvider};
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -126,6 +127,30 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         .map_err(|_| Error::Path("agent id is not an actor id"))
     }
 
+    /// Inbox records `[from, end)`, at most `limit`, in sequence order.
+    async fn read_back(
+        &self,
+        agent: &AgentPath,
+        from: u64,
+        limit: u32,
+        end: u64,
+    ) -> Result<Vec<(u64, InboxRecord)>, Error> {
+        let request = ReadRequest {
+            path: agent.inbox()?,
+            from,
+            limit,
+        };
+        let mut records = self.store.provider().read(request).await.map_err(Error::Stream)?;
+        let mut read = Vec::new();
+        while let Some(record) = records.try_next().await.map_err(Error::Stream)? {
+            if record.sequence >= end {
+                break;
+            }
+            read.push((record.sequence, InboxRecord::decode(&record.value)?));
+        }
+        Ok(read)
+    }
+
     async fn transition(
         &self,
         delivery: Delivery,
@@ -163,7 +188,19 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             }
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         };
-        let step = step(&self.driver, &path, saved.map(|saved| saved.state), cursor, wake).await?;
+        let mut state = saved.map(|saved| saved.state);
+        if let Some(state) = state.as_mut() {
+            // Overflowed input precedes this delivery; read it back first.
+            let end = match &wake {
+                Wake::Inbox { sequence, .. } => *sequence,
+                Wake::Alarm => cursor,
+            };
+            if let Some((from, limit)) = state.overflowed(end) {
+                let records = self.read_back(&path, from, limit, end).await?;
+                state.refill(records, end);
+            }
+        }
+        let step = step(&self.driver, &path, state, cursor, wake).await?;
         let request = lower(&step, cursor, delivery_key(&step.state, &trigger)?)?;
         let mut effects = effects(request);
         let spawned: BTreeSet<_> = step

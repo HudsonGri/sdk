@@ -16,8 +16,9 @@ use std::collections::{BTreeSet, VecDeque};
 
 /// Most children an agent may have open at once.
 pub const MAX_OPEN_CHILDREN: usize = 256;
-/// Most queued inputs waiting for the turn.
-pub const MAX_QUEUED: usize = 256;
+/// Most inputs held in the checkpoint. Later input stays in the inbox, which is
+/// the agent's unbounded durable queue, and is read back as the window drains.
+pub const MAX_QUEUED: usize = 32;
 
 /// Input queued for the turn, in inbox order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,8 +88,16 @@ pub struct AgentState {
     pub open_children: BTreeSet<AgentPath>,
     /// Open children that still have to receive `Archive`.
     pub archive_pending: BTreeSet<AgentPath>,
-    /// Inputs waiting for the turn.
+    /// Inputs waiting for the turn, in inbox order.
     pub queued: VecDeque<TurnInput>,
+    /// Inbox sequence of the first input not held in `queued`. It and every
+    /// later input are read back from the inbox, in order, as `queued` drains.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<u64>,
+    /// Sequences after `overflow` already taken out of order: the awaited
+    /// approval responses. Read-back skips them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub taken: BTreeSet<u64>,
     /// Archived: no further turns, no further input accepted.
     pub closed: bool,
     /// `ChildDone` has been sent to the parent.
@@ -113,9 +122,55 @@ impl AgentState {
             open_children: BTreeSet::new(),
             archive_pending: BTreeSet::new(),
             queued: VecDeque::new(),
+            overflow: None,
+            taken: BTreeSet::new(),
             closed: false,
             reported: false,
             turn: None,
+        }
+    }
+
+    /// Drops every pending input, held or still in the inbox.
+    fn drop_queue(&mut self) {
+        self.queued.clear();
+        self.overflow = None;
+        self.taken.clear();
+    }
+
+    /// The overflowed inbox records to read back before inbox sequence `end`:
+    /// the first sequence and a record bound that refills the window past
+    /// every taken sequence.
+    #[must_use]
+    pub fn overflowed(&self, end: u64) -> Option<(u64, u32)> {
+        let from = self.overflow.filter(|from| *from < end)?;
+        let room = MAX_QUEUED.saturating_sub(self.queued.len()) + self.taken.len();
+        let limit = u32::try_from(room).ok().filter(|room| *room > 0)?;
+        Some((from, limit))
+    }
+
+    /// Refills the window from overflowed inbox `records`, read in sequence
+    /// order from [`Self::overflowed`] and all before `end`.
+    pub fn refill(&mut self, records: Vec<(u64, InboxRecord)>, end: u64) {
+        let mut next = self.overflow.unwrap_or(end);
+        for (sequence, record) in records {
+            next = sequence + 1;
+            if self.taken.remove(&sequence) {
+                continue;
+            }
+            let Some(input) = input(record) else {
+                continue;
+            };
+            if self.queued.len() >= MAX_QUEUED {
+                self.overflow = Some(sequence);
+                return;
+            }
+            self.queued.push_back(input);
+        }
+        if next >= end {
+            self.overflow = None;
+            self.taken.clear();
+        } else {
+            self.overflow = Some(next);
         }
     }
 }
@@ -255,7 +310,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         (Some(state), Wake::Alarm) => state,
-        (Some(state), Wake::Inbox { record, .. }) => admit(state, record)?,
+        (Some(state), Wake::Inbox { sequence, record }) => admit(state, sequence, record)?,
     };
     if state.closed {
         cascade(&mut state, &mut outs)?;
@@ -265,7 +320,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     track_children(&mut state, &outs)?;
     let alarm = match kernel::alarm(
         control(&state),
-        !state.queued.is_empty(),
+        !state.queued.is_empty() || state.overflow.is_some(),
         approval_position(&state).is_some(),
         state.archive_pending.len(),
     ) {
@@ -306,7 +361,7 @@ fn control(state: &AgentState) -> Control {
 }
 
 /// Folds one inbox record into the state.
-fn admit(mut state: AgentState, record: InboxRecord) -> Result<AgentState, Error> {
+fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<AgentState, Error> {
     let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
         InboxRecord::Cancel(_) => Admit::Cancel,
@@ -315,7 +370,7 @@ fn admit(mut state: AgentState, record: InboxRecord) -> Result<AgentState, Error
     };
     let admitted = kernel::admit(control(&state), kind);
     if admitted.clear_queue {
-        state.queued.clear();
+        state.drop_queue();
     }
     if !admitted.control.turn {
         state.turn = None;
@@ -327,17 +382,42 @@ fn admit(mut state: AgentState, record: InboxRecord) -> Result<AgentState, Error
         state.archive_pending.clone_from(&state.open_children);
     }
     state.closed = admitted.control.closed;
-    let input = match record {
+    if let InboxRecord::ChildDone(done) = &record {
+        state.open_children.remove(&done.child);
+        state.archive_pending.remove(&done.child);
+    }
+    if let Some(input) = input(record).filter(|_| admitted.enqueue) {
+        // The response the waiting turn needs is taken now, out of order;
+        // this step consumes it. Any other input joins the window, or, once
+        // the window is full or already overflowed, stays in the inbox to be
+        // read back in order. No admitted input is ever dropped.
+        let awaited = matches!(
+            (&state.phase, &input),
+            (Phase::WaitingApproval { id }, TurnInput::Approval { id: response }) if id == response
+        );
+        if awaited {
+            if state.overflow.is_some() {
+                state.taken.insert(sequence);
+            }
+            state.queued.push_back(input);
+        } else if state.overflow.is_none() && state.queued.len() < MAX_QUEUED {
+            state.queued.push_back(input);
+        } else {
+            state.overflow.get_or_insert(sequence);
+        }
+    }
+    Ok(state)
+}
+
+/// The turn input an inbox record carries.
+fn input(record: InboxRecord) -> Option<TurnInput> {
+    match record {
         InboxRecord::Message(message) => Some(TurnInput::Message {
             from: message.from,
             id: message.id,
             body: message.body,
         }),
-        InboxRecord::ChildDone(done) => {
-            state.open_children.remove(&done.child);
-            state.archive_pending.remove(&done.child);
-            Some(TurnInput::ChildDone { done })
-        }
+        InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
         InboxRecord::ApprovalRequested(request) => Some(TurnInput::ApprovalRequested {
             child: request.child,
@@ -349,20 +429,7 @@ fn admit(mut state: AgentState, record: InboxRecord) -> Result<AgentState, Error
             event: hook.event,
         }),
         InboxRecord::ForkAdopted(_) | InboxRecord::Cancel(_) | InboxRecord::Archive(_) => None,
-    };
-    if let Some(input) = input.filter(|_| admitted.enqueue) {
-        // The response the waiting turn needs is always admitted; this step
-        // consumes it. Other input beyond the bound is refused, and the
-        // cursor still advances, so a full queue never wedges the inbox.
-        let awaited = matches!(
-            (&state.phase, &input),
-            (Phase::WaitingApproval { id }, TurnInput::Approval { id: response }) if id == response
-        );
-        if awaited || state.queued.len() < MAX_QUEUED {
-            state.queued.push_back(input);
-        }
     }
-    Ok(state)
 }
 
 /// Position of the queued response to the approval the turn waits for.
@@ -413,7 +480,7 @@ async fn run<T: TurnDriver + ?Sized>(
         (Mode::Approval, Some(id), _) => Phase::WaitingApproval { id },
         (Mode::Alarm(deadline_unix_ms), ..) => Phase::WaitingAlarm { deadline_unix_ms },
         (Mode::Done, _, Some(outcome)) => {
-            state.queued.clear();
+            state.drop_queue();
             if send {
                 report(state, outcome.clone(), outs);
             }
