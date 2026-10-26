@@ -47,6 +47,8 @@ fn encoded_json_selection_rejects_missing_malformed_and_ambiguous_inputs() {
         json!({"text":"{}","pointer":"/missing"}),
         json!({"text":"{}","pointer":"","extra":true}),
         json!({"text":{"$request":"/missing"},"pointer":""}),
+        json!({"text":"{\"~id\":1}","pointer":"/~id"}),
+        json!({"text":"{\"~id\":1}","pointer":"","set":{"/~id":2}}),
     ] {
         let step: Step = serde_json::from_value(json!({"json":{"$json":spec}})).unwrap();
         assert!(bind_result(&step, &json!({})).is_err());
@@ -59,6 +61,12 @@ fn encoded_json_selection_rejects_missing_malformed_and_ambiguous_inputs() {
         bind_result(&step, &json!({})).unwrap().json,
         Some(json!({"~id":2}))
     );
+    for pointer in ["/~id", "/~", "/~2id"] {
+        let body = json!({"~id":1,"~":2,"~2id":3});
+        let step: Step =
+            serde_json::from_value(json!({"json":{"$request":pointer}})).unwrap();
+        assert!(bind_result(&step, &body).is_err());
+    }
 }
 
 proptest! {

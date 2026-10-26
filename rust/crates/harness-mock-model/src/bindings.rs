@@ -45,9 +45,30 @@ pub fn bind_result(step: &Step, body: &Value) -> Result<Step, String> {
 }
 
 fn lookup<'a>(source: &'a Value, pointer: &str) -> Result<&'a Value, String> {
+    validate_pointer(pointer)?;
     source
         .pointer(pointer)
         .ok_or_else(|| format!("missing template pointer {pointer}"))
+}
+
+fn lookup_mut<'a>(source: &'a mut Value, pointer: &str) -> Result<&'a mut Value, String> {
+    validate_pointer(pointer)?;
+    source
+        .pointer_mut(pointer)
+        .ok_or_else(|| format!("missing template pointer {pointer}"))
+}
+
+fn validate_pointer(pointer: &str) -> Result<(), String> {
+    if !pointer.is_empty() && !pointer.starts_with('/') {
+        return Err(format!("invalid template pointer {pointer}"));
+    }
+    let mut bytes = pointer.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'~' && !matches!(bytes.next(), Some(b'0' | b'1')) {
+            return Err(format!("invalid template pointer escape {pointer}"));
+        }
+    }
+    Ok(())
 }
 
 fn bind(value: &mut Value, request: &Value, result: &Value) -> Result<(), String> {
@@ -62,9 +83,7 @@ fn bind(value: &mut Value, request: &Value, result: &Value) -> Result<(), String
             let mut selected = lookup(&decoded, &selection.pointer)?.clone();
             for (pointer, mut replacement) in selection.set {
                 bind(&mut replacement, request, result)?;
-                *selected
-                    .pointer_mut(&pointer)
-                    .ok_or_else(|| format!("missing mutation pointer {pointer}"))? = replacement;
+                *lookup_mut(&mut selected, &pointer)? = replacement;
             }
             *value = selected;
         }

@@ -1,4 +1,4 @@
-use super::{JsonSelection, bind};
+use super::{JsonSelection, bind, lookup, lookup_mut, validate_pointer};
 use crate::{Step, Tool};
 use acyclic_harness_core::model::ModelEvent;
 use serde::{Deserialize, Serialize};
@@ -125,6 +125,7 @@ fn bind_selectors(
         if !binding.captured.set.is_empty() || binding.pointer.is_empty() {
             return Err("captured selection must be pure and target a tool-argument member".into());
         }
+        validate_pointer(&binding.pointer)?;
         if selected.iter().any(|(id, pointer)| {
             id == &binding.call_id
                 && (pointer == &binding.pointer
@@ -156,16 +157,13 @@ fn bind_selectors(
             index
         };
         let target = &mut derived.tools[index];
-        if target.arguments.pointer(&binding.pointer) != Some(&expected) {
+        if lookup(&target.arguments, &binding.pointer)? != &expected {
             return Err("captured tool selector differs from its original request".into());
         }
         if let Some(request) = request {
             let mut replacement = binding.replacement.clone();
             bind(&mut replacement, request, &Value::Null)?;
-            *target
-                .arguments
-                .pointer_mut(&binding.pointer)
-                .ok_or("captured pointer disappeared")? = replacement;
+            *lookup_mut(&mut target.arguments, &binding.pointer)? = replacement;
         }
     }
     Ok(derived)
@@ -232,12 +230,27 @@ mod tests {
         let mut wrong = policy.clone();
         wrong.bindings[0].pointer = "/absent".into();
         assert!(bind_selectors(&wrong, &original, &decoded, None).is_err());
-        let mut mutated = policy;
+        let mut mutated = policy.clone();
         mutated.bindings[0]
             .captured
             .set
             .insert("/generation".into(), json!("other"));
         assert!(bind_selectors(&mutated, &original, &decoded, None).is_err());
+
+        // RFC escaping gives each object member one pointer spelling. Serde's
+        // permissive malformed alias must never bypass selector overlap checks.
+        let escaped = Step {
+            tools: vec![Tool {
+                arguments: json!({"~source":{"generation":"retained"}}),
+                ..decoded.tools[0].clone()
+            }],
+            ..Step::default()
+        };
+        let mut escaped_policy = policy;
+        escaped_policy.bindings[0].pointer = "/~0source".into();
+        assert!(bind_selectors(&escaped_policy, &original, &escaped, None).is_ok());
+        escaped_policy.bindings[0].pointer = "/~source".into();
+        assert!(bind_selectors(&escaped_policy, &original, &escaped, None).is_err());
     }
 
     #[test]
