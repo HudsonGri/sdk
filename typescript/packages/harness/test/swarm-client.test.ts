@@ -1,30 +1,27 @@
 import { expect, test } from "bun:test";
-import { SwarmClient, WasmStream, initializeClientQueries, swarmStatusKey } from "../src/client-query.js";
-import { exerciseSwarm, limits, viewLimits } from "./swarm-client.scenario.js";
+import { AgentClient, WasmStream, initializeClientQueries } from "../src/client.js";
+import { exerciseAgents, root } from "./swarm-client.scenario.js";
 import { bindLocalSession } from "./session-authority.js";
 
-test("memory volumes use the production swarm pool and file fold through WASM", async () => {
+test("native and browser agent views use the same bounded Rust session", async () => {
   await initializeClientQueries();
   const stream = new WasmStream();
   await bindLocalSession(stream);
-  try { expect(await exerciseSwarm(stream)).toEqual({ agents: 2, snapshots: 2, textDeltas: 1, recovered: false }); }
+  try { expect(await exerciseAgents(stream)).toEqual({ selected: 2, liveRecords: 2, recovered: false }); }
   finally { stream.free(); }
 });
-for (const mutation of [{ agents: 0n }, { selected: 3n }, { snapshot_files: 0n }, { config_files: 0n }, { layout_bytes: 0n }, { extra: true }]) {
-  test(`Rust rejects invalid swarm admission before following: ${Object.keys(mutation)}`, async () => {
-    await initializeClientQueries();
-    expect(() => Reflect.construct(SwarmClient, ["swarm", { ...limits, ...mutation }, viewLimits])).toThrow();
-  });
-}
 
-
-test("shared status keys preserve opaque bytes and separate agent namespaces", () => {
-  const opaque = new Uint8Array([0, 255, 1]);
-  expect(swarmStatusKey("swarm/α", opaque)).toEqual(new Uint8Array([...new TextEncoder().encode("swarm/α"), 0, ...opaque]));
-  const separate = (a: Uint8Array, b: Uint8Array) => expect(a).not.toEqual(b);
-  separate(swarmStatusKey("swarm/a", opaque), swarmStatusKey("swarm/b", opaque));
-  // The old unscoped key fails the same separation contract.
-  expect(() => separate(opaque, opaque.slice())).toThrow();
-  for (const agent of ["", "swarm/a\0b"]) expect(() => swarmStatusKey(agent, opaque)).toThrow();
-  expect(() => swarmStatusKey("swarm/a", new Uint8Array())).toThrow();
+test("agent view admission refuses oversized and malformed input atomically", async () => {
+  await initializeClientQueries();
+  const stream = new WasmStream();
+  await bindLocalSession(stream);
+  const client = new AgentClient(stream, root, 0n, 0n, 0);
+  try {
+    for (const agents of [[], Array(9).fill(root), ["outside/agent"]]) {
+      expect(() => client.setView(agents, new BigUint64Array(agents.length), new BigUint64Array(agents.length))).toThrow();
+      expect(client.selectedAgents()).toEqual([root]);
+    }
+    expect(() => client.setView([root], new BigUint64Array(0), new BigUint64Array(1))).toThrow();
+    expect(client.selectedAgents()).toEqual([root]);
+  } finally { client.close(); client.free(); stream.free(); }
 });

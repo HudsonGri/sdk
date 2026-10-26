@@ -1,4 +1,4 @@
-import { DemandLoader, RequestScheduler, Harness, HarnessClient, ClientQuery, TaskVolume, WasmStream,
+import { DemandLoader, RequestScheduler, Harness, FileClient, ClientQuery, TaskVolume, WasmStream,
   initializeClientQueries, PageWindow, HydrationCache, type FileRef } from "@acyclic-labs/harness";
 const result = document.querySelector<HTMLElement>("#result")!;
 const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
@@ -128,7 +128,7 @@ try {
   const streams = await WasmStream.openBrowser(databaseName, 64, 65536n);
   const outbox = await TaskVolume.create(streams, "client/files");
   const target = await TaskVolume.create(streams, "agent/files");
-  const client = await HarnessClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
+  const client = await FileClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
   const key = { Task: { task: "task", file: { Request: "offline.json" } } } as const;
   if (previous === null) {
     await client.enqueue(key, new TextEncoder().encode(JSON.stringify({ operationId: "offline", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} })));
@@ -152,7 +152,7 @@ try {
   assert(JSON.parse(new TextDecoder().decode(views.segments(key)![0])).operationId === "offline", "live view differs from persisted request");
   const cursor = client.cursor();
   views.free(); query.free(); readerVolume.free(); readerStreams.free(); client.free();
-  const restored = await HarnessClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
+  const restored = await FileClient.open(outbox, target, { commands: 2n, bytes: 8192n, durability: "Durable" });
   assert(restored.pending() === 0 && restored.cursor().position === cursor.position, "acknowledged request replayed on reopen");
   restored.free(); outbox.free(); target.free(); streams.free();
   sessionStorage.removeItem(restartKey);

@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import fc from "fast-check";
 import initialize from "../generated/wasm/acyclic_harness_wasm.js";
-import { HarnessClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+import { FileClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
 
 beforeAll(initializeClientQueries);
 
@@ -10,7 +10,7 @@ test("a registered idle wait leaves the only command slot available for flush", 
   const outbox = await TaskVolume.create(stream, "client/files");
   const target = await TaskVolume.create(stream, "agent/files");
   const payload = new TextEncoder().encode(JSON.stringify({ operationId: "one", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} }));
-  const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
+  const client = await FileClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
   try {
     await client.enqueue({ Task: { task: "task", file: { Request: "one.json" } } }, payload);
     let settled = false;
@@ -39,7 +39,7 @@ test("enqueue snapshots exactly the intrinsic view bytes before yielding, across
         const stream = new WasmStream();
         const outbox = await TaskVolume.create(stream, "client/files");
         const target = await TaskVolume.create(stream, "agent/files");
-        const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
+        const client = await FileClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
         try {
           const Constructor = shared ? SharedArrayBuffer : ArrayBuffer;
           const offset = shared || resizable ? 1 : 0;
@@ -82,7 +82,7 @@ test(`waiting ${quota} is reserved before futures retain caller buffers`, async 
   const target = await TaskVolume.create(stream, "agent/files");
   const payload = new TextEncoder().encode(JSON.stringify({ operationId: "one", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} }));
   const limits = { commands: quota === "CommandQuota" ? 1n : 4n, bytes: BigInt(payload.length) * (quota === "ByteQuota" ? 1n : 4n), durability: "Accepted" } as const;
-  const client = await HarnessClient.open(outbox, target, limits);
+  const client = await FileClient.open(outbox, target, limits);
   const key = { Task: { task: "task", file: { Request: "one.json" } } } as const;
   // These calls happen in the same JS turn, before the worker can consume either.
   const first = client.enqueue(key, payload);
@@ -105,7 +105,7 @@ test("oversize enqueue checks its JS buffer length without growing WASM memory",
   const stream = new WasmStream();
   const outbox = await TaskVolume.create(stream, "client/files");
   const target = await TaskVolume.create(stream, "agent/files");
-  const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: 3n, durability: "Accepted" });
+  const client = await FileClient.open(outbox, target, { commands: 1n, bytes: 3n, durability: "Accepted" });
   const { memory } = await initialize();
   const payload = new Uint8Array(Math.max(16 * 1024 * 1024, memory.buffer.byteLength + 65536));
   const key = { Task: { task: "task", file: { Request: "large.json" } } } as const;
@@ -129,7 +129,7 @@ async function explicitFlushOracle(priorities: number[], automatic: boolean) {
   const outbox = await TaskVolume.create(stream, "client/files");
   const target = await TaskVolume.create(stream, "agent/files");
   const payloads = priorities.map((priority, index) => new TextEncoder().encode(JSON.stringify({ operationId: `request-${index}`, authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: { metadata: { priority } } })));
-  const client = await HarnessClient.open(outbox, target, { commands: BigInt(priorities.length), bytes: BigInt(payloads.reduce((sum, bytes) => sum + bytes.length, 0)), durability: "Accepted" });
+  const client = await FileClient.open(outbox, target, { commands: BigInt(priorities.length), bytes: BigInt(payloads.reduce((sum, bytes) => sum + bytes.length, 0)), durability: "Accepted" });
   try {
     const before = await target.head();
     for (const [index, payload] of payloads.entries()) {
