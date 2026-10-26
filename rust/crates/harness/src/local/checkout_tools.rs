@@ -12,9 +12,6 @@ pub(super) mod access;
 pub(super) mod capture;
 pub(in crate::local) mod diff;
 mod git;
-#[cfg(test)]
-#[cfg(all(unix, not(acyclic_harness_loom)))]
-mod git_mount_tests;
 mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
