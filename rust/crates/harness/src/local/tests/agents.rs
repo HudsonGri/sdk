@@ -48,7 +48,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let id = IntentId::try_from("hello").map_err(agent)?;
-    assert_eq!(harness.prompt(&id, "hello").await?, Delivered::Committed);
+    assert_eq!(
+        harness.prompt(&id, "hello").await.map_err(agent)?,
+        Delivered::Committed
+    );
     let conversation = root.conversation().map_err(agent)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     let entries = loop {
@@ -62,7 +65,9 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
                 .iter()
                 .map(|status| StatusRecord::decode(status).map(|status| status.phase))
                 .collect::<Vec<_>>();
-            return Err(Error::Conflict(format!("no settled turn; statuses {statuses:?}")));
+            return Err(Error::Conflict(format!(
+                "no settled turn; statuses {statuses:?}"
+            )));
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
@@ -71,7 +76,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     assert!(matches!(entry.input, TurnInput::Message { .. }));
     assert_eq!(provider.requests().len(), 1);
     // The same intent replays its commit; no second turn runs.
-    assert_eq!(harness.prompt(&id, "hello").await?, Delivered::Committed);
+    assert_eq!(
+        harness.prompt(&id, "hello").await.map_err(agent)?,
+        Delivered::Committed
+    );
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
     Ok(())
 }

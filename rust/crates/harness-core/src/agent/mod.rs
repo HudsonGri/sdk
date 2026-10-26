@@ -14,27 +14,29 @@ mod handler;
 #[cfg(not(target_arch = "wasm32"))]
 mod host;
 pub mod kernel;
-mod machine;
 mod layout;
 mod lower;
+mod machine;
 mod records;
 
-pub use commit::{Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit};
-pub use machine::{
-    Alarm, AgentState, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step,
-    TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, step,
+pub use commit::{
+    Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
+};
+pub use driver::{
+    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
+    turn_id,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use handler::{AgentHandler, INBOX};
 #[cfg(not(target_arch = "wasm32"))]
 pub use host::{AgentHost, Delivered};
-pub use driver::{
-    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnStop, approval_intent, model_input,
-    turn_id,
-};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
+pub use machine::{
+    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step, TurnDriver, TurnFuture, TurnInput,
+    TurnStep, Wait, Wake, step,
+};
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
     ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
