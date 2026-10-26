@@ -121,6 +121,8 @@ class EvidencePolicy(unittest.TestCase):
 
 if __name__ == "__main__":
     try:
+        # Loading the sibling checker must not dirty a clean proof worktree.
+        sys.dont_write_bytecode = True
         SPEC = importlib.util.spec_from_file_location("wave1_inventory", ROOT / "scripts/check-wave1-inventory.py")
         POLICY = importlib.util.module_from_spec(SPEC)
         SPEC.loader.exec_module(POLICY)
