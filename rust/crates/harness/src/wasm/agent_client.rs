@@ -13,6 +13,19 @@ use std::{
 };
 use wasm_bindgen::prelude::*;
 
+/// Bounded borrowed-view metadata; sequences and counters keep exact integers
+/// across the WASM boundary. No conversation payload is serialized here.
+#[derive(serde::Serialize, tsify::Tsify)]
+#[serde(rename_all = "camelCase")]
+#[tsify(large_number_types_as_bigints)]
+struct AgentWindow {
+    first_sequence: u64,
+    next_sequence: u64,
+    record_count: usize,
+    retained_bytes: usize,
+    revision: u64,
+}
+
 fn error(code: &str, message: impl std::fmt::Display) -> JsValue {
     let error = js_sys::Error::new(&message.to_string());
     error.set_name(code);
@@ -123,7 +136,7 @@ impl WasmAgentClient {
     }
 
     /// Selected identities only, bounded by the same Rust interest policy.
-    #[wasm_bindgen(js_name = selectedAgents)]
+    #[wasm_bindgen(js_name = selectedAgents, unchecked_return_type = "string[]")]
     pub fn selected_agents(&self) -> Result<JsValue, JsValue> {
         self.with_client(|client| to_js(&client.selected_agents().collect::<Vec<_>>()))?
     }
@@ -146,22 +159,13 @@ impl WasmAgentClient {
 
     /// Window metadata for one selected conversation, without copying its
     /// records. Unknown agents are typed refusals rather than revision zero.
-    #[wasm_bindgen(js_name = agentWindow)]
+    #[wasm_bindgen(js_name = agentWindow, unchecked_return_type = "AgentWindow")]
     pub fn agent_window(&self, agent: JsString) -> Result<JsValue, JsValue> {
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Window {
-            first_sequence: u64,
-            next_sequence: u64,
-            record_count: usize,
-            retained_bytes: usize,
-            revision: u64,
-        }
         let agent = agent_path(agent)?;
         let window = self.with_client(|client| {
             let view = client.agent_conversation(&agent)
                 .ok_or_else(|| error("not_requested", "agent was not selected"))?;
-            to_js(&Window {
+            to_js(&AgentWindow {
                 first_sequence: view.first_sequence(),
                 next_sequence: view.next_sequence(),
                 record_count: view.records().len(),
