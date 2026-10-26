@@ -1,8 +1,6 @@
-import { create, toBinary } from "@bufbuild/protobuf";
-import { AppendRequestSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { AgentClient, WasmStream, initializeClientQueries } from "../src/client.js";
+import { appendRecord, conversation } from "./actor-records.fixture.js";
 
-const encode = new TextEncoder();
 const rootId = "01".repeat(16), childId = "02".repeat(16);
 export const root = `harness/agents/${rootId}`;
 export const child = `${root}/children/${childId}`;
@@ -13,15 +11,8 @@ function check(value: unknown, message: string): asserts value { if (!value) thr
 // client. It has no TaskVolume, private transport, membership map or file fold.
 export async function exerciseAgents(stream: WasmStream, recover?: () => Promise<void>) {
   await initializeClientQueries();
-  const append = async (path: string, value: string) => stream.dispatch("append",
-    toBinary(AppendRequestSchema, create(AppendRequestSchema, { path, records: [{ value: encode.encode(value) }] })));
-  const file = {
-    volume: { provider: { namespace: "fixture", family: "filesystem", version: "1" },
-      id: "fixture", class: "project", owner: { kind: "project", id: "fixture" } },
-    path: "output.json", version: "v1", display_name: "output",
-    descriptor: { sha256: Array(32).fill(0), byte_length: 0, media_type: "application/json" },
-  };
-  const entry = (id: string) => `{"input":{"message":{"from":{"user":{"principal":"fixture"}},"id":"${id}","body":${JSON.stringify(file)},"inbox":${inbox}}},"output":${JSON.stringify(file)}}`;
+  const append = (path: string, value: string) => appendRecord(stream, path, value);
+  const entry = (id: string) => conversation(id, inbox);
   for (const [agent, id] of [[root, rootId], [child, childId]]) {
     await append(`${agent}/conversation`, entry(id));
     await append(`harness/status/${id}`, `{"phase":"running","cursor":${inbox}}`);

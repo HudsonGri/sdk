@@ -1,4 +1,4 @@
-/** One Rust file fold and cursor follow; the platform provider owns all I/O. */
+/** Shared Rust actor/session views; the runtime owns transport and controls. */
 export {
   WasmAgentClient as AgentClient,
   type AgentWindow,
