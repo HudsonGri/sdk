@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "acyclic-stream",
+    "--features",
+    "http,local",
+    "--message-format=json",
+    "--test",
+    "wave1_coverage",
+    "--no-run"
+  ],
+  "exit": 0,
+  "seconds": 24.084343110996997
+}

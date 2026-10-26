@@ -1,7 +1,7 @@
 //! Runs the canonical wave-1 histories against a caller-selected HTTP endpoint.
 use acyclic_stream::{
     StreamPath,
-    conformance::wave1::{self, Case},
+    conformance::wave1::{self, Case, coverage},
     http::HttpStream,
 };
 use std::time::{Duration, Instant};
@@ -16,6 +16,32 @@ fn required(name: &'static str) -> Result<String, String> {
 }
 
 async fn run() -> Result<(), String> {
+    let require_hst = match std::env::var("ACYCLIC_CONFORMANCE_REQUIRE_HST") {
+        Ok(value) if value == "1" => true,
+        Ok(value) if value == "0" => false,
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!(
+                "step=parse_hst_requirement; recovery: set ACYCLIC_CONFORMANCE_REQUIRE_HST=0 or 1 and rerun {}",
+                wave1::RECOVERY
+            ));
+        }
+    };
+    for row in coverage::hst_coverage() {
+        let partial: Vec<_> = row
+            .history
+            .partial_cases()
+            .iter()
+            .map(|case| case.name())
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({ "suite": "wave1_hst_coverage", "history": row.history.id(), "outcome": "Unqualified", "reason": row.reason.name(), "partial_case_exports": partial })
+        );
+    }
+    if require_hst {
+        coverage::require_hst_qualification().map_err(|error| error.to_string())?;
+    }
     let endpoint = required("ACYCLIC_CONFORMANCE_ENDPOINT")?;
     let token = required("ACYCLIC_CONFORMANCE_TOKEN")?;
     let namespace = StreamPath::new(required("ACYCLIC_CONFORMANCE_NAMESPACE")?)

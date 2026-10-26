@@ -122,6 +122,38 @@ class EvidencePolicy(unittest.TestCase):
     def test_real_handover_preserves_snapshot_and_final_failure_scope(self):
         POLICY.check_handover(MANIFEST["handover_observations"]["updates-v2"])
 
+    def test_real_compiled_hst_guard_and_endpoint_refuse_complete_qualification(self):
+        POLICY.check_hst_reporting(MANIFEST["hst_reporting"])
+
+    def test_rehashed_hst_rows_cannot_promote_or_omit_a_history(self):
+        original = MANIFEST["hst_reporting"]
+        variants = (("promote", "cannot promote a missing history"), ("omit", "missing or reordered stable history"))
+        for label, reason in variants:
+            with self.subTest(mutation=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = self.copy_file(root, original["repo_receipt"])
+                admission = json.loads(target.read_text())
+                for capture in admission["captures"]:
+                    copied = self.copy_file(root, capture["repo_path"])
+                    if copied.name == "endpoint-unqualified.out":
+                        rows = [json.loads(line) for line in copied.read_text().splitlines()]
+                        if label == "promote":
+                            rows[0]["outcome"] = "Qualified"
+                        else:
+                            rows.pop()
+                        copied.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+                        capture.update(sha256=POLICY.sha256(copied), bytes=copied.stat().st_size)
+                source = json.loads((root / original["repo_receipt"]).with_name("source.json").read_bytes())
+                for name in source:
+                    if name.endswith(("conformance/wave1/coverage.rs", "conformance/wave1.rs", "tests/wave1_coverage.rs", "examples/wave1-conformance.rs", "scripts/qualify-wave1-coverage.py")):
+                        self.copy_file(root, name)
+                self.copy_file(root, "docs/proofs/wave1-history-plan.json")
+                self.copy_file(root, "docs/proofs/evidence/hosted-history-plan-source.md")
+                target.write_text(json.dumps(admission))
+                reference = dict(original, sha256=POLICY.sha256(target))
+                with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, reason):
+                    POLICY.check_hst_reporting(reference)
+
     def test_rehashed_handover_cannot_promote_older_pass_or_signed_wip(self):
         original = MANIFEST["handover_observations"]["updates-v2"]
         variants = [

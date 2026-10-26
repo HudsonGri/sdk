@@ -1,0 +1,8 @@
+
+running 3 tests
+test ordinary_case_availability_does_not_qualify_complete_histories ... ok
+test qualification_request_refuses_all_unexported_histories ... ok
+test stable_ids_and_partial_cases_match_the_adopted_cloud_contract ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

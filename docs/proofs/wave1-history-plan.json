@@ -1,13 +1,18 @@
 {
   "schema_version": 1,
-  "kind": "proof_plan_not_runtime_export",
+  "kind": "proof_plan_with_typed_availability_only",
   "canonical_five_case_pin": "df031ac762773611d634b97d331e924c3b75f1bb",
   "adopted_source": {
     "origin": "Q:\\lanes\\cloud\\rx-qualify\\hostability-response.md",
     "repo_path": "docs/proofs/evidence/hosted-history-plan-source.md",
     "sha256": "36b9c1a23b4b7af15c403c41c6e9d4362642f8339d7f626232a36419b0049c22"
   },
-  "runtime_api": "Only five ordinary Case variants and verify/verify_case are implemented at the canonical pin. No complete HST row or runtime Unqualified result is exported yet; ordinary cases contribute partial observations, not full HST qualification.",
+  "runtime_api": "Five ordinary Case variants and verify/verify_case remain unchanged. coverage::hst_coverage exports all twelve stable identities with typed CanonicalHistoryNotExported; require_hst_qualification refuses complete qualification. No complete HST history is executed; partial cases are availability links, never proof credit.",
+  "availability_source": {
+    "repo_path": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+    "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+  },
+  "endpoint_qualification_request": "ACYCLIC_CONFORMANCE_REQUIRE_HST=1 emits12 Unqualified rows then refuses before provider setup;0 or unset retains ordinary-case scope; invalid values fail typed",
   "ordinary_case_exports": [
     "AppendRetry",
     "CommitRetry",
@@ -37,6 +42,7 @@
       "history": "Race fork with descendant creation, source/child appends and root publication; enumerate through children_page and read all selected records. Each observation must fit one serializable membership+heads cut, not a mix. Include composed Commit over >=2 domains in one cell and the spawn-shaped envelope (subtree, volume authorities, ForkAdopted), all-or-none.",
       "production_boundary_and_control": "Pause after capture/before publication; real Command::Commit or coordinated participant publication. Observe domain/generation and applied commit identity. Control omits namespace version validation or splits one selected volume into a helper commit: require HST-01. No unsupported arbitrary sharding claim.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [
         "SubtreeFork",
         "ComposedFork"
@@ -77,6 +83,7 @@
       "history": "Pause an accepted exact key K before terminal publication; inspect Unknown/None, cancel client, retry same digest; release original and lose its ack. Require one effect and original receipt. Changed digest cannot publish while unresolved; successful same digest replays despite conditions becoming false.",
       "production_boundary_and_control": "Pause after durable Accept/Begin/AcceptFacts/ReserveRoute, before external retention or PublishReceipt; crash owner and replay retained intent. Control treats None as free/reserves a second identity: HST-02.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [
         "AppendRetry",
         "CommitRetry"
@@ -117,6 +124,7 @@
       "history": "Lost-ack success, drive replicated retention clock >120s (121s and >2 sweep intervals), reclaim, restart/restore/move owner, exact retry; require original digest/commit/receipt and one effect. Changed successful payload is IdempotencyMismatch. Retired logical namespace cannot reopen key as fresh.",
       "production_boundary_and_control": "Committed fenced Command::Reclaim elapsed_micros, observed clock on all replicas; not OS sleep or client wall clock. Control restores current window-based successful-binding deletion: HST-03. Test late success at old owner after move as well.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [
         "AppendRetry",
         "CommitRetry"
@@ -157,6 +165,7 @@
       "history": "Definitive conflict leaves no successful binding/effect; revise same still-unspent key, succeed once, deliver old prepare/commit/abort/pin-release messages afterward. Inspect/retry still resolves the newer success; no unlocked stale write or released new hold.",
       "production_boundary_and_control": "Actual Begin/Stage/Decide/Resolve, PublishReceipt, Coordinate actions and Objects release acceptance; carry attempt generation, authority incarnation/fence and term. Control removes old-attempt generation check: HST-04.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [
         "AppendRetry",
         "CommitRetry"
@@ -199,6 +208,7 @@
       "history": "Crash before/after each durable prepare, decision, root and receipt publication; restart retained stores. All participants converge on one decision, and read_commit/inspect/root effects agree. Private fenced abort records are permitted; terminal conflict receipt is not.",
       "production_boundary_and_control": "Command::Coordinate + coordinator::Action and participant Begin/Stage/Decide/Resolve/PublishReceipt; real retained Objects receipt. Control publishes receipt before root decision or drops durable coordinator decision: HST-05.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [
         "ComposedFork"
       ],
@@ -238,6 +248,7 @@
       "history": "Fork sealed+unsealed source, fork-of-fork, append independent suffixes, retire source, compact/GC; crash and restore snapshots onto another host. Read exact bytes, original record/commit identities and replay bindings from every remaining fork. Keep read/recovery holds while deleting other roots.",
       "production_boundary_and_control": "BeginSeal/FinishSeal, retained history/frames, Objects accepted retain/release and real collector; stop at durable hold publication/release/delete. Control drops transitive unsealed/shared hold or releases source's last hold unconditionally: HST-06. No local Arc/reference-count proxy for disk retention.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
@@ -275,6 +286,7 @@
       "history": "Fork p -> p/children/c from pre-commit root with a companion append, existing grandchildren, exclusions children and normalized overlaps; children-suffix remains included. Child is finite, source/child diverge, no inherited destination contents. Invalid escape/empty exclusion and destination collisions yield canonical typed refusal. Retry canonical exclusions yields same identity.",
       "production_boundary_and_control": "Same Command::Commit cut; SDK canonical path/exclusion/digest preparation. Control ignores exclusions: HST-07; a second control uses post-commit source root: HST-07.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
@@ -313,6 +325,7 @@
       "history": "Exact-root-only source grant + readable destination must be denied before descendant visibility. Covering source/destination grants succeed; exclude protected branches correctly; textual sibling prefixes do not grant authority. Inheritance never transfers capabilities.",
       "production_boundary_and_control": "Trust capability/streams::authorize_request and production Edge authorizer/lease with canonical SDK grants; revision/expiry driven through real auth transitions. Control accepts today's exact-path fork check for subtree effects: HST-08.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
@@ -350,6 +363,7 @@
       "history": "Absent follow at cursor0 gives typed NotFound and no side effect. Create/fork then follow existing inherited path. Race first publication with subscribe: NotFound if first, otherwise valid subscription/replay. Race append/root-only update before/after register/read/park; require wake and gapless applied cursor without a materialized descendant row or timer.",
       "production_boundary_and_control": "native::Reading::follow subscribe-before-bounds/replay, store row watches plus new namespace/prefix version watch owned by authority lane. Control keeps only exact roots-row wake or registers after read without replay fence: HST-09.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
@@ -388,6 +402,7 @@
       "history": "Two existing-path channels on one native or WebSocket session; exhaust A credit while B progresses under sufficient session credit; exhaust aggregate credit separately. Cancel A, revoke/revise its auth lease, attempt stale channel generation; no later unauthorized delivery or leaked interest.",
       "production_boundary_and_control": "Follows::apply/replenish/acknowledge/pause/handoff, Session::install/revalidate/install_renewal, Access::Lease invalidation, real Edge WebSocket carrier. Control consumes wrong channel credit or ignores revocation: HST-10 (separate runs).",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
@@ -426,6 +441,7 @@
       "history": "Move leader with buffered and lost-ack frames; resume using prior applied cursor on another member, duplicate unacked delivery allowed. Apply each sequence once, preserve commit IDs, no missing record, no post-cancel stale generation delivery.",
       "production_boundary_and_control": "Actual Raft leader loss/heal plus session placement/handoff and channel preparation; retain subscriber/replay holds across reconnect. Control advances applied cursor before acknowledgment or resumes after next unseen record: HST-11.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
@@ -465,6 +481,7 @@
       "history": "Vary descendant count with fixed depth/payload shape; fork adds zero payload copy/seal and no descendant walk, holds shared bytes once. Separately record path/exclusion bytes, index spine work and composed participants O(S). Include sparse paged traversal and prefix/glob snapshot queries, selected/unselected concurrent writes.",
       "production_boundary_and_control": "Production storage/SDK cost counters, not wall-clock scaling alone. Control enumerates/copies descendants or charges shared payload per fork: HST-12. Lazy pagination is not proof that lookup avoided an all-tree scan.",
       "implemented_entrypoint": null,
+      "availability_entrypoint": "acyclic_stream::conformance::wave1::coverage::hst_coverage",
       "partial_ordinary_cases": [],
       "coverage": {
         "memory": {

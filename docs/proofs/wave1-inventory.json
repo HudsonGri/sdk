@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T02:12:34.867679+00:00",
+  "generated_at": "2026-10-26T02:33:49.699294+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -27,19 +27,84 @@
   "entrypoints": [
     {
       "file": "rust/crates/stream/src/conformance/wave1.rs",
-      "line": 284,
-      "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30"
+      "line": 285,
+      "sha256": "b0e906694b29b3145b625b3d3c225bdb84f4f792c37c719eabeaf47f7e0dca06"
     },
     {
       "file": "rust/crates/stream/src/conformance/wave1.rs",
-      "line": 295,
-      "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30"
+      "line": 296,
+      "sha256": "b0e906694b29b3145b625b3d3c225bdb84f4f792c37c719eabeaf47f7e0dca06"
     }
   ],
+  "hst_reporting": {
+    "invariant": "ordinary-case availability/success cannot qualify complete HST histories; all twelve stable IDs report typed missing capability, and explicit complete qualification refuses before provider setup",
+    "qualification": "Linux reporting policy only, not a complete HST or provider proof",
+    "source": [
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 12,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 58,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 80,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 100,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 108,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 117,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 129,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 141,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+        "line": 150,
+        "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385"
+      },
+      {
+        "file": "rust/crates/stream/tests/wave1_coverage.rs",
+        "line": 43,
+        "sha256": "c2f35978526297efd6999ae0f39e2d1a71215ed8c1f1374064afa205ba3f1dfc"
+      }
+    ],
+    "repo_receipt": "docs/proofs/evidence/hst-reporting-v1/admission.json",
+    "sha256": "1fb9fa37481d3dd56cb92cd7e5b542bc179afe7447a11d2fceab8ca6b3f3d825",
+    "negative_control": "exact compiled production guard Err(Unqualified) -> Ok(()), unchanged Rust test fails the explicit refusal assertion",
+    "remaining": [
+      "complete HST histories/hooks and same-oracle production controls",
+      "actual provider/local/hosted/browser histories",
+      "strict crate cleanliness: four unchanged baseline Clippy warnings remain; new HST source has zero diagnostics",
+      "optional CA support remains in owner provider-conformance runner, not this older five-case endpoint runner"
+    ]
+  },
   "runner": {
     "file": "rust/crates/stream/examples/wave1-conformance.rs",
     "line": 18,
-    "sha256": "09175a88621ece559b4737a1791ce070e80efe4c94e8101fe891d913ae8ef1d1"
+    "sha256": "1b3ce9d7cd3d37a8ae8103f1a75f25eeec10ea8e9c81b63631eee76666094124"
   },
   "evidence": {
     "old-key-controls": {
@@ -179,9 +244,9 @@
   },
   "cleanliness": {
     "tool": "clippy",
-    "command": "build-slot --remote cargo clippy -p acyclic-stream --no-deps --message-format=json --features http,local --test wave1_keys --example wave1-conformance",
-    "source_log": "evidence/wave1/clippy-report-20261026T010609Z.log",
-    "source_log_sha256": "e6fb743fc49852d32508aa40a68968d279c2a94b49e946ba265f45b4af06db2c",
+    "command": "build-slot --remote cargo clippy --locked -p acyclic-stream --no-deps --features http,local --test wave1_coverage --example wave1-conformance --message-format=json",
+    "source_log": "evidence/wave1/coverage-clippy-20261026T023104Z.log",
+    "source_log_sha256": "10f7156bb157073075e8b68b8c8b6270152130543c856a151825636491bcac13",
     "result": "compilation_pass_existing_warnings_remain",
     "strict_clean_pass": false,
     "new_proof_diagnostics": 0,
@@ -243,8 +308,8 @@
         ]
       }
     ],
-    "repo_capture": "docs/proofs/evidence/clippy-report-20261026T010609Z.jsonl",
-    "capture_sha256": "0e84ed0a221e1546df30cd1302d14d07a2cb34fbcb5d496ef43f9ee406f82f32",
+    "repo_capture": "docs/proofs/evidence/coverage-clippy-20261026T023104Z.jsonl",
+    "capture_sha256": "ea7e26b7948d692f41865b84671e073d3f654301f4f768b2f3319ea116c6eaf9",
     "capture_provenance": "exact BUILD_SLOT_TREE/compiler-message/build-finished lines selected from captured real BB2 output; dependency artifact chatter omitted"
   },
   "obligations": [
@@ -931,8 +996,8 @@
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
-          "line": 412,
-          "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30"
+          "line": 413,
+          "sha256": "b0e906694b29b3145b625b3d3c225bdb84f4f792c37c719eabeaf47f7e0dca06"
         }
       ],
       "modes": {
@@ -983,8 +1048,8 @@
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
-          "line": 311,
-          "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30"
+          "line": 312,
+          "sha256": "b0e906694b29b3145b625b3d3c225bdb84f4f792c37c719eabeaf47f7e0dca06"
         }
       ],
       "modes": {
@@ -1035,8 +1100,8 @@
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
-          "line": 373,
-          "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30"
+          "line": 374,
+          "sha256": "b0e906694b29b3145b625b3d3c225bdb84f4f792c37c719eabeaf47f7e0dca06"
         }
       ],
       "modes": {

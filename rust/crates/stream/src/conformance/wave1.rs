@@ -15,6 +15,7 @@ use futures::TryStreamExt as _;
 use sha2::{Digest as _, Sha256};
 
 mod fork;
+pub mod coverage;
 
 /// Exact command for rerunning the endpoint suite with the same environment.
 pub const RECOVERY: &str =

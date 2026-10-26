@@ -1,0 +1,14 @@
+{
+  "kind": "hst_reporting_policy_not_complete_history_proof",
+  "positive_proofs": 0,
+  "complete_hst_exports": 0,
+  "source_sha256": "f5eaf8231da5e4b2be9dcabfec56db157ef5ed4df5105fa62d4b8919951b7b9e",
+  "oracle_sha256": "c2f35978526297efd6999ae0f39e2d1a71215ed8c1f1374064afa205ba3f1dfc",
+  "mutation": {
+    "path": "rust/crates/stream/src/conformance/wave1/coverage.rs",
+    "before": "Err(Unqualified {\n        missing: hst_coverage(),\n    })",
+    "after": "Ok(())"
+  },
+  "selected": 3,
+  "seconds": 35.72461960199871
+}
