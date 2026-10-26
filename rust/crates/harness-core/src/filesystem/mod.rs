@@ -193,10 +193,8 @@ pub use access::INITIAL_POLICY as INITIAL_ACCESS_POLICY;
 pub use access::check_access_record;
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
-mod file_query;
 #[cfg(not(target_arch = "wasm32"))]
 use content_verifier::require_file_read;
-pub use file_query::FilesystemFileQuery;
 mod fork_verifier;
 pub use fork_verifier::FilesystemForkVerifier;
 mod project_verifier;

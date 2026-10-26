@@ -592,18 +592,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     }
 }
 
-impl<P: StreamProvider, S: StreamProvider, O: AsyncObjectStore + 'static>
-    MemoryHarnessStorage<P, StreamAuthorityStore<S>, O>
-{
-    /// Queries the same private files written by the ordinary tools.
-    pub async fn file_query(
-        &self,
-        budget: acyclic_fs::WorkBudget,
-    ) -> Result<super::FilesystemFileQuery<S, O>> {
-        self.content_verifier.file_query(&self.volume, budget).await
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
