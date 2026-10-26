@@ -337,6 +337,7 @@ def check(require_qualified):
     for entry in entries:
         require(entry["invariant"] and entry["proof_specification"] and entry["negative_controls"], f"missing contract or negative control: {entry['id']}")
         require(set(entry["modes"]) == {"memory", "local", "hosted", "wasm_browser"}, f"missing mode: {entry['id']}")
+        require(all(mode["status"] != "qualified" for mode in entry["modes"].values()), f"positive qualification receipt validation has not been implemented: {entry['id']}")
         references.extend(entry["source"])
         if "source_review" in entry:
             require(entry["source_review"] in inventory["source_reviews"], f"missing source review: {entry['id']}")

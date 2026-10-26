@@ -27,6 +27,22 @@ class EvidencePolicy(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unqualified obligations:"):
             POLICY.check(True)
 
+    def test_one_mode_cannot_claim_qualification_without_a_positive_receipt(self):
+        original_read = Path.read_text
+        inventory_path = ROOT / "docs/proofs/wave1-inventory.json"
+        for mode in ("memory", "local", "hosted", "wasm_browser"):
+            with self.subTest(mode=mode):
+                manifest = copy.deepcopy(MANIFEST)
+                manifest["obligations"][0]["modes"][mode]["status"] = "qualified"
+
+                def read_text(path, *args, **kwargs):
+                    if path == inventory_path:
+                        return json.dumps(manifest)
+                    return original_read(path, *args, **kwargs)
+
+                with patch.object(Path, "read_text", read_text), self.assertRaisesRegex(ValueError, "positive qualification receipt validation has not been implemented"):
+                    POLICY.check(False)
+
     def test_captured_old_source_controls_are_valid(self):
         for receipt in MANIFEST["evidence"].values():
             with self.subTest(content=receipt["build_slot_content_digest"]):

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T05:12:07.515510+00:00",
+  "generated_at": "2026-10-26T05:56:35.056603+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -135,12 +135,12 @@
       {
         "file": "scripts/check-proof-coverage.py",
         "line": 116,
-        "sha256": "2bf5c2fa2be0d225edda22d0bf7334ede35880a7fc1bd29703e17b5d5e94ebdc"
+        "sha256": "fa473b4cb271d8175d4ad3a1f59021e59faf00016743beea701ecb9c7d090902"
       },
       {
         "file": "scripts/check-proof-coverage.py",
         "line": 61,
-        "sha256": "2bf5c2fa2be0d225edda22d0bf7334ede35880a7fc1bd29703e17b5d5e94ebdc"
+        "sha256": "fa473b4cb271d8175d4ad3a1f59021e59faf00016743beea701ecb9c7d090902"
       },
       {
         "file": "scripts/proof_inventory_scan.py",
@@ -150,17 +150,17 @@
       {
         "file": "scripts/test-proof-coverage.py",
         "line": 22,
-        "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
+        "sha256": "9dc3f37061abbb598aa8e6b73db1316ce177df5d2a8a47c9404e2c6c6135dd55"
       },
       {
         "file": "scripts/test-proof-coverage.py",
-        "line": 146,
-        "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
+        "line": 164,
+        "sha256": "9dc3f37061abbb598aa8e6b73db1316ce177df5d2a8a47c9404e2c6c6135dd55"
       },
       {
         "file": "scripts/test-proof-coverage.py",
-        "line": 169,
-        "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
+        "line": 187,
+        "sha256": "9dc3f37061abbb598aa8e6b73db1316ce177df5d2a8a47c9404e2c6c6135dd55"
       },
       {
         "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/verify.rs",
@@ -244,8 +244,8 @@
       },
       {
         "file": ".github/workflows/static.yml",
-        "line": 33,
-        "sha256": "6eee96e748db9e8e54984a45ba5a8ac3a3fd3f89bff78e9ed4aa66323d0d3a7a"
+        "line": 24,
+        "sha256": "63f7a367d44df38bfc7d71eb7ca11232d6be93caec24d995be022f14b3106f2c"
       },
       {
         "file": "docs/proofs/streams-checkpoint.md",
@@ -290,6 +290,27 @@
     ],
     "scope": "changed Rust file closure, exact public/unsafe/wildcard candidate multiset and receipt/source/invariant binding, conservative export-input refusal pending qualification; effective rustdoc/generated/proto/TS exports and complete mode qualification remain pending",
     "registered_source": "Rust HST reporting module only, eleven entries including the complete-file review fence",
+    "p1_review_fixes": {
+      "status": "implemented_regressions_authored_not_executed",
+      "invariants": [
+        "Git type changes reach regular Rust source refusal",
+        "every qualified mode requires an implemented positive receipt validator"
+      ],
+      "tests": [
+        {
+          "file": "scripts/test-proof-coverage.py",
+          "line": 146,
+          "sha256": "9dc3f37061abbb598aa8e6b73db1316ce177df5d2a8a47c9404e2c6c6135dd55"
+        },
+        {
+          "file": "scripts/test-wave1-inventory.py",
+          "line": 30,
+          "sha256": "327db4dabd7f17d0f06febe1dceaca115905e1555e3868aaee92a3f4907da179"
+        }
+      ],
+      "tests_run": 0,
+      "qualification": "user compile-only policy; no historical receipt qualifies these source edits"
+    },
     "controls": "historical source-registration receipt: five actual candidate/proof-source/invariant/unsafe/wildcard implementation mutations fail unchanged semantic assertions; 13 tests, each suite under10s; current changed export-input guard is unqualified",
     "export_input_refusal": {
       "status": "implemented_unqualified_pending_bb2",
@@ -299,13 +320,13 @@
       "tests": [
         {
           "file": "scripts/test-proof-coverage.py",
-          "line": 146,
-          "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
+          "line": 164,
+          "sha256": "9dc3f37061abbb598aa8e6b73db1316ce177df5d2a8a47c9404e2c6c6135dd55"
         },
         {
           "file": "scripts/test-proof-coverage.py",
-          "line": 169,
-          "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
+          "line": 187,
+          "sha256": "9dc3f37061abbb598aa8e6b73db1316ce177df5d2a8a47c9404e2c6c6135dd55"
         }
       ],
       "production_negative_control": "pending: remove only the profile-input refusal, then require both unchanged new real-git regression cases to fail because ValueError was not raised; independently omit --no-renames and require the rename subcase to detect the hidden removed input",
@@ -314,9 +335,9 @@
       "historical_receipts_qualify_current_revision": false
     },
     "ci_policy_tests": {
-      "status": "workflow_step_proposed_not_observed_hosted_ci",
+      "status": "suspended_by_user_compile_only_policy",
       "path": ".github/workflows/static.yml",
-      "owner_authorization": "gate-speed-to-verify-20261026T031900Z.md",
+      "owner_authorization": "SPEED OVER GREEN in Q:/lanes/lane-ownership-rule.md supersedes gate-speed-to-verify-20261026T031900Z.md",
       "strict_source_delta_enforced": false,
       "complete_qualification_enforced": false,
       "policy_suites": [

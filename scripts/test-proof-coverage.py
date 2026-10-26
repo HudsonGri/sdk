@@ -143,6 +143,24 @@ class ProofCoverage(unittest.TestCase):
             POLICY.git(root, 'commit', '-qm', 'source deletion')
             self.assertEqual(POLICY.check(root, base)['changed_rust_files'], 0)
 
+    def test_real_git_source_type_change_cannot_bypass_regular_file_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.git_repo(root)
+            target = root / SOURCE
+            target.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / SOURCE, target)
+            POLICY.git(root, 'add', '.')
+            POLICY.git(root, 'commit', '-qm', 'real regular source baseline')
+            base = POLICY.git(root, 'rev-parse', 'HEAD').decode().strip()
+            target.unlink()
+            target.symlink_to(ROOT / SOURCE)
+            POLICY.git(root, 'add', '.')
+            POLICY.git(root, 'commit', '-qm', 'real source replaced by symbolic link')
+            self.assertEqual(POLICY.git(root, 'diff', '--name-status', base, 'HEAD').decode().split(), ['T', SOURCE])
+            with self.assertRaisesRegex(ValueError, 'Rust source must be a regular file: ' + SOURCE):
+                POLICY.check(root, base)
+
     def test_real_manifest_feature_change_cannot_pass_with_unchanged_rust(self):
         capture = ROOT / 'scripts/tests/fixtures/proof-policy/canonical-exports-v1/source/rust/crates/demo'
         with tempfile.TemporaryDirectory() as directory:

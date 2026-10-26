@@ -122,7 +122,7 @@ def check(root, base):
     manifest = root / MANIFEST
     require(manifest.read_bytes() == git(root, 'show', 'HEAD:' + MANIFEST), 'entrypoint inventory must be committed at HEAD')
     inventory = json.loads(manifest.read_bytes())
-    paths = git(root, 'diff', '--name-only', '-z', '--diff-filter=ACMR', base, 'HEAD', '--').decode('utf-8').split('\0')
+    paths = git(root, 'diff', '--name-only', '-z', '--diff-filter=ACMRT', base, 'HEAD', '--').decode('utf-8').split('\0')
     changed = sorted(name for name in paths if name.endswith('.rs') and name.startswith(SCOPES))
     # A rename appears as the destination and must be freshly bound. A deletion
     # needs no stale source proof; deletion-only consumers are not grandfathered.
