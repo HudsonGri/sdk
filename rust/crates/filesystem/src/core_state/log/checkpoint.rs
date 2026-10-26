@@ -47,10 +47,7 @@ impl CheckpointFamily {
             let identity = crate::native_host::directory_identity(&directory, work)?;
             Ok((
                 parent,
-                crate::native_host::HostRoot {
-                    directory,
-                    identity,
-                },
+                crate::native_host::HostRoot::from_parts(directory, identity),
             ))
         }
         let (parent, held) = match work {
