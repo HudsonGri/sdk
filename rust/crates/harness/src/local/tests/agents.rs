@@ -135,17 +135,17 @@ async fn names(
         .collect())
 }
 
-#[tokio::test]
-async fn a_shell_call_stages_its_output_and_commits_its_diff_base_in_the_agent_state() -> Result<()>
-{
-    let directory = tempfile::tempdir().map_err(agent)?;
+/// A checkout harness whose root agent settled one turn that ran `echo staged`.
+async fn shell_turn(
+    directory: &std::path::Path,
+) -> Result<(Arc<LocalHarness>, Arc<LocalAgents>, AgentPath)> {
     let provider = super::scripted([
         super::checked_commands::call(0, crate::tools::shell::PLATFORM.name, "echo staged"),
         crate::test_support::ScriptedTurn::Text("done".into()),
     ]);
     let harness = Arc::new(
         LocalHarness::open(super::checkout_config(
-            directory.path(),
+            directory,
             (super::model()?, provider),
         )?)
         .await?,
@@ -158,6 +158,14 @@ async fn a_shell_call_stages_its_output_and_commits_its_diff_base_in_the_agent_s
         .await
         .map_err(agent)?;
     settled(&agents, &root).await?;
+    Ok((harness, agents, root))
+}
+
+#[tokio::test]
+async fn a_shell_call_stages_its_output_and_commits_its_diff_base_in_the_agent_state() -> Result<()>
+{
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let (harness, agents, root) = shell_turn(directory.path()).await?;
     let state = agents.state(&root).await.map_err(agent)?;
     // The baseline committed with the turn, so a reopen reads it back.
     let workspace = harness
@@ -190,6 +198,76 @@ async fn a_shell_call_stages_its_output_and_commits_its_diff_base_in_the_agent_s
     assert_eq!(
         names(&harness, private, &format!("tools/{call}/stdout")).await?,
         ["0000000000000000"]
+    );
+    Ok(())
+}
+
+/// The turn's recorded tool call names the operation whose output files a
+/// client follows, both through live queries of the agent's private volume.
+#[tokio::test]
+async fn a_turns_tool_calls_and_shell_output_are_live_queries() -> Result<()> {
+    use crate::task_volume::{Component, FileKey, FileQuerySource, Query, ToolFile};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let (harness, agents, root) = shell_turn(directory.path()).await?;
+    let state = agents.state(&root).await.map_err(agent)?;
+    let private = &state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == crate::filesystem::PRIVATE_VOLUME)
+        .ok_or_else(|| Error::NotFound("private volume".into()))?
+        .volume;
+    let files = harness.agent_files(private).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let turn = crate::agent::turn_id(&state, &entry.input).map_err(agent)?;
+    let calls = files
+        .observe_files(
+            Query::ToolCalls(Component::new(turn.to_string()).map_err(agent)?),
+            None,
+            16,
+            1 << 20,
+        )
+        .await
+        .map_err(agent)?
+        .snapshot
+        .ok_or_else(|| Error::Conflict("tool calls have no snapshot".into()))?
+        .files;
+    let [recorded] = calls.as_slice() else {
+        return Err(Error::Conflict(format!(
+            "one recorded call, got {}",
+            calls.len()
+        )));
+    };
+    let recorded: serde_json::Value = serde_json::from_slice(&recorded.bytes).map_err(agent)?;
+    let call = recorded["invocation"]["operation_id"]
+        .as_str()
+        .ok_or_else(|| Error::Conflict(format!("recorded call has no operation: {recorded}")))?;
+    let output = files
+        .observe_files(
+            Query::ToolOutput(Component::new(call).map_err(agent)?),
+            None,
+            16,
+            1 << 20,
+        )
+        .await
+        .map_err(agent)?
+        .snapshot
+        .ok_or_else(|| Error::Conflict("tool output has no snapshot".into()))?
+        .files;
+    let keys = output
+        .iter()
+        .map(|file| match &file.key {
+            FileKey::ToolOutput { file, .. } => Ok(file.clone()),
+            other => Err(Error::Conflict(format!("unexpected key {other:?}"))),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(
+        keys,
+        [ToolFile::Request, ToolFile::Stdout(0), ToolFile::Result]
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output[1].bytes).trim_end(),
+        "staged"
     );
     Ok(())
 }

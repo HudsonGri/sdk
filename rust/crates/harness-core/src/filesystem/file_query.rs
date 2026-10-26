@@ -345,7 +345,9 @@ impl<P: StreamProvider + 'static, O: AsyncObjectStore + 'static> FilesystemFileQ
     }
 
     async fn authorize(&self, query: &Query, io: &PreparationIo) -> crate::Result<()> {
+        let subtree = query.subtree();
         let prefix = match query {
+            _ if subtree.is_some() => subtree.as_deref().unwrap_or_default(),
             Query::Plans => "plans",
             Query::File(task_volume::FileKey::Goal) => "",
             Query::File(task_volume::FileKey::RequestHead) => "inputs",

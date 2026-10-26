@@ -11,8 +11,10 @@ use acyclic_harness::{
     approvals::{ApprovalPolicy, ApprovalResponder, Approver},
     conversation::{ContentResidencyVerifier, FileRef},
     executor::TurnOutput,
+    filesystem::PRIVATE_VOLUME,
+    task_volume::{Component, FileKey, FileQuerySource, FileValue, Query, ToolFile},
 };
-use acyclic_stream::{FollowFilter, StreamError, StreamProvider as _};
+use acyclic_stream::{FollowFilter, ReadRequest, StreamError, StreamProvider as _};
 use futures::{StreamExt as _, TryStreamExt as _, stream::LocalBoxStream};
 use std::sync::Arc;
 
@@ -20,6 +22,9 @@ use std::sync::Arc;
 const MAXIMUM_TEXT: u64 = 16 * 1024 * 1024;
 /// The local user's principal when the agent's policy names no human.
 const USER: &str = "local";
+/// Files and bytes one live tool-output selection holds.
+const OUTPUT_FILES: usize = 4096;
+const OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
@@ -41,6 +46,35 @@ pub enum Event {
     /// The runtime failed the agent's delivery; it stays queued for a retry
     /// that may fail the same way.
     Failed(String),
+}
+
+/// Bytes one shell command wrote to stdout or stderr.
+pub struct Output {
+    pub bytes: Vec<u8>,
+}
+
+/// Every file one live query selects: its snapshot, then each change.
+fn watch(
+    files: Arc<dyn FileQuerySource>,
+    query: Query,
+) -> LocalBoxStream<'static, Result<FileValue>> {
+    futures::stream::once(async move {
+        let observation = files
+            .observe_files(query, None, OUTPUT_FILES, OUTPUT_BYTES)
+            .await
+            .map_err(failed)?;
+        let snapshot = observation.snapshot.map(|snapshot| snapshot.files);
+        let changes = observation
+            .changes
+            .map_err(failed)
+            .map_ok(|change| {
+                futures::stream::iter(change.file.into_iter().chain(change.files).map(Ok))
+            })
+            .try_flatten();
+        Ok::<_, Error>(futures::stream::iter(snapshot.into_iter().flatten().map(Ok)).chain(changes))
+    })
+    .try_flatten()
+    .boxed_local()
 }
 
 pub struct Conversation {
@@ -144,6 +178,76 @@ impl Conversation {
             || Error::Conflict("no human approver".into()),
             |error| *error,
         ))
+    }
+
+    /// Live output of the shell commands that message `inbox`'s turn runs: the
+    /// turn's recorded tool calls, then each shell call's output files, all
+    /// followed through live queries of the agent's private volume.
+    pub async fn output(&self, inbox: u64) -> Result<LocalBoxStream<'static, Result<Output>>> {
+        let (agents, _) = self.local.agents().await?;
+        let state = agents.state(&self.agent).await.map_err(failed)?;
+        let record = agents
+            .provider()
+            .read(ReadRequest {
+                path: self.agent.inbox().map_err(failed)?,
+                from: inbox,
+                limit: 1,
+            })
+            .await
+            .map_err(failed)?
+            .try_next()
+            .await
+            .map_err(failed)?
+            .ok_or_else(|| Error::Conflict("message is not in the inbox".into()))?;
+        let InboxRecord::Message(message) = InboxRecord::decode(&record.value).map_err(failed)?
+        else {
+            return Err(Error::Conflict("inbox record is not a message".into()));
+        };
+        let input = TurnInput::Message {
+            from: message.from,
+            id: message.id,
+            body: message.body,
+            inbox,
+        };
+        let turn = acyclic_harness::agent::turn_id(&state, &input).map_err(failed)?;
+        let volume = state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == PRIVATE_VOLUME)
+            .ok_or_else(|| Error::Conflict("agent has no private volume".into()))?;
+        let files: Arc<dyn FileQuerySource> =
+            Arc::new(self.local.agent_files(&volume.volume).await?);
+        let component = |id: String| Component::new(id).map_err(failed);
+        let calls = watch(
+            Arc::clone(&files),
+            Query::ToolCalls(component(turn.to_string())?),
+        );
+        Ok(calls
+            .try_filter_map(|call| async move {
+                let call: serde_json::Value =
+                    serde_json::from_slice(&call.bytes).map_err(failed)?;
+                let invocation = &call["invocation"];
+                Ok((invocation["name"] == "shell")
+                    .then(|| invocation["operation_id"].as_str().map(str::to_owned))
+                    .flatten())
+            })
+            .and_then(move |operation| {
+                let files = Arc::clone(&files);
+                async move { Ok(watch(files, Query::ToolOutput(component(operation)?))) }
+            })
+            .try_flatten_unordered(None)
+            .try_filter_map(|value| async move {
+                Ok(match value.key {
+                    FileKey::ToolOutput {
+                        file: ToolFile::Stdout(_) | ToolFile::Stderr(_),
+                        ..
+                    } => Some(Output {
+                        bytes: value.bytes.to_vec(),
+                    }),
+                    _ => None,
+                })
+            })
+            .boxed_local())
     }
 
     /// The text of a staged prompt or turn output.

@@ -78,6 +78,24 @@ impl LocalHarness {
         Ok((reader, self.project.clone(), stream))
     }
 
+    /// Read-only live queries over one agent volume this harness's authority
+    /// reads, such as the root agent's private volume, where its turns stage
+    /// their tool calls and tool output.
+    pub async fn agent_files(
+        &self,
+        volume: &VolumeRef,
+    ) -> Result<FilesystemFileQuery<LocalStream, LocalObjectBackend>> {
+        FilesystemContentVerifier::new(
+            Arc::clone(&self.files),
+            &self.verifier,
+            &self.signed,
+            self.limits.file_bytes,
+            None,
+        )?
+        .file_query(volume, acyclic_fs::performance::BOUNDARY_BUDGET)
+        .await
+    }
+
     /// Read-only live queries over the agent's actual private SDK files.
     /// The existing verifier retains owner authority; execution-log files and
     /// the host journal remain distinct volumes.

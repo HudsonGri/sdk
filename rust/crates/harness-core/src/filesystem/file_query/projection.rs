@@ -61,6 +61,11 @@ pub(super) struct Selection {
     parent: Option<FileId>,
     goal_metadata_path: Option<String>,
     goal_metadata_entry: Option<FileId>,
+    /// A subtree selection's ancestors, as (directory, child name) pairs from
+    /// the root: a change to one of those names re-lists the subtree.
+    chain: Vec<(FileId, String)>,
+    /// The subtree's directories and their volume-relative paths.
+    directories: BTreeMap<FileId, String>,
 }
 
 impl Selection {
@@ -89,6 +94,8 @@ impl Selection {
                 None
             },
             goal_metadata_entry: None,
+            chain: Vec::new(),
+            directories: BTreeMap::new(),
         };
         let entries = selection.list(generation, query, maximum_files, io).await?;
         selection
@@ -111,6 +118,11 @@ impl Selection {
         maximum_files: usize,
         io: &PreparationIo,
     ) -> task_volume::Result<BTreeMap<FileKey, FileId>> {
+        if let Some(base) = query.subtree() {
+            return self
+                .list_subtree(generation, &base, query, maximum_files, io)
+                .await;
+        }
         if query == &Query::File(FileKey::RequestHead) {
             let (parent, recorded) = generation.stat("/inputs", io, io.cancellation()).await;
             recorded.map_err(crate::Error::from)?;
@@ -148,11 +160,23 @@ impl Selection {
             if stat.kind != FileKind::Directory {
                 return Err(task_volume::Error::InvalidPath);
             }
-            Ok(plan_entries(generation, directory, maximum_files, io)
-                .await?
-                .into_iter()
-                .map(|(key, id, _)| (key, id))
-                .collect())
+            Ok(directory_entries(
+                generation,
+                directory,
+                maximum_files,
+                io,
+                |name, id, kind| {
+                    Ok(
+                        (kind == FileKind::Regular && name != ".md" && name.ends_with(".md"))
+                            .then(|| FileKey::parse(&format!("plans/{name}")))
+                            .transpose()?
+                            .map(|key| (key, id)),
+                    )
+                },
+            )
+            .await?
+            .into_iter()
+            .collect())
         }
     }
 
@@ -165,6 +189,11 @@ impl Selection {
         bounds: (usize, usize),
         io: &PreparationIo,
     ) -> task_volume::Result<(Vec<FileValue>, Vec<FileKey>)> {
+        if query.subtree().is_some() {
+            return self
+                .apply_subtree(generation, volume, diff, query, bounds, io)
+                .await;
+        }
         let root_name = match query {
             Query::Plans => "plans",
             Query::File(FileKey::Goal) => "GOAL.md",
@@ -246,6 +275,149 @@ impl Selection {
                 }
             }
         }
+        if entries.len() > bounds.0 {
+            return Err(task_volume::Error::LimitExceeded);
+        }
+        self.replace(generation, volume, entries, &dirty, bounds.1, io)
+            .await
+    }
+
+    /// Every selected file below `base`, at any depth. Each ancestor is
+    /// recorded before it is looked up, so creating a missing one re-lists.
+    async fn list_subtree<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+        &mut self,
+        generation: &Generation<Authority<P>, O>,
+        base: &str,
+        query: &Query,
+        maximum_files: usize,
+        io: &PreparationIo,
+    ) -> task_volume::Result<BTreeMap<FileKey, FileId>> {
+        self.chain.clear();
+        self.directories.clear();
+        let mut parent = self.root;
+        let mut path = String::new();
+        for part in base.split('/') {
+            self.chain.push((parent, part.to_owned()));
+            path.push('/');
+            path.push_str(part);
+            let (stat, recorded) = generation.stat(&path, io, io.cancellation()).await;
+            recorded.map_err(crate::Error::from)?;
+            parent = match stat {
+                Ok(stat) if stat.kind == FileKind::Directory => stat.file_id,
+                Ok(_) => return Err(task_volume::Error::InvalidPath),
+                Err(WorkspaceError::NotFound) => return Ok(BTreeMap::new()),
+                Err(error) => return Err(crate::Error::from(error).into()),
+            };
+        }
+        let mut entries = BTreeMap::new();
+        let mut pending = vec![(parent, base.to_owned())];
+        while let Some((directory, path)) = pending.pop() {
+            // Directories count against the same bound as files.
+            if self.directories.len() + entries.len() >= maximum_files {
+                return Err(task_volume::Error::LimitExceeded);
+            }
+            let children = directory_entries(
+                generation,
+                &format!("/{path}"),
+                maximum_files,
+                io,
+                |name, id, kind| Ok(Some((format!("{path}/{name}"), id, kind))),
+            )
+            .await?;
+            self.directories.insert(directory, path);
+            for (path, id, kind) in children {
+                match kind {
+                    FileKind::Directory => pending.push((id, path)),
+                    FileKind::Regular => {
+                        if let Ok(key) = FileKey::parse(&path)
+                            && query.matches(&key)
+                        {
+                            entries.insert(key, id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if self.directories.len() + entries.len() > maximum_files {
+            return Err(task_volume::Error::LimitExceeded);
+        }
+        Ok(entries)
+    }
+
+    /// Applies one commit to a subtree selection: a file bound in a known
+    /// directory is replaced in place; a changed ancestor or directory re-lists.
+    async fn apply_subtree<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+        &mut self,
+        generation: &Generation<Authority<P>, O>,
+        volume: &crate::conversation::VolumeRef,
+        diff: &acyclic_fs::GenerationDiff,
+        query: &Query,
+        bounds: (usize, usize),
+        io: &PreparationIo,
+    ) -> task_volume::Result<(Vec<FileValue>, Vec<FileKey>)> {
+        let previous = std::mem::take(&mut self.entries);
+        let mut entries = previous.clone();
+        let mut dirty = BTreeSet::new();
+        let mut relist = false;
+        for binding in &diff.bindings {
+            let Some(path) = self.directories.get(&binding.directory_id) else {
+                if self
+                    .chain
+                    .iter()
+                    .any(|(parent, _)| *parent == binding.directory_id)
+                {
+                    let decoded = name(&binding.name, io)?;
+                    relist |= self
+                        .chain
+                        .iter()
+                        .any(|(parent, part)| *parent == binding.directory_id && *part == decoded);
+                }
+                continue;
+            };
+            let directory = [&binding.before, &binding.after].into_iter().any(|entry| {
+                entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.kind == FileKind::Directory)
+            });
+            if directory {
+                relist = true;
+                continue;
+            }
+            let path = format!("{path}/{}", name(&binding.name, io)?);
+            let Ok(key) = FileKey::parse(&path) else {
+                continue;
+            };
+            if !query.matches(&key) {
+                continue;
+            }
+            dirty.insert(key.clone());
+            entries.remove(&key);
+            if let Some(after) = &binding.after
+                && after.kind == FileKind::Regular
+            {
+                entries.insert(key, after.file_id);
+            }
+        }
+        if relist {
+            let base = query.subtree().ok_or(task_volume::Error::InvalidPath)?;
+            entries = self
+                .list_subtree(generation, &base, query, bounds.0, io)
+                .await?;
+            dirty.extend(
+                entries
+                    .iter()
+                    .filter(|(key, id)| previous.get(*key) != Some(*id))
+                    .map(|(key, _)| key.clone()),
+            );
+        }
+        let changed: BTreeSet<_> = diff.files.iter().map(|file| file.file_id).collect();
+        dirty.extend(
+            entries
+                .iter()
+                .filter(|(_, id)| changed.contains(*id))
+                .map(|(key, _)| key.clone()),
+        );
         if entries.len() > bounds.0 {
             return Err(task_volume::Error::LimitExceeded);
         }
@@ -365,12 +537,15 @@ fn name(
     Ok(decoded.value)
 }
 
-async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static>(
+/// The kept entries of one directory, page by page: `select` maps each
+/// decoded name, file and kind to a kept entry, and at most `maximum` are kept.
+async fn directory_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static, T>(
     generation: &Generation<Authority<P>, O>,
     directory: &str,
-    maximum_files: usize,
+    maximum: usize,
     io: &PreparationIo,
-) -> task_volume::Result<Vec<(FileKey, FileId, FileKind)>> {
+    mut select: impl FnMut(String, FileId, FileKind) -> task_volume::Result<Option<T>>,
+) -> task_volume::Result<Vec<T>> {
     let mut entries = Vec::new();
     let mut previous: Option<(
         acyclic_fs::kernel::DirectoryPage,
@@ -386,7 +561,7 @@ async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static
                 .list_directory(
                     directory,
                     after,
-                    u32::try_from(maximum_files).map_err(|_| task_volume::Error::LimitExceeded)?,
+                    u32::try_from(maximum).map_err(|_| task_volume::Error::LimitExceeded)?,
                     io,
                     io.cancellation(),
                 )
@@ -395,9 +570,6 @@ async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static
         drop(previous.take());
         let page = &current.0;
         for entry in &page.entries {
-            if entry.kind != FileKind::Regular {
-                continue;
-            }
             let decoded = entry
                 .name
                 .unicode_text(
@@ -406,12 +578,11 @@ async fn plan_entries<P: StreamProvider + 'static, O: AsyncObjectStore + 'static
                 )
                 .map_err(|failure| crate::Error::Invalid(failure.error.to_string()))?;
             io.charge(decoded.work).map_err(crate::Error::from)?;
-            if decoded.value != ".md" && decoded.value.ends_with(".md") {
-                if entries.len() == maximum_files {
+            if let Some(kept) = select(decoded.value, entry.file_id, entry.kind)? {
+                if entries.len() == maximum {
                     return Err(task_volume::Error::LimitExceeded);
                 }
-                let key = FileKey::parse(&format!("plans/{}", decoded.value))?;
-                entries.push((key, entry.file_id, entry.kind));
+                entries.push(kept);
             }
         }
         if !page.has_more {

@@ -228,6 +228,24 @@ pub enum FileKey {
         /// Typed task-relative file location.
         file: TaskFile,
     },
+    /// One model tool call an agent turn recorded:
+    /// `turns/{turn}/tool-calls/{sequence}.json`.
+    ToolCall {
+        /// The agent turn's operation.
+        turn: Component,
+        /// The call's position in the turn.
+        sequence: u64,
+    },
+    /// One file of a tool command's output on an agent's private volume:
+    /// `tools/{operation}/request.json`, `stdout/{sequence:016x}`,
+    /// `stderr/{sequence:016x}` or `result.json` (sequences are 16 lowercase
+    /// hex digits, so names sort in stream order).
+    ToolOutput {
+        /// The tool call's operation.
+        operation: Component,
+        /// Request, ordered output stream file or result.
+        file: ToolFile,
+    },
 }
 
 impl FileKey {
@@ -300,8 +318,34 @@ impl FileKey {
             }
             Ok(n)
         };
+        let hex = |s: &str| -> Result<u64> {
+            if s.len() != 16 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(Error::InvalidPath);
+            }
+            u64::from_str_radix(s, 16).map_err(|_| Error::InvalidPath)
+        };
         match parts.as_slice() {
             ["inputs", "current.json"] => return Ok(Self::RequestHead),
+            ["turns", turn, "tool-calls", call] => {
+                return Ok(Self::ToolCall {
+                    turn: id(turn)?,
+                    sequence: number(call.strip_suffix(".json").ok_or(Error::InvalidPath)?)?,
+                });
+            }
+            ["tools", operation, rest @ ..] => {
+                let file = match rest {
+                    ["request.json"] => ToolFile::Request,
+                    ["result.json"] => ToolFile::Result,
+                    ["arguments", seq] => ToolFile::Arguments(hex(seq)?),
+                    ["stdout", seq] => ToolFile::Stdout(hex(seq)?),
+                    ["stderr", seq] => ToolFile::Stderr(hex(seq)?),
+                    _ => return Err(Error::InvalidPath),
+                };
+                return Ok(Self::ToolOutput {
+                    operation: id(operation)?,
+                    file,
+                });
+            }
             [".ui", directory, name] => {
                 return Ok(Self::Ui {
                     directory: id(directory)?,
@@ -428,6 +472,19 @@ impl FileKey {
             Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
             Self::Task { task, file } => format!(".tasks/{}/{}", task.as_str(), file.path()),
+            Self::ToolCall { turn, sequence } => {
+                format!("turns/{}/tool-calls/{sequence}.json", turn.as_str())
+            }
+            Self::ToolOutput { operation, file } => {
+                let leaf = match file {
+                    ToolFile::Request => "request.json".into(),
+                    ToolFile::Arguments(n) => format!("arguments/{n:016x}"),
+                    ToolFile::Stdout(n) => format!("stdout/{n:016x}"),
+                    ToolFile::Stderr(n) => format!("stderr/{n:016x}"),
+                    ToolFile::Result => "result.json".into(),
+                };
+                format!("tools/{}/{leaf}", operation.as_str())
+            }
         }
     }
 

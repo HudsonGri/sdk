@@ -1,6 +1,7 @@
 //! The interactive terminal: one conversation's settled turns, its pending
-//! prompts and its phase, over the shared prompt editor and screen widgets.
-use crate::agent::{Conversation, Event};
+//! prompts, the live output of their shell commands and its phase, over the
+//! shared prompt editor and screen widgets.
+use crate::agent::{Conversation, Event, Output};
 use acyclic_harness::{
     agent::{IntentId, Phase},
     tui::{
@@ -14,13 +15,19 @@ use acyclic_harness::{
         term::{Environment, FrameTerminal, ScreenMode, Tty},
     },
 };
-use futures::{StreamExt as _, stream::LocalBoxStream};
+use futures::{
+    StreamExt as _,
+    stream::{AbortHandle, LocalBoxStream, SelectAll},
+};
 use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
 
 /// Settled turns shown when a conversation reopens.
 const HISTORY: u64 = 64;
+/// Live shell output kept for the pane, and the rows it shows.
+const OUTPUT_BYTES: usize = 64 * 1024;
+const OUTPUT_ROWS: usize = 12;
 
 /// One transcript block: a prompt or an answer.
 struct Block {
@@ -36,6 +43,9 @@ struct View {
     phase: Option<Phase>,
     /// The latest failed delivery, until the next status.
     failure: Option<String>,
+    /// Live output of pending prompts' shell commands, by inbox sequence,
+    /// and the follow that feeds each.
+    output: Vec<(u64, Vec<u8>, AbortHandle)>,
     /// Rows scrolled back from the live tail.
     back: usize,
     lines: Vec<Line<'static>>,
@@ -66,6 +76,10 @@ impl View {
                         .position(|(pending, _)| *pending == inbox)?;
                     Some(self.pending.remove(at).1)
                 });
+                // The settled answer replaces its commands' live output.
+                if let Some(inbox) = inbox {
+                    self.settle(|pending| pending == inbox);
+                }
                 if let Some(text) = sent.or(prompt) {
                     self.blocks.push(Block { prompt: true, text });
                 }
@@ -79,12 +93,34 @@ impl View {
                 self.failure = None;
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     self.pending.retain(|(inbox, _)| *inbox >= status.cursor);
+                    let cursor = status.cursor;
+                    self.settle(|inbox| inbox < cursor);
                 }
                 self.phase = Some(status.phase);
             }
         }
         self.dirty = true;
         Ok(())
+    }
+
+    /// Stops and drops the live output of every prompt `settled` selects.
+    fn settle(&mut self, settled: impl Fn(u64) -> bool) {
+        self.output.retain(|(inbox, _, follow)| {
+            let keep = !settled(*inbox);
+            if !keep {
+                follow.abort();
+            }
+            keep
+        });
+    }
+
+    fn observe(&mut self, inbox: u64, output: Output) {
+        if let Some((_, bytes, _)) = self.output.iter_mut().find(|(at, ..)| *at == inbox) {
+            bytes.extend_from_slice(&output.bytes);
+            let excess = bytes.len().saturating_sub(OUTPUT_BYTES);
+            bytes.drain(..excess);
+            self.dirty = true;
+        }
     }
 
     /// Wrapped transcript rows for `width` columns, rebuilt only on change.
@@ -98,7 +134,14 @@ impl View {
                 .blocks
                 .iter()
                 .map(|block| (block.prompt, block.text.as_str()));
-            for (prompt, text) in blocks.chain(pending) {
+            let output = self
+                .output
+                .iter()
+                .map(|(_, bytes, _)| tail(bytes))
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>();
+            let output = output.iter().map(|text| (false, text.as_str()));
+            for (prompt, text) in blocks.chain(pending).chain(output) {
                 let style = if prompt {
                     Style::default().add_modifier(Modifier::BOLD)
                 } else {
@@ -144,6 +187,13 @@ impl View {
     }
 }
 
+/// The last rows of one command's output.
+fn tail(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let rows = text.lines().collect::<Vec<_>>();
+    rows[rows.len().saturating_sub(OUTPUT_ROWS)..].join("\n")
+}
+
 fn terminal_events(tty: Tty) -> LocalBoxStream<'static, std::io::Result<Vec<InputEvent>>> {
     futures::stream::try_unfold(tty, |mut tty| async move {
         loop {
@@ -178,6 +228,7 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
     let mut keys = terminal_events(tty);
     let from = conversation.settled().await?.saturating_sub(HISTORY);
     let mut events = conversation.events(from).await?;
+    let mut outputs = SelectAll::<LocalBoxStream<'static, (u64, Output)>>::new();
     let mut view = View::default();
     let mut input = PromptInput::default();
     let mut viewport = Viewport::default();
@@ -208,6 +259,9 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
                 let event = event.ok_or("agent status follow ended")??;
                 view.apply(&conversation, event).await?;
             }
+            Some((inbox, output)) = outputs.next(), if !outputs.is_empty() => {
+                view.observe(inbox, output);
+            }
             batch = keys.next() => {
                 for event in batch.ok_or("terminal input ended")?? {
                     let effects = areas
@@ -224,6 +278,24 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
                                 let id = acyclic_harness::OperationId::new().to_string();
                                 let inbox = conversation.send(&id, &text).await?;
                                 view.pending.push((inbox, text));
+                                let (follow, stop) = futures::stream::abortable(
+                                    conversation.output(inbox).await?,
+                                );
+                                // A failed follow ends only this prompt's pane.
+                                outputs.push(
+                                    follow
+                                        .take_while(|output| {
+                                            if let Err(error) = output {
+                                                tracing::debug!(%error, "shell output follow ended");
+                                            }
+                                            std::future::ready(output.is_ok())
+                                        })
+                                        .filter_map(move |output| {
+                                            std::future::ready(output.ok().map(|output| (inbox, output)))
+                                        })
+                                        .boxed_local(),
+                                );
+                                view.output.push((inbox, Vec::new(), stop));
                                 view.back = 0;
                                 view.dirty = true;
                             }

@@ -121,6 +121,10 @@ pub enum Query {
     Child(Component),
     /// One exact logical file, including goal, plan, status and mount declarations.
     File(FileKey),
+    /// The tool calls one agent turn recorded, in call order.
+    ToolCalls(Component),
+    /// One tool call's request, ordered stdout and stderr files, and result.
+    ToolOutput(Component),
 }
 
 impl Query {
@@ -333,6 +337,26 @@ impl Query {
                 Included(FileKey::Agent(minimum.clone())),
                 Included(FileKey::Agent(maximum.clone())),
             ),
+            Self::ToolCalls(turn) => (
+                Included(FileKey::ToolCall {
+                    turn: turn.clone(),
+                    sequence: 0,
+                }),
+                Included(FileKey::ToolCall {
+                    turn: turn.clone(),
+                    sequence: u64::MAX,
+                }),
+            ),
+            Self::ToolOutput(operation) => (
+                Included(FileKey::ToolOutput {
+                    operation: operation.clone(),
+                    file: ToolFile::Request,
+                }),
+                Included(FileKey::ToolOutput {
+                    operation: operation.clone(),
+                    file: ToolFile::Result,
+                }),
+            ),
             _ => return None,
         })
     }
@@ -378,6 +402,12 @@ impl Query {
                 }
             ),
             Self::Plans => matches!(key, FileKey::Plan(_)),
+            Self::ToolCalls(selected) => {
+                matches!(key, FileKey::ToolCall { turn, .. } if selected == turn)
+            }
+            Self::ToolOutput(selected) => {
+                matches!(key, FileKey::ToolOutput { operation, .. } if selected == operation)
+            }
             Self::Agents => matches!(key, FileKey::Agent(_)),
             Self::Tasks => matches!(key, FileKey::Task { .. }),
             Self::Children => matches!(key, FileKey::Child { .. }),
@@ -513,6 +543,16 @@ impl Query {
             }
     }
 
+    /// The one directory an ordinary file query selects below, for selections
+    /// that are a whole subtree of an agent's private volume.
+    pub(crate) fn subtree(&self) -> Option<String> {
+        match self {
+            Self::ToolCalls(turn) => Some(format!("turns/{}/tool-calls", turn.as_str())),
+            Self::ToolOutput(operation) => Some(format!("tools/{}", operation.as_str())),
+            _ => None,
+        }
+    }
+
     /// Resolves a canonical folder selection at the wire boundary.
     pub fn folder(path: &str) -> Result<Self> {
         if path.len() > 4096 {
@@ -542,6 +582,8 @@ impl Query {
                 }
             }
             [".volumes", "agents"] => Self::Agents,
+            ["turns", turn, "tool-calls"] => Self::ToolCalls(component(turn)?),
+            ["tools", operation] => Self::ToolOutput(component(operation)?),
             [".tasks"] => Self::Tasks,
             [".tasks", t] => Self::Task(component(t)?),
             [".tasks", t, "requests"] => Self::Requests(component(t)?),
