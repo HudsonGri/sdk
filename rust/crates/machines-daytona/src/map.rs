@@ -219,7 +219,9 @@ pub fn autopause_minutes(policy: SuspensionPolicy) -> u32 {
 /// creation-relative TTL cannot express exactly.
 pub fn lifetime_fields(policy: ExpirationPolicy) -> Result<(i64, Option<u64>), ProviderError> {
     match policy {
-        ExpirationPolicy::Never => Ok((AUTO_DELETE_DISABLED, None)),
+        ExpirationPolicy::ProviderDefault | ExpirationPolicy::Never => {
+            Ok((AUTO_DELETE_DISABLED, None))
+        }
         ExpirationPolicy::Idle(idle) => {
             Ok((i64::try_from(whole_minutes(idle)).unwrap_or(i64::MAX), None))
         }

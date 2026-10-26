@@ -19,6 +19,8 @@ use tracing::field::Empty;
 
 use crate::DaytonaConfig;
 
+mod execution;
+
 /// Header carrying the organization to act in when a credential spans several.
 const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
 /// Largest page `GET /sandbox` accepts.
@@ -251,7 +253,7 @@ impl DaytonaApi {
         if config.api_key.is_empty() {
             return Err(ProviderError::Invalid("Daytona API key is empty".into()));
         }
-        let http = reqwest::Client::builder()
+        let http = acyclic_machines::provider_core::http_transport_builder()
             .timeout(config.request_timeout)
             .build()
             .map_err(|error| ProviderError::Invalid(format!("HTTP client: {error}")))?;
@@ -876,5 +878,33 @@ mod tests {
             status_error(StatusCode::UNAUTHORIZED, ""),
             ProviderError::Rejected(_)
         ));
+    }
+}
+
+#[async_trait::async_trait]
+impl acyclic_machines::provider_core::WorkspaceIo for DaytonaApi {
+    async fn status(&self, resource: &str, command: String) -> Result<Option<i64>, ProviderError> {
+        let response = self
+            .execute(
+                resource,
+                &ExecuteRequest {
+                    command: format!(
+                        "sh -c {}",
+                        acyclic_machines::provider_core::shell_quote(&command)
+                    ),
+                    cwd: None,
+                    timeout: Some(300),
+                },
+            )
+            .await?;
+        Ok(response.exit_code)
+    }
+
+    async fn download(&self, resource: &str, path: &str) -> Result<Vec<u8>, ProviderError> {
+        self.download_file(resource, path).await
+    }
+
+    async fn upload(&self, resource: &str, path: &str, data: &[u8]) -> Result<(), ProviderError> {
+        self.upload_file(resource, path, data).await
     }
 }

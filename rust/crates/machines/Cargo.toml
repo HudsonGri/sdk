@@ -15,12 +15,19 @@ categories = ["api-bindings"]
 
 
 [features]
+shell-conformance = ["acyclic-conformance/machines-shell"]
+provider-core = ["dep:acyclic-native-runtime", "tokio/time", "tokio/rt", "tokio/macros"]
+provider-http = ["provider-core", "dep:reqwest"]
+cloudflare = ["provider-http"]
+e2b = ["provider-http", "dep:base64"]
+modal = ["provider-http", "dep:tonic", "dep:tonic-prost"]
 default = ["grpc"]
 grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
+base64 = { version = "0.22.1", optional = true }
 futures.workspace = true
 hex.workspace = true
 hyper-util = { workspace = true, optional = true }
@@ -29,6 +36,7 @@ rustix = { workspace = true, optional = true }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+reqwest = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 tonic = { workspace = true, optional = true }
@@ -37,12 +45,29 @@ tower = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
+acyclic-conformance = { path = "../conformance" }
 proptest.workspace = true
 rcgen = "0.14.10"
 tokio-stream.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
+[[example]]
+name = "cloudflare-conformance"
+path = "examples/cloudflare_conformance.rs"
+required-features = ["cloudflare"]
+
+[[example]]
+name = "e2b-conformance"
+path = "examples/e2b_conformance.rs"
+required-features = ["e2b"]
+
+[[example]]
+name = "modal-conformance"
+path = "examples/modal_conformance.rs"
+required-features = ["modal"]
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

@@ -336,12 +336,18 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     pub fn builder(&self) -> crate::bundle::HarnessBuilder {
         crate::bundle::HarnessBuilder::new()
             .journal(self.journal())
-            .content(ContentBindings {
-                reader: self.content_verifier.clone(),
-                writer: Some(self.publisher.clone()),
-            })
+            .content(self.content_bindings())
             .grant(self.read_capability.clone())
             .grant(self.write_capability.clone())
+    }
+
+    /// Composes the authenticated private volume with a caller-selected runtime.
+    #[must_use]
+    pub fn content_bindings(&self) -> ContentBindings {
+        ContentBindings {
+            reader: self.content_verifier.clone(),
+            writer: Some(self.publisher.clone()),
+        }
     }
 
     /// Borrows the authenticated reader for context and client adapters.

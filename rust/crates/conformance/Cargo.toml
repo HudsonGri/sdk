@@ -10,6 +10,7 @@ description = "Internal black-box conformance suites for Acyclic service provide
 readme = "README.md"
 
 [features]
+machines-shell = ["acyclic-harness/machines", "acyclic-harness/native-execution"]
 client-session = ["acyclic-harness/grpc", "acyclic-stream/grpc"]
 harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
