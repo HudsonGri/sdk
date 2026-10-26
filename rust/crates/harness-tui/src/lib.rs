@@ -113,3 +113,13 @@ pub use screen::{Screen, ScreenAreas};
 pub use scrollbar::TranscriptScrollbar;
 #[cfg(feature = "tui")]
 pub mod term;
+
+#[cfg(feature = "tui")]
+mod input_batch;
+#[cfg(feature = "tui")]
+pub use input_batch::{frame_due, input_burst, transcript_motion};
+
+#[cfg(feature = "tui")]
+mod source_rows;
+#[cfg(feature = "tui")]
+pub use source_rows::SourceRows;

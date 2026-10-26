@@ -18,7 +18,6 @@ mod archive;
 #[cfg(not(target_arch = "wasm32"))]
 mod pacing;
 mod selection;
-mod source_rows;
 mod stream_text;
 mod task;
 mod tool;

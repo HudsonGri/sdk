@@ -7,7 +7,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct Archive {
-    origins: super::source_rows::SourceRows,
+    origins: crate::tui::SourceRows,
     source: Option<Arc<Query>>,
     first: Option<FileKey>,
     last: Option<(u64, FileKey)>,
@@ -195,7 +195,7 @@ impl Archive {
                 self.origins.extend_current(previous + 1);
             }
             self.origins
-                .extend(super::source_rows::identity(key), self.stream.len());
+                .extend(super::task::identity(key), self.stream.len());
         }
         dirty |= self.refresh_pending(files, &owner);
         if !dirty {
@@ -210,7 +210,7 @@ impl Archive {
         for (file, rows) in &self.pending {
             self.rows.extend_from_slice(rows);
             self.origins
-                .extend(super::source_rows::identity(&file.key), self.rows.len());
+                .extend(super::task::identity(&file.key), self.rows.len());
         }
         changed
     }

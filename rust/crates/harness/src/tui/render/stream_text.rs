@@ -16,7 +16,7 @@ struct SealedTurn {
 /// Disposable parsing cache; all source bytes remain in ClientViews.
 #[derive(Default)]
 pub(super) struct StreamText {
-    origins: super::source_rows::SourceRows,
+    origins: crate::tui::SourceRows,
     last_origin: [u8; 32],
     markdown: Markdown,
     append: Option<(usize, usize, usize)>,
@@ -243,7 +243,7 @@ impl StreamText {
             let origin = if self.last.as_ref() == Some(&text.file.key) {
                 self.last_origin
             } else {
-                super::source_rows::identity(&text.file.key)
+                super::task::identity(&text.file.key)
             };
             let start = if self.last.as_ref() == Some(&text.file.key) {
                 self.segments
@@ -274,7 +274,7 @@ impl StreamText {
                     .segment_sequences
                     .get(index)
                     .map_or(origin, |sequence| {
-                        super::source_rows::identity(&FileKey::Task {
+                        super::task::identity(&FileKey::Task {
                             task: task.task.clone(),
                             file: crate::task_volume::TaskFile::Chunk {
                                 turn: text.turn,
@@ -365,7 +365,7 @@ impl StreamText {
                 }
                 let before = self.len();
                 changed = changed.min(self.push_tool(bytes));
-                self.record_origin(super::source_rows::identity(&file.key), before);
+                self.record_origin(super::task::identity(&file.key), before);
             }
             self.first.get_or_insert_with(|| file.key.clone());
             self.last = Some(file.key.clone());
