@@ -1,6 +1,8 @@
 use super::*;
 use proptest::prelude::*;
 
+mod capacity_model;
+
 struct Page {
     entries: Vec<u32>,
     before: Arc<u32>,
