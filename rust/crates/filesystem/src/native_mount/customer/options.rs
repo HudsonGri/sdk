@@ -176,16 +176,12 @@ impl MountOptions {
         }
     }
 
-    /// Serves the mount as one view of the process's shared native instance
-    /// at the destination's parent, named by the destination's last
-    /// component, instead of mounting a native instance of its own. Only
-    /// [`Workspace::mount_view`](crate::Workspace::mount_view) sets it, at a
-    /// destination the process issued for a shared view.
-    /// Linux and Windows; elsewhere the mount fails as an
-    /// unsupported target.
+    /// Selects the native backend for an issued task view. Linux and Windows
+    /// share an instance; Darwin retains its existing per-view native session.
+    /// This choice stays below the common task-view API used by every host.
     #[must_use]
-    pub(crate) const fn shared(mut self) -> Self {
-        self.shared = true;
+    pub(crate) const fn for_task_view(mut self) -> Self {
+        self.shared = cfg!(any(target_os = "linux", windows));
         self
     }
 

@@ -48,26 +48,43 @@ pub fn shared_view_namespace_contains(
     destination: &Path,
     admission: Option<&crate::HeldRoot>,
 ) -> Result<bool, NativeMountError> {
-    let root = match admission {
-        Some(admitted) => shared_view_root_in(admitted)?,
-        None => shared_view_root()?,
-    };
-    let Some(namespace) = root.parent() else {
-        return Ok(false);
-    };
-    let Ok(relative) = destination.strip_prefix(namespace) else {
-        return Ok(false);
-    };
-    let mut components = relative.components();
-    let (Some(std::path::Component::Normal(root)), Some(std::path::Component::Normal(view)), None) =
-        (components.next(), components.next(), components.next())
-    else {
-        return Ok(false);
-    };
-    Ok(root
-        .to_str()
-        .is_some_and(|root| root.len() == 32 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        && view_serial(view).is_some())
+    #[cfg(target_os = "macos")]
+    {
+        let namespace = native_view_root(admission)?;
+        let Ok(relative) = destination.strip_prefix(namespace) else {
+            return Ok(false);
+        };
+        let mut components = relative.components();
+        Ok(matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(name)), None)
+                if name.to_str().is_some_and(|name|
+                    name.len() == 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        ))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let root = match admission {
+            Some(admitted) => shared_view_root_in(admitted)?,
+            None => shared_view_root()?,
+        };
+        let Some(namespace) = root.parent() else {
+            return Ok(false);
+        };
+        let Ok(relative) = destination.strip_prefix(namespace) else {
+            return Ok(false);
+        };
+        let mut components = relative.components();
+        let (Some(std::path::Component::Normal(root)), Some(std::path::Component::Normal(view)), None) =
+            (components.next(), components.next(), components.next())
+        else {
+            return Ok(false);
+        };
+        Ok(root
+            .to_str()
+            .is_some_and(|root| root.len() == 32 && root.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && view_serial(view).is_some())
+    }
 }
 
 /// This process's root for shared views: a view at `root.join(name)`,
@@ -76,13 +93,32 @@ pub fn shared_view_namespace_contains(
 ///
 /// The first call reaps the roots of dead processes.
 pub fn shared_view_root() -> Result<PathBuf, NativeMountError> {
+    root_in(&default_view_roots()?)
+}
+
+fn default_view_roots() -> Result<crate::HeldRoot, NativeMountError> {
     let roots = registry::path()?
         .parent()
         .ok_or_else(|| std::io::Error::other("native-mount directory has no parent"))?
         .join(ROOTS);
     std::fs::create_dir_all(&roots)?;
-    let roots = crate::hold_root(&roots).map_err(crate::NativeTreeMaterializationError::from)?;
-    root_in(&roots)
+    crate::hold_root(&roots)
+        .map_err(crate::NativeTreeMaterializationError::from)
+        .map_err(Into::into)
+}
+
+// Darwin currently owns one native session per view. Keep its destinations
+// under the admitted namespace, while its existing destination fence and
+// startup recovery retain mount custody. The host never selects this backend.
+#[cfg(target_os = "macos")]
+fn native_view_root(admission: Option<&crate::HeldRoot>) -> Result<PathBuf, NativeMountError> {
+    match admission {
+        Some(admitted) => {
+            verify_placement(admitted)?;
+            Ok(admitted.path().to_path_buf())
+        }
+        None => Ok(default_view_roots()?.path().to_path_buf()),
+    }
 }
 
 /// Uses an already admitted writable namespace for the process's shared
@@ -175,14 +211,27 @@ fn issue_destination(root: &Path, claim: bool) -> Result<IssuedDestination, Nati
 pub(crate) fn shared_view_destination(
     admission: Option<&crate::HeldRoot>,
 ) -> Result<IssuedDestination, NativeMountError> {
-    if !cfg!(any(target_os = "linux", windows)) {
-        return Err(NativeMountError::UnsupportedTarget);
+    #[cfg(target_os = "macos")]
+    {
+        Ok(IssuedDestination {
+            path: native_view_root(admission)?.join(format!(
+                "{:032x}",
+                u128::from_be_bytes(crate::MountId::new().into_bytes())
+            )),
+            claim: None,
+        })
     }
-    let root = match admission {
-        Some(admitted) => shared_view_root_in(admitted)?,
-        None => shared_view_root()?,
-    };
-    issue_destination(&root, cfg!(windows))
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !cfg!(any(target_os = "linux", windows)) {
+            return Err(NativeMountError::UnsupportedTarget);
+        }
+        let root = match admission {
+            Some(admitted) => shared_view_root_in(admitted)?,
+            None => shared_view_root()?,
+        };
+        issue_destination(&root, cfg!(windows))
+    }
 }
 
 #[cfg(any(windows, test))]
