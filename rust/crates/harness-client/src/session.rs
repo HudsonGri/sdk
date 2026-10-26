@@ -1,15 +1,21 @@
 use crate::{DemandError, DemandPolicy, ViewDemand};
 use acyclic_stream::{
-    BoxProviderStream, StreamError, StreamPath, session::Client, wire, wire_codec,
+    BoxProviderFuture, BoxProviderStream, StreamError, StreamPath, session::Client, wire, wire_codec,
 };
 use bytes::Bytes;
 use futures::StreamExt;
 use std::{
     collections::BTreeMap,
+    future::Future as _,
     task::{Context, Poll},
 };
 
 type Follow = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
+
+enum Subscription {
+    Opening(BoxProviderFuture<'static, Result<Follow, StreamError>>),
+    Open(Follow),
+}
 
 /// Admission failures are distinct from authenticated provider refusals.
 #[derive(Debug)]
@@ -50,7 +56,7 @@ pub struct WireSession {
     client: Client,
     policy: DemandPolicy,
     demand: ViewDemand,
-    follows: BTreeMap<StreamPath, Follow>,
+    follows: BTreeMap<StreamPath, Subscription>,
 }
 
 impl WireSession {
@@ -105,12 +111,28 @@ impl WireSession {
 
     /// Open the full record stream of one selected agent fork.
     /// The caller supplies the authenticated subscription and original cursor.
-    /// Cancellation during open is drained by the pool's existing drop guard.
+    /// An interrupted wait retains its bounded opening in this session. Removing
+    /// the interest drops it through the pool's existing cancellation guard.
     ///
     /// # Errors
     /// Refuses unsolicited, duplicate or malformed follows before pool admission;
     /// preserves authenticated provider refusals without inventing revision zero.
     pub async fn open_stream(
+        &mut self,
+        agent: StreamPath,
+        subscription: wire::SessionSubscription,
+    ) -> Result<(), WireSessionError> {
+        self.begin_stream(agent.clone(), subscription)?;
+        futures::future::poll_fn(|context| self.poll_open(&agent, context)).await
+    }
+
+    /// Admit a lazy open without holding a mutable borrow across network I/O.
+    /// Its pending future counts against the same selected-follow bound and is
+    /// dropped with the interest. Polling drives the canonical pool admission.
+    ///
+    /// # Errors
+    /// Rejects unsolicited, duplicate or malformed follows before admission.
+    pub fn begin_stream(
         &mut self,
         agent: StreamPath,
         subscription: wire::SessionSubscription,
@@ -132,13 +154,34 @@ impl WireSession {
         if path != agent {
             return Err(WireSessionError::NotRequested);
         }
-        let stream = self
-            .client
-            .subscribe(subscription)
-            .await
-            .map_err(WireSessionError::Stream)?;
-        self.follows.insert(agent, stream);
+        let client = self.client.clone();
+        let opening = Box::pin(async move { client.subscribe(subscription).await });
+        self.follows.insert(agent, Subscription::Opening(opening));
         Ok(())
+    }
+
+    fn poll_open(
+        &mut self,
+        agent: &StreamPath,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), WireSessionError>> {
+        let Some(subscription) = self.follows.get_mut(agent) else {
+            return Poll::Ready(Err(WireSessionError::NotOpen));
+        };
+        let Subscription::Opening(opening) = subscription else {
+            return Poll::Ready(Ok(()));
+        };
+        match opening.as_mut().poll(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(stream)) => {
+                *subscription = Subscription::Open(stream);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => {
+                self.follows.remove(agent);
+                Poll::Ready(Err(WireSessionError::Stream(error)))
+            }
+        }
     }
 
     /// Poll only the requested visible agent; never enumerate the stored swarm.
@@ -149,7 +192,12 @@ impl WireSession {
         agent: &StreamPath,
         context: &mut Context<'_>,
     ) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
-        let Some(stream) = self.follows.get_mut(agent) else {
+        match self.poll_open(agent, context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+            Poll::Ready(Ok(())) => {}
+        }
+        let Some(Subscription::Open(stream)) = self.follows.get_mut(agent) else {
             return Poll::Ready(Err(WireSessionError::NotOpen));
         };
         match stream.poll_next_unpin(context) {
