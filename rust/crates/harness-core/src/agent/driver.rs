@@ -4,56 +4,56 @@
 //! The executor's journal holds every intent before its effect, so a crash before
 //! the step commit re-runs the same operation and the journal replays it. The
 //! conversation is written only by the step commit (all-or-none with the inbox
-//! cursor), from the records [`TurnHost::settle`] returns.
+//! cursor): one [`ConversationEntry`] naming the turn's input and its staged output.
 
 use super::{
-    AgentOutcome, AgentState, Error, IntentId, Out, TurnDriver, TurnFuture, TurnInput, TurnStep,
-    Wait,
+    AgentOutcome, AgentRecord, AgentState, Error, IntentId, Out, TurnDriver, TurnFuture,
+    TurnInput, TurnStep, Wait,
 };
 use crate::{
     OperationId,
     conversation::FileRef,
-    executor::{ExecutionJournal, ExecutionProgress, Executor, TurnInput as ExecutorInput, TurnOutput},
+    executor::{ExecutionJournal, ExecutionProgress, Executor, TurnInput as ExecutorInput},
+    model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// One opened turn: the executor and journal bound to the agent, and its input.
+/// One opened turn: the executor and journal bound to the agent.
 pub struct OpenTurn {
     /// Executor bound to the agent's tools, volumes and policy.
     pub executor: Arc<dyn Executor>,
-    /// Journal of this agent's turns.
+    /// Journal of this agent's turns, on its private volume.
     pub journal: Arc<dyn ExecutionJournal>,
-    /// The executor input; on resume, the input the operation started with.
-    pub input: ExecutorInput,
+    /// Model and tool steps allowed in one turn.
+    pub max_steps: u32,
+    /// Signing custody of the journal's authority; the journal holds only a
+    /// weak admission port, so the custody lives exactly as long as the turn.
+    pub custody: Option<crate::core::AuthorityIssuer>,
 }
 
-/// A settled turn's conversation records and result file.
-pub struct Settled {
-    /// Encoded conversation records, appended by the step commit.
-    pub conversation: Vec<Vec<u8>>,
-    /// Result file reported to the parent when the agent completes.
-    pub result: Option<FileRef>,
-}
-
-/// Host services for agent turns: binding and conversation staging.
+/// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: Send + Sync {
-    /// Opens `turn` for `agent`. `input` is `None` when resuming a started turn.
+    /// Opens `turn` for `agent`.
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
-        input: Option<&'a TurnInput>,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
-
-    /// Stages a completed turn's output and returns its conversation records.
-    fn settle<'a>(
-        &'a self,
-        agent: &'a AgentState,
-        turn: OperationId,
-        output: TurnOutput,
-    ) -> BoxFuture<'a, crate::Result<Settled>>;
 }
+
+/// One conversation record: a settled turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationEntry {
+    /// Input that started the turn.
+    pub input: TurnInput,
+    /// The executor's complete output, staged on the agent's private volume.
+    pub output: FileRef,
+}
+
+impl AgentRecord for ConversationEntry {}
 
 /// [`TurnDriver`] running each turn as one executor operation.
 pub struct ExecutorDriver<H> {
@@ -72,8 +72,7 @@ impl<H: TurnHost> ExecutorDriver<H> {
 /// child reports once), so this is stable across replays and distinct per turn,
 /// including turns started by an alarm at an unchanged inbox cursor.
 pub fn turn_id(agent: &AgentState, input: &TurnInput) -> Result<OperationId, Error> {
-    let encoded =
-        serde_json::to_vec(input).map_err(|_| Error::Record("turn input does not encode"))?;
+    let encoded = encode(input)?;
     let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.turn.v1");
     hasher.update(agent.path.as_str().as_bytes());
     hasher.update(&[0]);
@@ -83,18 +82,37 @@ pub fn turn_id(agent: &AgentState, input: &TurnInput) -> Result<OperationId, Err
     Ok(OperationId::from_bytes(bytes))
 }
 
-/// The turn a step continues, or a fresh one for new input.
-fn current(agent: &AgentState, input: Option<&TurnInput>) -> Result<(OperationId, bool), Error> {
+fn encode(input: &TurnInput) -> Result<Vec<u8>, Error> {
+    crate::contract::canonical_json_bytes(input)
+        .map_err(|_| Error::Record("turn input does not encode"))
+}
+
+/// The input of the turn a step continues (kept in the checkpoint), or new input.
+fn starting(agent: &AgentState, input: Option<TurnInput>) -> Result<TurnInput, Error> {
     match (&agent.turn, input) {
-        (Some(bytes), None | Some(TurnInput::Approval { .. })) => {
-            let bytes = <[u8; 16]>::try_from(bytes.as_slice())
-                .map_err(|_| Error::Record("turn checkpoint is not an operation id"))?;
-            Ok((OperationId::from_bytes(bytes), true))
-        }
-        (None, Some(input)) => Ok((turn_id(agent, input)?, false)),
+        (Some(bytes), None | Some(TurnInput::Approval { .. })) => serde_json::from_slice(bytes)
+            .map_err(|_| Error::Record("turn checkpoint is not a turn input")),
+        (None, Some(input)) => Ok(input),
         (Some(_), Some(_)) => Err(Error::Record("new input while a turn is in progress")),
         (None, None) => Err(Error::Record("resume without a turn in progress")),
     }
+}
+
+/// Model-visible content of a turn input: a message or event file as a file
+/// part, every other input as its canonical record text.
+fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
+    Ok(match input {
+        TurnInput::Brief { brief: file }
+        | TurnInput::Message { body: file, .. }
+        | TurnInput::Hook { event: file, .. } => ModelContent::Part(ModelContentPart::File {
+            file: FileRef::clone(file),
+            policy: FileProjectionPolicy::BoundedFull,
+        }),
+        other => ModelContent::Text(
+            String::from_utf8(encode(other)?)
+                .map_err(|_| Error::Record("turn input is not text"))?,
+        ),
+    })
 }
 
 fn host_error(error: crate::Error) -> Error {
@@ -109,12 +127,20 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
         input: Option<TurnInput>,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let (turn, resumed) = current(agent, input.as_ref())?;
-            let fresh = if resumed { None } else { input.as_ref() };
-            let open = self.host.open(agent, turn, fresh).await.map_err(host_error)?;
+            let input = starting(agent, input)?;
+            let turn = turn_id(agent, &input)?;
+            let open = self.host.open(agent, turn).await.map_err(host_error)?;
             let progress = open
                 .executor
-                .execute_progress(open.input, &*open.journal)
+                .execute_progress(
+                    ExecutorInput {
+                        operation_id: turn,
+                        input: model_input(&input)?,
+                        selected_context: None,
+                        max_steps: open.max_steps,
+                    },
+                    &*open.journal,
+                )
                 .await
                 .map_err(host_error)?;
             let failed = |message: &str| TurnStep {
@@ -126,24 +152,34 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             };
             Ok(match progress {
                 ExecutionProgress::Ready(output) => {
-                    let settled = self.host.settle(agent, turn, output).await.map_err(host_error)?;
-                    let outs = settled.conversation.into_iter().map(Out::Conversation).collect();
+                    let bytes = crate::contract::canonical_json_bytes(&output)
+                        .map_err(|error| host_error(error.into()))?;
+                    let output = open
+                        .journal
+                        .stage(turn, "agent-turn-output", &bytes, "application/json", None)
+                        .map_err(host_error)?
+                        .await
+                        .map_err(host_error)?;
+                    let entry = ConversationEntry {
+                        input,
+                        output: output.clone(),
+                    };
                     // A child reports when its work is done; a root waits for input.
                     let wait = if agent.parent.is_some() && agent.queued.is_empty() {
                         Wait::Done(AgentOutcome::Succeeded {
-                            result: settled.result,
+                            result: Some(Box::new(output)),
                         })
                     } else {
                         Wait::Input
                     };
                     TurnStep {
                         checkpoint: None,
-                        outs,
+                        outs: vec![Out::Conversation(entry.encode()?)],
                         wait,
                     }
                 }
                 ExecutionProgress::Pending(approval) => TurnStep {
-                    checkpoint: Some(turn.into_bytes().to_vec()),
+                    checkpoint: Some(encode(&input)?),
                     outs: Vec::new(),
                     wait: Wait::Approval(IntentId::try_from(approval_intent(approval))?),
                 },
@@ -158,7 +194,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
 /// Approval intent naming the executor's pending approval operation.
 #[must_use]
 pub fn approval_intent(operation: OperationId) -> String {
-    let mut text = String::with_capacity(41);
+    let mut text = String::with_capacity(37);
     text.push_str("tool:");
     for byte in operation.into_bytes() {
         for nibble in [byte >> 4, byte & 0x0f] {
