@@ -1,4 +1,7 @@
-//! Provider-owned pages with reversible eviction and one response in flight.
+//! Bounded view demand and provider-owned pages shared by client adapters.
+
+mod demand;
+pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
 use std::{
     collections::{BTreeSet, VecDeque},

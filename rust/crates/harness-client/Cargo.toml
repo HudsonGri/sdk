@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
 
+[dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+
 [dev-dependencies]
 proptest.workspace = true
 
