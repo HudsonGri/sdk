@@ -1,4 +1,4 @@
-import { HarnessClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+import { FileClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
 
 const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
 const encoder = new TextEncoder(), decoder = new TextDecoder();
@@ -13,7 +13,7 @@ export async function test(endpoint: string) {
   const local = await WasmStream.openBrowser(`remote-client-${crypto.randomUUID()}`, 64, 131072n);
   const outbox = await TaskVolume.create(local, "client/files");
   const target = await TaskVolume.create(remote, "agent/files");
-  const client = await HarnessClient.open(outbox, target, limits);
+  const client = await FileClient.open(outbox, target, limits);
   const query = await ClientQuery.open(target, "Root", null, queryLimits);
   const views = query.views();
   const cancel = Promise.withResolvers<void>();
@@ -53,7 +53,7 @@ export async function test(endpoint: string) {
   assert(client.lastError()?.kind === "Rejected", "terminal rejection was not reported and retired");
   assert(client.pending() === 0, "terminal rejection stranded the next request");
   client.free();
-  const restored = await HarnessClient.open(outbox, target, limits);
+  const restored = await FileClient.open(outbox, target, limits);
   assert(restored.pending() === 0, "reopening resurrected retired requests");
   // A failed unary request cannot strand pending work behind an otherwise healthy socket.
   const beforeRetry = await (await fetch(`${endpoint}/fixture/connections`)).text();
@@ -65,7 +65,7 @@ export async function test(endpoint: string) {
   // Drain only on a pushed durability watermark, after the final data was consumed.
   const durableTarget = await TaskVolume.create(remote, "durable/files");
   const durableOutbox = await TaskVolume.create(local, "durable-outbox/files");
-  const durableClient = await HarnessClient.open(durableOutbox, durableTarget, { ...limits, durability: "Durable" });
+  const durableClient = await FileClient.open(durableOutbox, durableTarget, { ...limits, durability: "Durable" });
   await durableClient.enqueue(request("saved"), command("saved"));
   let awaitingDurability = false;
   try { await durableClient.flush(); } catch { awaitingDurability = true; }
@@ -82,7 +82,7 @@ export async function test(endpoint: string) {
   // checkpoint. Both waits must wake through the outbox's session follow.
   const remoteOutbox = await TaskVolume.create(remote, "remote-outbox/files");
   const localTarget = await TaskVolume.create(local, "local-target/files");
-  const remoteOutboxClient = await HarnessClient.open(remoteOutbox, localTarget, { ...limits, durability: "Durable" });
+  const remoteOutboxClient = await FileClient.open(remoteOutbox, localTarget, { ...limits, durability: "Durable" });
   const checkpointQuery = await ClientQuery.open(remoteOutbox, "Root", null, queryLimits);
   const checkpointed = Promise.withResolvers<void>();
   const stopCheckpoint = Promise.withResolvers<void>();
@@ -111,7 +111,7 @@ export async function test(endpoint: string) {
   assert((await remoteOutbox.head()).position === checkpointCut, "durability retry appended another checkpoint");
   stopCheckpoint.resolve(); await watchingCheckpoint;
   remoteOutboxClient.free(); checkpointQuery.free();
-  const reopenedOutbox = await HarnessClient.open(remoteOutbox, localTarget, { ...limits, durability: "Durable" });
+  const reopenedOutbox = await FileClient.open(remoteOutbox, localTarget, { ...limits, durability: "Durable" });
   assert(reopenedOutbox.pending() === 0, "reopen resurrected a durably saved outbox request");
   reopenedOutbox.free(); remoteOutbox.free(); localTarget.free();
   const chunk = { Task: { task: "task", file: { Chunk: { turn: 9007199254740993n, sequence: 1n } } } } as const;
