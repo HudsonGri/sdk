@@ -21,6 +21,7 @@ use crate::{
     projection::SelectedModelContext,
     runtime::ContentBindings,
 };
+use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
 use futures::TryStreamExt;
@@ -41,6 +42,8 @@ pub struct TurnAuthority {
     /// Reader of files under `scope` and writer of the private volume, for
     /// model content, tool inputs and the turn's own output.
     pub content: ContentBindings,
+    /// Approval gate of the agent's policy file; without one every tool runs.
+    pub approval: Option<Arc<dyn crate::runtime::ToolPolicy>>,
 }
 
 /// Builds the executor of one agent turn: its tools, context, policy, limits
@@ -77,6 +80,7 @@ pub struct FilesystemTurnHost<P, A: 'static, O: 'static> {
     executors: Arc<dyn TurnExecutors>,
     schemas: SchemaRegistry,
     limits: TurnLimits,
+    approvers: crate::approvals::ApproverModels,
 }
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
@@ -102,13 +106,73 @@ where
             executors,
             schemas: SchemaRegistry::new(),
             limits,
+            approvers: Default::default(),
         }
+    }
+
+    /// Binds the independent models that `llm` approval stages name.
+    #[must_use]
+    pub fn with_approvers(mut self, approvers: crate::approvals::ApproverModels) -> Self {
+        self.approvers = approvers;
+        self
+    }
+
+    /// `agent`'s approval policy, the parent answering its parent stages, and
+    /// the approval files on its private volume.
+    async fn approvals(
+        &self,
+        agent: &AgentState,
+        content: &ContentBindings,
+    ) -> Result<(AgentApprovalPolicy, Option<ApprovalPolicy>)> {
+        let policy = match &agent.policy {
+            Some(file) => {
+                let bytes = content
+                    .reader
+                    .read(file, self.limits.maximum_bytes, None, None)?
+                    .await?;
+                Some(
+                    crate::contract::json_from_slice::<ApprovalPolicy>(&bytes)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                )
+            }
+            None => None,
+        };
+        let limits = crate::conversation::Limits {
+            file_bytes: self.limits.maximum_bytes,
+            ..crate::conversation::Limits::default()
+        };
+        let bound = AgentApprovalPolicy::new(
+            policy.clone(),
+            agent.parent.as_ref().map(crate::agent::AgentPath::id),
+            self.approvers.clone(),
+            limits,
+        )?;
+        Ok((bound, policy))
+    }
+
+    /// `responder` decides approval `id` of `agent`. On success the caller
+    /// appends `InboxRecord::Approval { id }` to the agent's inbox to resume it.
+    pub async fn decide(
+        &self,
+        agent: &AgentState,
+        id: &str,
+        responder: crate::approvals::ApprovalResponder<'_>,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<()> {
+        let (_, authority, files) = self.journal(agent)?;
+        let (policy, _) = self.approvals(agent, &authority.content).await?;
+        crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
     }
 
     fn journal(
         &self,
         agent: &AgentState,
-    ) -> Result<(FilesystemExecutionJournal<P, A, O>, TurnAuthority)> {
+    ) -> Result<(
+        FilesystemExecutionJournal<P, A, O>,
+        TurnAuthority,
+        Arc<dyn crate::approvals::ApprovalFiles>,
+    )> {
         let owner = crate::AgentId::from_bytes(agent.path.id().to_bytes());
         let private = agent
             .volumes
@@ -124,7 +188,8 @@ where
             kind: AggregateKind::Conversation,
             id: agent.path.id().as_str().to_owned(),
         });
-        let mut grants = Vec::with_capacity(2 * agent.volumes.len());
+        let mut grants = Vec::with_capacity(2 * agent.volumes.len() + 1);
+        grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
         for binding in &agent.volumes {
             grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
             grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
@@ -160,6 +225,18 @@ where
             },
         )?
         .with_input_verifier(reader.clone());
+        let approvals = super::agent_approvals::AgentApprovalFiles::new(
+            Arc::clone(&self.host),
+            private.volume.clone(),
+            crate::conversation::ContentGrant::verify(
+                &verifier,
+                &scope,
+                &private.volume,
+                VolumeOperation::Write,
+                u64::MAX,
+                &mut None,
+            )?,
+        );
         Ok((
             journal,
             TurnAuthority {
@@ -170,7 +247,9 @@ where
                     reader,
                     writer: Some(writer),
                 },
+                approval: None,
             },
+            Arc::new(approvals),
         ))
     }
 
@@ -275,8 +354,15 @@ where
         stop: Arc<TurnStop>,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
-            let (journal, authority) = self.journal(agent)?;
-            let journal = journal.with_stop(stop);
+            let (journal, mut authority, files) = self.journal(agent)?;
+            let (policy, configured) = self.approvals(agent, &authority.content).await?;
+            authority.approval = configured
+                .map(|policy| policy.bind().map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>))
+                .transpose()?;
+            let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
+            let journal = journal
+                .with_stop(stop)
+                .with_agent_approvals(Arc::clone(&approvals));
             let history = self.history(agent).await?;
             let selected = select(agent, &journal, history, turn, input).await?;
             let journal = match &selected {
@@ -292,6 +378,7 @@ where
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
                 selected,
+                approvals: Some(approvals),
             })
         })
     }

@@ -7,7 +7,8 @@
 //! cursor): one [`ConversationEntry`] naming the turn's input and its staged output.
 
 use super::{
-    AgentOutcome, AgentPath, AgentRecord, AgentState, Error, InboxRecord, IntentId, Out,
+    AgentOutcome, AgentPath, AgentRecord, AgentState, ApprovalRequested, Error, InboxRecord,
+    IntentId, Out,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
 };
 use crate::{
@@ -38,6 +39,8 @@ pub struct OpenTurn {
     /// The agent's prior conversation and this input, as the one selection the
     /// journal admits; `None` for a turn without history.
     pub selected: Option<crate::projection::SelectedModelContext>,
+    /// Owner of the turn's approval files; `None` when the host runs no approvals.
+    pub approvals: Option<Arc<crate::approvals::AgentApprovals>>,
 }
 
 /// Host binding of agent turns to an executor and journal.
@@ -253,11 +256,31 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         wait,
                     }
                 }
-                ExecutionProgress::Pending(approval) => TurnStep {
-                    checkpoint: Some(encode(&input)?),
-                    outs: Vec::new(),
-                    wait: Wait::Approval(IntentId::try_from(approval_intent(approval))?),
-                },
+                ExecutionProgress::Pending(approval) => {
+                    // The approval owner names the request the turn waits on;
+                    // a host without one waits on the pending operation.
+                    let (id, parent) = match open.approvals.as_ref().and_then(|a| a.pending()) {
+                        Some((request, parent)) => (request, parent),
+                        None => (approval_intent(approval), false),
+                    };
+                    let id = IntentId::try_from(id)?;
+                    // A parent stage asks the parent in the same commit as the pause.
+                    let outs = match &agent.parent {
+                        Some(to) if parent => vec![Out::Send {
+                            to: to.clone(),
+                            record: InboxRecord::ApprovalRequested(ApprovalRequested {
+                                child: agent.path.clone(),
+                                id: id.clone(),
+                            }),
+                        }],
+                        _ => Vec::new(),
+                    };
+                    TurnStep {
+                        checkpoint: Some(encode(&input)?),
+                        outs,
+                        wait: Wait::Approval(id),
+                    }
+                }
                 ExecutionProgress::Rejected(reason) => failed(&format!("approval {reason}")),
                 ExecutionProgress::Failed(kind) => failed(kind.message()),
                 ExecutionProgress::PreDispatchFailed(failure) => failed(failure.message()),
