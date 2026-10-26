@@ -154,16 +154,29 @@ def admit_archive(records, archive, expected_sha256, *, required_members=None):
         folded.add(name.casefold())
     if not re.fullmatch("[0-9a-f]{64}", expected_sha256) or digest(archive) != expected_sha256:
         raise ValueError("Fetched archive SHA-256 mismatch")
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        names = [member.name for member in members]
-        if len(names) != len({name.casefold() for name in names}) or names.count("manifest.json") != 1:
-            raise ValueError("Duplicate member or missing export manifest")
-        for member in members:
+    # Gzip seeks restart decompression. Read each member exactly once rather
+    # than enumerating to EOF and seeking back for manifests and payloads.
+    inventory, documents, names = {}, {}, set()
+    with tarfile.open(archive, "r|gz") as tar:
+        for member in tar:
             materializer.member_path(member.name)
             if not member.isfile():
                 raise ValueError("Unexpected non-file archive member: " + member.name)
-        manifest = json.load(tar.extractfile("manifest.json"))
+            folded_name = member.name.casefold()
+            if folded_name in names:
+                raise ValueError("Duplicate member or missing export manifest")
+            names.add(folded_name)
+            with tar.extractfile(member) as stream:
+                if member.name in ("manifest.json", "host-receipt.json"):
+                    data = stream.read()
+                    actual = hashlib.sha256(data).hexdigest()
+                    documents[member.name] = json.loads(data)
+                else:
+                    actual = hashlib.file_digest(stream, "sha256").hexdigest()
+            inventory[member.name] = dict(sha256=actual, bytes=member.size)
+        if "manifest.json" not in documents:
+            raise ValueError("Duplicate member or missing export manifest")
+        manifest = documents["manifest.json"]
         allowed = {"bin/" + row["name"]: row["sha256"] for row in manifest["artifacts"]}
         allowed.update({"bin/" + name: row["sha256"] for name, row in manifest["dlls"].items()})
         allowed.update({"source/" + name: value for name, value in manifest["source"].items()})
@@ -177,25 +190,20 @@ def admit_archive(records, archive, expected_sha256, *, required_members=None):
             for path, checksum in host["receipt"]["source"].items():
                 if manifest["source"].get(path) != checksum:
                     raise ValueError("Process host source differs from the exported graph: " + path)
-        if not set(allowed).issubset(names):
+        if not set(allowed).issubset(inventory):
             raise ValueError("Incomplete artifact/fixture fetch")
         for name, expected in requirements.items():
             if allowed.get(name) != expected:
                 raise ValueError("Export step=selected-input-admission missing or stale member: " + name
                                  + "; recovery=fetch the complete source-matched producer export before launching cases")
-        if "process_host" in manifest and json.load(tar.extractfile("host-receipt.json")) != manifest["process_host"]["receipt"]:
+        if "process_host" in manifest and documents.get("host-receipt.json") != manifest["process_host"]["receipt"]:
             raise ValueError("Process host receipt differs from the export manifest")
-        inventory = {}
-        for member in members:
-            name = member.name
+        for name, row in inventory.items():
             if name != "manifest.json" and name not in allowed and not re.fullmatch(
                     r"logs/\.bb-win-test-[a-f0-9]+-[A-Za-z0-9_-]+\.jsonl", name):
                 raise ValueError("Unexpected archive member: " + name)
-            with tar.extractfile(member) as stream:
-                actual = hashlib.file_digest(stream, "sha256").hexdigest()
-            if name in allowed and actual != allowed[name]:
+            if name in allowed and row["sha256"] != allowed[name]:
                 raise ValueError("Fetched file SHA-256 mismatch: " + name)
-            inventory[name] = dict(sha256=actual, bytes=member.size)
     # Recovery validates a complete immutable closure; it never adopts a
     # partially written file or resumes payload writes without reservation.
     for closure in sorted(records.glob("closure-*")):
