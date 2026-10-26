@@ -8,6 +8,7 @@
 use super::{
     AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase, Sender,
     StatusRecord, VolumeBinding,
+    kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
@@ -21,10 +22,6 @@ use std::{
 pub const MAX_OPEN_CHILDREN: usize = 256;
 /// Most queued inputs waiting for the turn.
 pub const MAX_QUEUED: usize = 256;
-/// Most archive requests sent to children in one step; the rest continue on the alarm.
-pub const MAX_FANOUT: usize = 32;
-/// Alarm deadline that is due immediately: continue in a fresh step.
-pub const CONTINUE_NOW: u64 = 1;
 
 /// Input queued for the turn, in inbox order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,7 +213,7 @@ pub enum Wake {
 pub enum Alarm {
     /// No alarm.
     Clear,
-    /// Fire at this Unix millisecond deadline ([`CONTINUE_NOW`] fires at once).
+    /// Fire at this Unix millisecond deadline ([`super::CONTINUE_NOW`] fires at once).
     At(u64),
 }
 
@@ -232,7 +229,7 @@ pub struct Step {
     pub alarm: Alarm,
 }
 
-/// Runs one step for `wake`.
+/// Runs one step for `wake`. Every control decision is made by [`kernel`].
 ///
 /// `state` is `None` only for the first delivery, which must be `ForkAdopted`.
 pub async fn step<T: TurnDriver + ?Sized>(
@@ -243,32 +240,38 @@ pub async fn step<T: TurnDriver + ?Sized>(
     wake: Wake,
 ) -> Result<Step, Error> {
     let mut outs = Vec::new();
-    let (mut state, input) = match (state, wake) {
+    let alarm_wake = matches!(wake, Wake::Alarm);
+    let mut state = match (state, wake) {
         (None, Wake::Inbox { record: InboxRecord::ForkAdopted(adopted), .. }) => {
             if adopted.agent != path.id() {
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
-            let state = AgentState::adopted(path.clone(), &adopted);
-            (state, adopted.brief.map(|brief| TurnInput::Brief { brief }))
+            let mut state = AgentState::adopted(path.clone(), &adopted);
+            state
+                .queued
+                .extend(adopted.brief.map(|brief| TurnInput::Brief { brief }));
+            state
         }
         (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
-        (Some(state), Wake::Alarm) => (state, None),
+        (Some(state), Wake::Alarm) => state,
         (Some(state), Wake::Inbox { record, .. }) => admit(state, record)?,
     };
     let previous = state.phase.clone();
-    if let Some(input) = input {
-        if state.queued.len() >= MAX_QUEUED {
-            return Err(Error::Record("agent input queue is full"));
-        }
-        state.queued.push_back(input);
-    }
-    let mut alarm = Alarm::Clear;
     if state.closed {
-        alarm = cascade(&mut state, &mut outs)?;
-    } else if let Some(wait) = run(driver, &mut state, cursor, &mut outs).await? {
-        alarm = settle(&mut state, wait, &mut outs);
+        cascade(&mut state, &mut outs)?;
+    } else {
+        run(driver, &mut state, cursor, alarm_wake, &mut outs).await?;
     }
     track_children(&mut state, &outs)?;
+    let alarm = match kernel::alarm(
+        control(&state),
+        !state.queued.is_empty(),
+        approval_position(&state).is_some(),
+        state.archive_pending.len(),
+    ) {
+        Some(deadline) => Alarm::At(deadline),
+        None => Alarm::Clear,
+    };
     let status = (state.phase != previous).then(|| StatusRecord {
         phase: state.phase.clone(),
         cursor,
@@ -287,13 +290,44 @@ pub async fn step<T: TurnDriver + ?Sized>(
     })
 }
 
-/// Folds a non-turn record into the state; returns the turn input it carries.
-fn admit(
-    mut state: AgentState,
-    record: InboxRecord,
-) -> Result<(AgentState, Option<TurnInput>), Error> {
-    let input = match record {
+fn control(state: &AgentState) -> Control {
+    Control {
+        mode: match &state.phase {
+            Phase::Idle => Mode::Idle,
+            Phase::Running => Mode::Running,
+            Phase::WaitingApproval { .. } => Mode::Approval,
+            Phase::WaitingAlarm { deadline_unix_ms } => Mode::Alarm(*deadline_unix_ms),
+            Phase::Done { .. } => Mode::Done,
+        },
+        closed: state.closed,
+        reported: state.reported,
+        turn: state.turn.is_some(),
+    }
+}
+
+/// Folds one inbox record into the state.
+fn admit(mut state: AgentState, record: InboxRecord) -> Result<AgentState, Error> {
+    let kind = match &record {
         InboxRecord::ForkAdopted(_) => return Err(Error::Record("agent adopted twice")),
+        InboxRecord::Cancel(_) => Admit::Cancel,
+        InboxRecord::Archive(_) => Admit::Archive,
+        _ => Admit::Input,
+    };
+    let admitted = kernel::admit(control(&state), kind);
+    if admitted.clear_queue {
+        state.queued.clear();
+    }
+    if !admitted.control.turn {
+        state.turn = None;
+    }
+    if admitted.control.mode == Mode::Idle {
+        state.phase = Phase::Idle;
+    }
+    if kind == Admit::Archive {
+        state.archive_pending.clone_from(&state.open_children);
+    }
+    state.closed = admitted.control.closed;
+    let input = match record {
         InboxRecord::Message(message) => Some(TurnInput::Message {
             from: message.from,
             id: message.id,
@@ -302,7 +336,7 @@ fn admit(
         InboxRecord::ChildDone(done) => {
             state.open_children.remove(&done.child);
             state.archive_pending.remove(&done.child);
-            (!state.closed).then_some(TurnInput::ChildDone { done })
+            Some(TurnInput::ChildDone { done })
         }
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
         InboxRecord::ApprovalRequested(request) => Some(TurnInput::ApprovalRequested {
@@ -314,126 +348,101 @@ fn admit(
             id: hook.id,
             event: hook.event,
         }),
-        InboxRecord::Cancel(_) => {
-            state.turn = None;
-            state.queued.clear();
-            if !matches!(state.phase, Phase::Done { .. }) {
-                state.phase = Phase::Idle;
-            }
-            None
-        }
-        InboxRecord::Archive(_) => {
-            state.closed = true;
-            state.turn = None;
-            state.queued.clear();
-            state.archive_pending = state.open_children.clone();
-            None
-        }
+        InboxRecord::ForkAdopted(_) | InboxRecord::Cancel(_) | InboxRecord::Archive(_) => None,
     };
-    if state.closed {
-        return Ok((state, None));
+    if let Some(input) = input.filter(|_| admitted.enqueue) {
+        if state.queued.len() >= MAX_QUEUED {
+            return Err(Error::Record("agent input queue is full"));
+        }
+        state.queued.push_back(input);
     }
-    Ok((state, input))
+    Ok(state)
 }
 
-/// Runs at most one turn step. Returns `None` when there was nothing to run.
+/// Position of the queued response to the approval the turn waits for.
+fn approval_position(state: &AgentState) -> Option<usize> {
+    let Phase::WaitingApproval { id } = &state.phase else {
+        return None;
+    };
+    state
+        .queued
+        .iter()
+        .position(|input| matches!(input, TurnInput::Approval { id: queued } if queued == id))
+}
+
+/// Runs at most one turn step, as chosen by [`kernel::pick`].
 async fn run<T: TurnDriver + ?Sized>(
     driver: &T,
     state: &mut AgentState,
     cursor: u64,
+    alarm_wake: bool,
     outs: &mut Vec<Out>,
-) -> Result<Option<Wait>, Error> {
-    if matches!(state.phase, Phase::Done { .. }) {
-        state.queued.clear();
-        return Ok(None);
-    }
-    let input = match &state.phase {
-        // A waiting turn resumes only on its own approval; other input queues.
-        Phase::WaitingApproval { id } => {
-            let Some(position) = state
-                .queued
-                .iter()
-                .position(|input| matches!(input, TurnInput::Approval { id: queued } if queued == id))
-            else {
-                return Ok(None);
-            };
-            state.queued.remove(position)
-        }
-        Phase::Running | Phase::WaitingAlarm { .. } if state.turn.is_some() => None,
-        _ => match state.queued.pop_front() {
-            Some(input) => Some(input),
-            None => return Ok(None),
-        },
+) -> Result<(), Error> {
+    let approval = approval_position(state);
+    let input = match kernel::pick(
+        control(state),
+        alarm_wake,
+        !state.queued.is_empty(),
+        approval.is_some(),
+    ) {
+        Pick::Nothing => return Ok(()),
+        Pick::Resume => None,
+        Pick::Front => state.queued.pop_front(),
+        Pick::Approval => approval.and_then(|position| state.queued.remove(position)),
     };
     let turn = driver.step(state, cursor, input).await?;
     outs.extend(turn.outs);
-    state.turn = match turn.wait {
-        Wait::Input | Wait::Done(_) => None,
-        _ => turn.checkpoint,
+    let (wait, approval, outcome) = match turn.wait {
+        Wait::Continue => (kernel::Wait::Continue, None, None),
+        Wait::Approval(id) => (kernel::Wait::Approval, Some(id), None),
+        Wait::Until(deadline) => (kernel::Wait::Until(deadline), None, None),
+        Wait::Input => (kernel::Wait::Input, None, None),
+        Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
     };
-    Ok(Some(turn.wait))
-}
-
-/// Publishes the phase implied by `wait` and the desired alarm.
-fn settle(state: &mut AgentState, wait: Wait, outs: &mut Vec<Out>) -> Alarm {
-    match wait {
-        Wait::Continue => {
-            state.phase = Phase::Running;
-            Alarm::At(CONTINUE_NOW)
-        }
-        Wait::Approval(id) => {
-            state.phase = Phase::WaitingApproval { id };
-            Alarm::Clear
-        }
-        Wait::Until(deadline_unix_ms) => {
-            state.phase = Phase::WaitingAlarm { deadline_unix_ms };
-            Alarm::At(deadline_unix_ms.max(CONTINUE_NOW))
-        }
-        Wait::Input => {
-            state.phase = Phase::Idle;
-            if state.queued.is_empty() {
-                Alarm::Clear
-            } else {
-                Alarm::At(CONTINUE_NOW)
+    let (next, send) = kernel::settle(control(state), wait);
+    state.turn = next.turn.then(|| turn.checkpoint.unwrap_or_default());
+    state.reported = next.reported;
+    state.phase = match (next.mode, approval, outcome) {
+        (Mode::Running, ..) => Phase::Running,
+        (Mode::Approval, Some(id), _) => Phase::WaitingApproval { id },
+        (Mode::Alarm(deadline_unix_ms), ..) => Phase::WaitingAlarm { deadline_unix_ms },
+        (Mode::Done, _, Some(outcome)) => {
+            state.queued.clear();
+            if send {
+                report(state, outcome.clone(), outs);
             }
+            Phase::Done { outcome }
         }
-        Wait::Done(outcome) => {
-            report(state, outcome, outs);
-            Alarm::Clear
-        }
-    }
+        _ => Phase::Idle,
+    };
+    Ok(())
 }
 
 /// Archive cascade: bounded fan-out to open children, then one report upward.
-fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<Alarm, Error> {
-    let batch: Vec<AgentPath> = state.archive_pending.iter().take(MAX_FANOUT).cloned().collect();
-    for child in batch {
-        state.archive_pending.remove(&child);
+fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Error> {
+    let step = kernel::cascade(control(state), state.archive_pending.len());
+    let id = IntentId::try_from(format!("cascade:{}", state.path.id()))?;
+    for _ in 0..step.archive {
+        let Some(child) = state.archive_pending.pop_first() else {
+            break;
+        };
         outs.push(Out::Archive {
-            id: IntentId::try_from(format!("cascade:{}", state.path.id()))?,
+            id: id.clone(),
             target: child,
         });
     }
-    if !state.archive_pending.is_empty() {
-        return Ok(Alarm::At(CONTINUE_NOW));
-    }
-    if !state.reported {
+    state.reported = step.control.reported;
+    if step.report {
+        state.phase = Phase::Done {
+            outcome: AgentOutcome::Archived,
+        };
         report(state, AgentOutcome::Archived, outs);
     }
-    Ok(Alarm::Clear)
+    Ok(())
 }
 
-/// Terminal: publish `Done` and send `ChildDone` to the parent exactly once.
-fn report(state: &mut AgentState, outcome: AgentOutcome, outs: &mut Vec<Out>) {
-    state.phase = Phase::Done {
-        outcome: outcome.clone(),
-    };
-    state.queued.clear();
-    state.turn = None;
-    if state.reported {
-        return;
-    }
-    state.reported = true;
+/// Sends `ChildDone` to the parent; called only when the kernel reports.
+fn report(state: &AgentState, outcome: AgentOutcome, outs: &mut Vec<Out>) {
     if let Some(parent) = &state.parent {
         outs.push(Out::Send {
             to: parent.clone(),
