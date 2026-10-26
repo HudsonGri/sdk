@@ -6,7 +6,7 @@
 
 use acyclic_harness::{
     agent::{AgentPath, AgentRecord as _, ConversationEntry, StatusRecord},
-    client::{AgentClient, AgentClientError, AgentEvent, AgentSelection, WireSessionError},
+    client::{AgentClient, AgentClientError, AgentEvent, AgentSelection, DemandError, WireSessionError},
 };
 use acyclic_stream::{StreamProvider, session::Client};
 use serde::{Deserialize, Serialize};
@@ -114,11 +114,14 @@ pub async fn verify<P: StreamProvider + ?Sized>(
         return Err(failure("retain_selection", "unchanged demand reset the fold or cursor"));
     }
     // Deliberately over-budget input is refused before any demand mutation.
+    let composition = client.session().revision();
     match client.set_view(selection(), std::iter::repeat_with(selection).take(AgentClient::selected_capacity())) {
-        Err(AgentClientError::Session(WireSessionError::Demand(_))) => {}
+        Err(AgentClientError::Session(WireSessionError::Demand(DemandError::SelectedCapacity))) => {}
         result => return Err(failure("atomic_capacity_refusal", format!("unexpected {result:?}"))),
     }
-    if client.conversation().next_sequence() != cursor || client.selected_agents().count() != 1 {
+    if client.conversation().next_sequence() != cursor || client.selected_agents().count() != 1
+        || client.agent() != &fixture.agent || client.session().revision() != composition
+    {
         return Err(failure("atomic_capacity_refusal", "refusal changed admitted demand"));
     }
     let unknown = match fixture.agent.parent() {

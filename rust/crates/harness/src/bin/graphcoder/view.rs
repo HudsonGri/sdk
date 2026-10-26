@@ -145,7 +145,10 @@ pub async fn run(
                     let id = IntentId::try_from(OperationId::new().to_string())?;
                     match client.prompt(&id, &prompt).await? {
                         Delivered::Committed { inbox } => pending = Some((id, inbox)),
-                        Delivered::Closed => renderer.notice("The selected agent is closed."),
+                        Delivered::Closed => {
+                            input.set_chat_draft(&text);
+                            renderer.notice("The selected agent is closed. Your prompt remains in the editor.");
+                        }
                     }
                 }
                 InputEffect::Quit => return Ok(client::HeadlessOutcome::Completed),
