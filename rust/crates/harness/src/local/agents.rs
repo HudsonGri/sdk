@@ -118,8 +118,15 @@ impl LocalHarness {
     /// Send `prompt` to the root agent as message `id`: one staged body file
     /// on its private volume, then one inbox commit. Retrying the same `id`
     /// with the same prompt replays exactly.
-    pub async fn prompt(self: &Arc<Self>, id: &IntentId, prompt: &str) -> Result<Delivered> {
-        let (agents, root) = self.agents().await?;
+    /// An uncertain inbox commit returns `agent::Error::Unknown` with its exact
+    /// request; retain it and settle it through `agent::submit`.
+    pub async fn prompt(
+        self: &Arc<Self>,
+        id: &IntentId,
+        prompt: &str,
+    ) -> std::result::Result<Delivered, crate::agent::Error> {
+        let preparation = |error| crate::agent::Error::Turn(Box::new(error));
+        let (agents, root) = self.agents().await.map_err(preparation)?;
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.prompt.v1");
         hasher.update(root.as_str().as_bytes());
         hasher.update(&[0]);
@@ -128,7 +135,8 @@ impl LocalHarness {
         hasher.finalize_xof().fill(&mut bytes);
         let operation = OperationId::from_bytes(bytes);
         let body = self
-            .input_publisher_with_limit(self.limits.file_bytes)?
+            .input_publisher_with_limit(self.limits.file_bytes)
+            .map_err(preparation)?
             .stage_once(
                 operation,
                 &format!("inputs/{operation}.txt"),
@@ -136,8 +144,10 @@ impl LocalHarness {
                 "text/plain",
                 "prompt",
                 ContentAccess::default(),
-            )?
-            .await?
+            )
+            .map_err(preparation)?
+            .await
+            .map_err(preparation)?
             .0;
         let from = Sender::User {
             principal: "local".into(),
@@ -147,7 +157,7 @@ impl LocalHarness {
             id: id.clone(),
             body: Box::new(body),
         });
-        agents.send(root, &from, &message).await.map_err(storage)
+        agents.send(root, &from, &message).await
     }
 
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
@@ -169,8 +179,8 @@ impl LocalHarness {
             Arc::new(Executors(Arc::downgrade(self))),
             limits,
         );
-        let within = ActorReference::new(b"local", b"agents", id.as_str().as_bytes())
-            .map_err(storage)?;
+        let within =
+            ActorReference::new(b"local", b"agents", id.as_str().as_bytes()).map_err(storage)?;
         let agents = Arc::new(
             AgentHost::new(
                 stream,
