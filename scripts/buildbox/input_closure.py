@@ -189,17 +189,28 @@ def snapshot(source,destination,digest):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='action',required=True)
-    check=sub.add_parser('validate');check.add_argument('--stage',choices=['client','bb2'],default='bb2')
-    check.add_argument('--root',default=os.getcwd());check.add_argument('--base');check.add_argument('argv',nargs=argparse.REMAINDER)
+    for action in ['validate', 'run']:
+        check=sub.add_parser(action);check.add_argument('--stage',choices=['client','bb2'],default='bb2')
+        check.add_argument('--root',default=os.getcwd());check.add_argument('--base');check.add_argument('argv',nargs=argparse.REMAINDER)
     for action in ['template','capture']:
         child=sub.add_parser(action);child.add_argument('--output',type=Path,required=True);child.add_argument('--base',default='none')
         if action=='capture':child.add_argument('--input',nargs=3,action='append',default=[],metavar=('ID','PATH','PRODUCER_JSON'))
     for action in ['restore','path']:
         child=sub.add_parser(action);child.add_argument('--manifest',type=Path,required=True);child.add_argument('--input',required=True)
     args=parser.parse_args()
-    if args.action=='validate':
+    if args.action in ['validate', 'run']:
         argv=args.argv[1:] if args.argv[:1]==['--'] else args.argv
+        if args.action == 'run' and not command(argv):
+            raise InputRefusal('command', 'run requires the exact consuming argv',
+                               [sys.executable, '-B', str(HERE), 'run', '--help'])
         proof=admit(argv or ['opaque-job'],root=args.root,base=args.base,stage=args.stage)
+        if args.action == 'run':
+            # One public boundary, including for callers whose installed host
+            # generation predates automatic prerequisite admission. Never
+            # contaminate a JSON/binary child's stdout with wrapper protocol.
+            print('BB_INPUTS_ADMITTED '+json.dumps(proof,sort_keys=True),file=sys.stderr,flush=True)
+            os.chdir(os.environ[ROOT_ENV])
+            os.execvpe(argv[0],argv,os.environ)
         print(json.dumps({'proof':proof,'declaration':json.loads(os.environ[ENV])}))
     elif args.action=='template':
         # Incomplete by construction: generating a template cannot assert that

@@ -48,6 +48,43 @@ class InputClosureTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location(name,HERE/file)
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
+    def test_public_run_refuses_missing_or_changed_input_before_any_child(self):
+        marker=self.root/'launched'
+        child=[sys.executable,'-c','from pathlib import Path; Path("launched").write_text("executed")']
+        runner=[sys.executable,'-B',str(HERE/'input_closure.py'),'run','--root',str(self.root),'--base',BASE,'--',*child]
+        original=self.reference.read_bytes()
+        for missing in [True,False]:
+            if missing:self.reference.unlink()
+            else:self.reference.write_bytes(original+b'changed')
+            started=time.monotonic()
+            refused=subprocess.run(runner,cwd=self.root,env=self.env(),capture_output=True)
+            self.assertEqual(refused.returncode,224,refused.stderr)
+            self.assertLess(time.monotonic()-started,1)
+            self.assertIn(b'kind=INPUT_CLOSURE step=prerequisite-admission input=main-clippy',refused.stderr)
+            self.assertIn(b'recovery=',refused.stderr)
+            self.assertEqual(refused.stdout,b'')
+            self.assertFalse(marker.exists())
+            # Actual former entry point: launching the same command directly
+            # does not consult the missing/changed comparison prerequisite.
+            subprocess.run(child,cwd=self.root,env=self.clean_env,check=True)
+            self.assertTrue(marker.exists());marker.unlink()
+
+    def test_public_run_preserves_child_bytes_status_and_canonical_declaration(self):
+        child=[sys.executable,'-c',
+               'import os,sys,json; assert "BUILD_SLOT_INPUTS_FILE" not in os.environ; '
+               'assert json.loads(os.environ["BUILD_SLOT_INPUTS_JSON"])["base_sha"]==sys.argv[1]; '
+               'os.write(1,b"{\\\"child\\\":true}\\n\\x00"); os.write(2,b"child-stderr\\n"); sys.exit(int(sys.argv[2]))',BASE]
+        manifest=self.root/'inputs.json';manifest.write_text(json.dumps(self.value))
+        env={**self.clean_env,inputs.FILE_ENV:str(manifest)}
+        for status in [0,23]:
+            result=subprocess.run([sys.executable,'-B',str(HERE/'input_closure.py'),'run',
+                                   '--root',str(self.root),'--base',BASE,'--',*child,str(status)],
+                                  cwd=self.root,env=env,capture_output=True)
+            self.assertEqual(result.returncode,status,result.stderr)
+            self.assertEqual(result.stdout,b'{"child":true}\n\x00')
+            self.assertIn(b'BB_INPUTS_ADMITTED ',result.stderr)
+            self.assertTrue(result.stderr.endswith(b'child-stderr\n'))
+
     def test_deleted_plugins_reference_refuses_before_native_admission_in_under_a_second(self):
         source=(FIXTURE/'.bb-plugins-lifecycle-final.sh.txt').read_text()
         self.assertLess(source.index('cargo test --locked'),source.index('final-attested-clippy'))
