@@ -926,7 +926,7 @@ mod uniform_preparation_tests {
     use super::*;
 
     #[test]
-    fn universal_paths_never_prepare_an_nfa_and_keep_finite_work() {
+    fn universal_paths_keep_finite_work_and_corrupt_transitions_fail_closed() {
         let mut policy: Policy = serde_json::from_slice(super::super::INITIAL_POLICY).unwrap();
         let capability: Capability = serde_json::from_str(
             r#"{"layers":[[{"actions":["read","write","create"],"resource":{"lineage_root":null,"volume":null,"generations":"all","path":"**"}}]],"expires_at":null}"#,
@@ -976,5 +976,18 @@ mod uniform_preparation_tests {
         let view = result.unwrap();
         assert!(!prepared.is_empty());
         assert!(!view.decide(Action::Read, "b", 1).allowed);
+
+        // A compiled graph has only private, compiler-issued state indices.
+        // Even a corrupted edge must deny the entire subtree rather than
+        // panic or return permissions accumulated before reaching that edge.
+        assert_ne!(view.subtree_action_mask("", 1), 0);
+        let mut view = view;
+        let mut roots = 0;
+        for root in view.states.iter_mut().take(1) {
+            root.transitions.push(usize::MAX);
+            roots += 1;
+        }
+        assert_eq!(roots, 1);
+        assert_eq!(view.subtree_action_mask("", 1), 0);
     }
 }

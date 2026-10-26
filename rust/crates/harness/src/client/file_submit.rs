@@ -195,7 +195,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             let change = self
                 .buffered
                 .as_ref()
-                .expect("buffer filled before validation");
+                .ok_or_else(|| Error::Storage("outbox buffer missing before validation".into()))?;
             if let Some(write) = &change.file {
                 if !matches!(
                     write.key,
@@ -368,7 +368,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             let done = self
                 .pending
                 .retire_front()
-                .expect("front retained across publication");
+                .ok_or_else(|| Error::Storage("outbox front missing after publication".into()))?;
             self.cursor = done.cursor;
             if let Some(reason) = rejected {
                 return Err(FileClientError::Rejected {

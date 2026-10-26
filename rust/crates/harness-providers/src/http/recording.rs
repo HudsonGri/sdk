@@ -207,13 +207,7 @@ impl Capture {
                 ..Default::default()
             })?;
             if self.provenance.chunks.len() == self.provenance.chunks.capacity() {
-                let capacity = self
-                    .provenance
-                    .chunks
-                    .capacity()
-                    .checked_mul(2)
-                    .unwrap_or(usize::MAX)
-                    .max(4);
+                let capacity = self.provenance.chunks.capacity().saturating_mul(2).max(4);
                 let size = capacity.checked_mul(std::mem::size_of::<u64>()).ok_or_else(|| crate::invalid("STEP grow recording chunks failed; recovery: use a smaller provider exchange"))?;
                 let mut extra =
                     custody

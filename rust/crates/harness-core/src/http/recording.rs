@@ -113,17 +113,19 @@ impl Exchange {
                 directory.display()
             )));
         }
-        let mut offset = 0;
+        let mut remaining = response.as_slice();
         let chunks = provenance
             .chunks
             .iter()
             .map(|length| {
-                let end = offset + *length as usize;
-                let chunk = response[offset..end].to_vec();
-                offset = end;
-                chunk
+                let length = usize::try_from(*length).map_err(io::Error::other)?;
+                let (chunk, tail) = remaining
+                    .split_at_checked(length)
+                    .ok_or_else(|| io::Error::other("recorded chunk exceeds the response body"))?;
+                remaining = tail;
+                Ok(chunk.to_vec())
             })
-            .collect();
+            .collect::<io::Result<_>>()?;
         Ok(Self {
             provenance,
             request,
@@ -171,7 +173,11 @@ pub fn sha256_reader(mut input: impl Read) -> io::Result<String> {
         if n == 0 {
             break;
         }
-        digest.update(&buffer[..n]);
+        digest.update(
+            buffer
+                .get(..n)
+                .ok_or_else(|| io::Error::other("reader exceeded its buffer"))?,
+        );
     }
     Ok(digest.hex())
 }

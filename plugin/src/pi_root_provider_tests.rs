@@ -541,7 +541,7 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
                 }
                 2 => {
                     *invalid.pointer_mut("/scratch/workspace_id").unwrap() =
-                        serde_json::json!(vec![0u8; 16])
+                        serde_json::json!(vec![0u8; 16]);
                 }
                 _ => {
                     invalid

@@ -1148,14 +1148,14 @@ fn canonical_append_dispatch_frame_stays_bounded() {
         acyclic_fs::facade::LocalAuthorityBackend,
         acyclic_fs::facade::LocalObjectBackend,
     >;
-    fn size<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+    fn size<A, F: std::future::Future>(_: impl FnOnce(A) -> F) -> usize {
         std::mem::size_of::<F>()
     }
-    let arguments: Option<(&LocalJournal, OperationId, &str, &ExecutionEvent)> = None;
-    let bytes = size(|| {
-        let (journal, operation, key, event) = arguments.unwrap();
-        journal.append_with_chunks(operation, None, key, event, None)
-    });
+    let bytes = size(
+        |(journal, operation, key, event): (&LocalJournal, OperationId, &str, &ExecutionEvent)| {
+            journal.append_with_chunks(operation, None, key, event, None)
+        },
+    );
     eprintln!("canonical append dispatch future: {bytes} bytes");
     assert!(bytes <= 4096, "canonical append dispatch future: {bytes}");
 }

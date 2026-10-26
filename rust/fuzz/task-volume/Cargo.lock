@@ -199,6 +199,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "futures",
+ "hex",
  "http",
  "js-sys",
  "jsonschema",

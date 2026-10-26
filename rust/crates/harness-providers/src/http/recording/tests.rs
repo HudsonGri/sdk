@@ -3,15 +3,16 @@ use acyclic_harness_core::http::recording::Exchange;
 use futures::TryStreamExt as _;
 use std::{io::Read as _, net::TcpListener, sync::mpsc};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type EchoPeer = (
+    String,
+    mpsc::Sender<()>,
+    std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+);
 
 // A real loopback echo peer: response bytes come from the actual received POST,
 // not a fabricated provider stream. Capture provenance identifies this test binary
 // and source. Credentialed provider recordings are made by the coordinator.
-fn echo() -> TestResult<(
-    String,
-    mpsc::Sender<()>,
-    std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
-)> {
+fn echo() -> TestResult<EchoPeer> {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     let url = format!(
         "http://{}/v1/responses?credential=QUERY_SECRET",
@@ -45,10 +46,13 @@ fn echo() -> TestResult<(
             "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )?;
-        socket.write_all(&body[..1])?;
+        let (first, tail) = body
+            .split_at_checked(1)
+            .ok_or_else(|| std::io::Error::other("echo peer requires a nonempty body"))?;
+        socket.write_all(first)?;
         socket.flush()?;
         let _ = released.recv();
-        socket.write_all(&body[1..])?;
+        socket.write_all(tail)?;
         socket.flush()?;
         Ok(body)
     });
@@ -99,7 +103,10 @@ fn captured(root: &Path) -> TestResult<PathBuf> {
         .map(|e| e.map(|e| e.path()))
         .collect::<std::io::Result<Vec<_>>>()?;
     assert_eq!(paths.len(), 1);
-    Ok(paths[0].clone())
+    paths
+        .into_iter()
+        .next()
+        .ok_or_else(|| "capture missing".into())
 }
 #[tokio::test]
 async fn shared_transport_records_exact_chunks_redacts_all_headers_and_replays() -> TestResult {
@@ -163,7 +170,11 @@ async fn shared_transport_records_exact_chunks_redacts_all_headers_and_replays()
                 )?,
             )?;
             let script = harness_mock_model::load_script(&script)?;
-            let step = &script.cases["capture"].steps[0];
+            let step = script
+                .cases
+                .get("capture")
+                .and_then(|case| case.steps.first())
+                .ok_or("capture replay step missing")?;
             let bound = harness_mock_model::bind_result(step, &serde_json::json!({"input":[]}))?;
             assert_eq!(
                 bound.replay.as_ref().ok_or("replay missing")?.chunks(),

@@ -71,8 +71,7 @@ pub(super) fn record_digest<T: Serialize>(
 }
 
 pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: Serialize>(
-    host: &FilesystemHost<A, O>,
-    journal: &WorkspaceRef,
+    (host, journal): (&FilesystemHost<A, O>, &WorkspaceRef),
     path: &str,
     value: &T,
     maximum_bytes: u64,
@@ -103,8 +102,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
 }
 
 pub(super) async fn write_once<A, O, T>(
-    host: &FilesystemHost<A, O>,
-    journal: &WorkspaceRef,
+    (host, journal): (&FilesystemHost<A, O>, &WorkspaceRef),
     path: &str,
     value: &T,
     maximum: u64,
@@ -121,7 +119,7 @@ where
     if let Some(prior) = read_record(host, journal, path, maximum, io).await? {
         return Ok(prior);
     }
-    write_record(host, journal, path, value, maximum, key, io, preparation).await?;
+    write_record((host, journal), path, value, maximum, key, io, preparation).await?;
     read_record(host, journal, path, maximum, io)
         .await?
         .ok_or(Error::Indeterminate(operation))
@@ -336,8 +334,7 @@ mod tests {
         let first = Uuid::from_bytes([1; 16]);
         let second = Uuid::from_bytes([2; 16]);
         write_record(
-            &host,
-            &reference,
+            (&host, &reference),
             path,
             &first,
             4096,
@@ -347,8 +344,7 @@ mod tests {
         )
         .await?;
         write_record(
-            &host,
-            &reference,
+            (&host, &reference),
             path,
             &second,
             4096,

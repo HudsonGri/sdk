@@ -19,13 +19,21 @@ impl PathTrie {
         };
         let mut seen = vec![false; self.states.len()];
         let mut pending = vec![start];
-        seen[start] = true;
+        let Some(visited) = seen.get_mut(start) else {
+            return 0;
+        };
+        *visited = true;
         while let Some(state) = pending.pop() {
-            let node = &self.states[state];
+            let Some(node) = self.states.get(state) else {
+                return 0;
+            };
             actions |= node.actions;
             for &next in &node.transitions {
-                if !seen[next] {
-                    seen[next] = true;
+                let Some(visited) = seen.get_mut(next) else {
+                    return 0;
+                };
+                if !*visited {
+                    *visited = true;
                     pending.push(next);
                 }
             }

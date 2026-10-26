@@ -258,8 +258,9 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     let bare_bytes = serde_json::to_vec(&wrapped_invocation)
         .expect("fixture serialization")
         .len();
-    wrapped_invocation.arguments["data"] =
-        json!("x".repeat(limits.file_bytes as usize - bare_bytes));
+    let maximum = usize::try_from(limits.file_bytes)
+        .map_err(|_| Error::Invalid("fixture file bound exceeds usize".into()))?;
+    wrapped_invocation.arguments["data"] = json!("x".repeat(maximum - bare_bytes));
     assert_eq!(
         serde_json::to_vec(&wrapped_invocation)
             .expect("fixture serialization")

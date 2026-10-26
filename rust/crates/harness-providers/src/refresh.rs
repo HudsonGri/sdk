@@ -34,10 +34,10 @@ async fn execute<T, F: Copy>(
     operation: impl std::future::Future<Output = (T, Option<F>)>,
 ) -> Result<T, F> {
     let mut result = state.result.lock().await;
-    if state.generation.load(Ordering::Acquire) != generation {
-        if let Some(failure) = *result {
-            return Err(failure);
-        }
+    if state.generation.load(Ordering::Acquire) != generation
+        && let Some(failure) = *result
+    {
+        return Err(failure);
     }
     let (value, failure) = operation.await;
     *result = failure;

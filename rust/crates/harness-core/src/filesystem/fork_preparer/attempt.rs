@@ -350,8 +350,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         bounded_io::create(host, name, &creation, self.io, self.task_preparation).await?;
         let key = self.journal_key(request.operation_id, "claim")?;
         let prior = write_once(
-            host,
-            &journal,
+            (host, &journal),
             "/request.json",
             request,
             self.journal_limit(MAX_REQUEST_BYTES),
@@ -377,8 +376,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     ) -> Result<ForkReport> {
         let key = self.journal_key(report.request.operation_id, "report")?;
         let prior = write_once(
-            &self.preparer.host,
-            journal,
+            (&self.preparer.host, journal),
             "/report.json",
             report,
             self.journal_limit(MAX_REPORT_BYTES),

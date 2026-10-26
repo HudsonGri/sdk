@@ -95,7 +95,7 @@ mod digest_properties {
                     Ok(())
                 }));
             });
-            prop_assert_eq!(copied.unwrap().unwrap(), value.clone());
+            prop_assert_eq!(&copied.unwrap().unwrap(), &value);
             prop_assert!(operations >= measured.count_total);
             prop_assert!(operations <= measured.count_total + map_slack(&value));
             // Negative control: the previous buffer/string-only charges omit

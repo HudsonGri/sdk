@@ -625,8 +625,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
             })?)?;
             let prior = write_once(
-                self,
-                &journal,
+                (self, &journal),
                 "/seed.json",
                 &binding,
                 maximum_bytes,
@@ -684,8 +683,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
         })?)?;
         let prior = write_once(
-            self,
-            &journal,
+            (self, &journal),
             "/claim.json",
             &claim,
             maximum_bytes,

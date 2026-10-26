@@ -1,5 +1,7 @@
 use super::*;
 
+mod admission;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestBackedProjectionControl {

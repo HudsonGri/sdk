@@ -8,7 +8,7 @@ fn git(args: &[&str]) -> Option<String> {
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(loom)");
     println!("cargo:rerun-if-env-changed=ACYCLIC_PROVIDER_SOURCE_COMMIT");
     // Resolve real Git paths: a worktree's .git is a file, not a directory.
@@ -29,9 +29,11 @@ fn main() {
         && !((commit.len() == 40 || commit.len() == 64)
             && commit.bytes().all(|b| b.is_ascii_hexdigit()))
     {
-        panic!(
+        return Err(
             "STEP stamp provider source failed: invalid commit; recovery: unset ACYCLIC_PROVIDER_SOURCE_COMMIT and cargo build --locked -p acyclic-harness-providers"
+                .into(),
         );
     }
     println!("cargo:rustc-env=ACYCLIC_PROVIDER_SOURCE_COMMIT={commit}");
+    Ok(())
 }

@@ -385,15 +385,15 @@ impl DemandWork {
                 resource.remaining_into(None)?;
             }
         }
-        if let Some(remaining) = output {
-            if self.native_scope.recheck_items {
-                remaining.items_examined =
-                    resource.map_or(self.initial_budget.items_examined, |resource| {
-                        self.initial_budget
-                            .items_examined
-                            .min(resource.admitted_item_limit())
-                    });
-            }
+        if let Some(remaining) = output
+            && self.native_scope.recheck_items
+        {
+            remaining.items_examined =
+                resource.map_or(self.initial_budget.items_examined, |resource| {
+                    self.initial_budget
+                        .items_examined
+                        .min(resource.admitted_item_limit())
+                });
         }
         Ok(())
     }

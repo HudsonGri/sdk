@@ -145,14 +145,6 @@ where
             GitFilesystemAction::SwitchWorkspace { workspace_id } => {
                 BoundedContentFuture::new(None, || self.switch_workspace(workspace_id))?.await
             }
-            GitFilesystemAction::Diff {
-                from,
-                to,
-                tracked_paths,
-            } => {
-                BoundedContentFuture::new(None, || self.diff(from.as_ref(), to, tracked_paths))?
-                    .await
-            }
             GitFilesystemAction::RestoreGeneration { tree, paths } => {
                 BoundedContentFuture::new(None, || {
                     self.restore_generation(operation_id, tree, paths.as_ref())
@@ -196,16 +188,6 @@ where
             GitFilesystemAction::Archive { tree } => {
                 BoundedContentFuture::new(None, || self.archive(tree))?.await
             }
-            GitFilesystemAction::Grep {
-                pattern,
-                path,
-                tree,
-            } => {
-                BoundedContentFuture::new(None, || self.grep(pattern, path.as_deref(), tree))?.await
-            }
-            GitFilesystemAction::Blame { path, commits } => {
-                BoundedContentFuture::new(None, || self.blame(path, commits))?.await
-            }
             GitFilesystemAction::Clean {
                 dry_run,
                 tree,
@@ -218,6 +200,39 @@ where
             }
             GitFilesystemAction::ApplyPatch { patch } => {
                 BoundedContentFuture::new(None, || self.apply_patch(operation_id, patch))?.await
+            }
+            action => self.execute_read_action(action).await,
+        }
+    }
+}
+
+impl<F, Fut> WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
+    async fn execute_read_action(
+        &self,
+        action: &GitFilesystemAction,
+    ) -> Result<GitFilesystemResult, Error> {
+        match action {
+            GitFilesystemAction::Diff {
+                from,
+                to,
+                tracked_paths,
+            } => {
+                BoundedContentFuture::new(None, || self.diff(from.as_ref(), to, tracked_paths))?
+                    .await
+            }
+            GitFilesystemAction::Grep {
+                pattern,
+                path,
+                tree,
+            } => {
+                BoundedContentFuture::new(None, || self.grep(pattern, path.as_deref(), tree))?.await
+            }
+            GitFilesystemAction::Blame { path, commits } => {
+                BoundedContentFuture::new(None, || self.blame(path, commits))?.await
             }
             GitFilesystemAction::CheckIgnore { paths, tree } => {
                 BoundedContentFuture::new(None, || self.check_ignore(paths, tree))?.await

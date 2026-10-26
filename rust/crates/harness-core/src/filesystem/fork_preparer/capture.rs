@@ -52,8 +52,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 )
             })?)?;
             write_record(
-                host,
-                journal,
+                (host, journal),
                 &start,
                 &attempt,
                 maximum,
@@ -84,8 +83,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             )
         })?)?;
         let committed = write_once(
-            host,
-            journal,
+            (host, journal),
             &result,
             &captured,
             maximum,
