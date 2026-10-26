@@ -86,10 +86,17 @@ impl StreamView {
     pub fn watermarks(&self) -> StreamWatermarks { self.watermarks }
 
     fn check_watermarks(&self, accepted: u64, durable: u64) -> Result<(), StreamError> {
-        if durable > accepted || accepted < self.watermarks.accepted || durable < self.watermarks.durable {
+        if durable > accepted {
             return Err(StreamError::InvalidResponse);
         }
         Ok(())
+    }
+
+    fn advance_watermarks(&mut self, accepted: u64, durable: u64) {
+        // Control metadata can overtake a credit-blocked data envelope. Its
+        // older captured watermarks do not rewind the confirmed progress.
+        self.watermarks.accepted = self.watermarks.accepted.max(accepted);
+        self.watermarks.durable = self.watermarks.durable.max(durable);
     }
 
     pub(crate) fn apply(&mut self, frame: &wire::SessionFrame, revision: u64) -> Result<(), StreamError> {
@@ -123,7 +130,7 @@ impl StreamView {
                 self.bytes += charge;
                 self.next = next;
                 self.revision = revision;
-                self.watermarks = StreamWatermarks { accepted: data.accepted, durable: data.durable };
+                self.advance_watermarks(data.accepted, data.durable);
             }
             Some(wire::session_frame::Body::Watermark(mark)) => {
                 self.check_watermarks(mark.accepted, mark.durable)?;
@@ -131,7 +138,7 @@ impl StreamView {
                 if mark.after.as_ref().is_some_and(|after| after.next != self.next) {
                     return Err(StreamError::InvalidResponse);
                 }
-                self.watermarks = StreamWatermarks { accepted: mark.accepted, durable: mark.durable };
+                self.advance_watermarks(mark.accepted, mark.durable);
                 self.revision = revision;
             }
             _ => {}
