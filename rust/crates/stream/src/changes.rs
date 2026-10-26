@@ -1,6 +1,6 @@
 //! Canonical provider-authored change lists with entry-level follow projection.
 //!
-//! A change record stores each indexed key exactly once, in its value. Keys
+//! A v2 change record stores each indexed key exactly once, in its value. Keys
 //! are sorted and unique, so each one is stored as the length it shares with
 //! its predecessor followed by the rest of its bytes. In memory the record's
 //! headers carry the full keys for indexing and filtering; no wire or
@@ -11,8 +11,13 @@
 //! `context_len context count (shared suffix_len suffix op_len op meta_len meta)*`,
 //! where `shared` is the longest common prefix with the previous key, so one
 //! list has exactly one encoding.
+//!
+//! Retained v1 records use the original canonical protobuf ChangeRecord and
+//! indexed headers. Reading never rewrites either format or its retry identity.
 use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamError, wire};
 
+#[cfg(test)]
+mod golden;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(test)]
@@ -29,10 +34,35 @@ pub struct ChangeEntryRef<'a> {
 }
 
 const ATTRIBUTE: &str = "acyclic.record";
-const FORMAT: &[u8] = b"changes/v2";
+/// Marker emitted by the current change producer. Publication must be fenced
+/// until every applied voter advertises this marker in `READER_FORMATS`.
+/// A reader upgrade alone does not authorize a writer upgrade.
+pub const WRITER_FORMAT: &[u8] = b"changes/v2";
+
+/// Exact reserved markers this canonical reader validates and projects.
+/// Persist these capabilities with the applied voter selection; intersect the
+/// voters' supported markers before admitting `WRITER_FORMAT` publication.
+pub const READER_FORMATS: &[&[u8]] = &[V1, WRITER_FORMAT];
+
+const FORMAT: &[u8] = WRITER_FORMAT;
+const V1: &[u8] = b"changes/v1";
 
 fn marks(name: &str, value: &OwnedBytes) -> bool {
-    name == ATTRIBUTE && value.as_ref() == FORMAT
+    name == ATTRIBUTE && READER_FORMATS.contains(&value.as_ref())
+}
+
+fn compact(headers: &RecordHeaders) -> bool {
+    headers
+        .attributes()
+        .iter()
+        .any(|attribute| attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT)
+}
+
+pub(crate) fn unknown(headers: &RecordHeaders) -> bool {
+    headers
+        .attributes()
+        .iter()
+        .any(|attribute| attribute.name == ATTRIBUTE && !marks(attribute.name, attribute.value))
 }
 
 pub(crate) fn marked(headers: &RecordHeaders) -> bool {
@@ -47,10 +77,14 @@ pub fn is_changes(headers: &RecordHeaders) -> bool {
     marked(headers)
 }
 
-/// The keys a wire or persisted form of `headers` carries: none for a change
-/// record, whose value already holds them.
+/// V2 derives its index from the compact value. V1 retains its original wire
+/// keys, so reading and retrying old records never changes their identity.
 pub(crate) fn wire_keys(headers: &RecordHeaders) -> &[OwnedBytes] {
-    if marked(headers) { &[] } else { headers.keys() }
+    if compact(headers) {
+        &[]
+    } else {
+        headers.keys()
+    }
 }
 
 fn varint_len(value: usize) -> usize {
@@ -194,6 +228,64 @@ impl<'a> Reader<'a> {
         self.0 = rest;
         Ok(value)
     }
+
+    // The v1 producer used canonical protobuf: ordered length-delimited fields,
+    // minimal lengths and omitted empty scalar fields. Keep the retained bytes.
+    fn field(&mut self, tag: u8) -> Result<Option<&'a [u8]>, StreamError> {
+        if self.0.first() != Some(&tag) {
+            return Ok(None);
+        }
+        self.0 = self.0.get(1..).ok_or(StreamError::InvalidArgument)?;
+        let value = self.bytes()?;
+        if value.is_empty() {
+            return Err(StreamError::InvalidArgument);
+        }
+        Ok(Some(value))
+    }
+}
+
+fn parse_v1<'a>(
+    bytes: &'a [u8],
+    mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
+) -> Result<&'a [u8], StreamError> {
+    let mut reader = Reader(bytes);
+    let context = reader.field(10)?.unwrap_or_default();
+    let mut previous: Option<&[u8]> = None;
+    let mut count = 0;
+    while let Some(bytes) = reader.field(18)? {
+        let mut entry = Reader(bytes);
+        let key = entry.field(10)?.unwrap_or_default();
+        let operation = entry.field(18)?.ok_or(StreamError::InvalidArgument)?;
+        let operation = std::str::from_utf8(operation).map_err(|_| StreamError::InvalidArgument)?;
+        let metadata = entry.field(26)?.unwrap_or_default();
+        count += 1;
+        if count > crate::MAX_RECORD_KEYS
+            || key.len() > crate::MAX_RECORD_KEY_BYTES
+            || previous.is_some_and(|previous| previous >= key)
+            || operation.chars().any(char::is_control)
+            || !entry.0.is_empty()
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+        visit(key, operation, metadata)?;
+        previous = Some(key);
+    }
+    if count == 0 || !reader.0.is_empty() {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(context)
+}
+
+fn parse_record<'a>(
+    bytes: &'a [u8],
+    headers: &RecordHeaders,
+    visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
+) -> Result<&'a [u8], StreamError> {
+    if compact(headers) {
+        parse(bytes, visit)
+    } else {
+        parse_v1(bytes, visit)
+    }
 }
 
 /// Visits each entry of a canonical value with its full key, rejecting every
@@ -277,7 +369,19 @@ pub(crate) fn decode(
     headers: &RecordHeaders,
 ) -> Result<wire::ChangeRecord, StreamError> {
     validate(bytes, headers)?;
-    decode_changes(bytes)
+    let mut entries = Vec::new();
+    let context = parse_record(bytes, headers, |key, operation, metadata| {
+        entries.push(wire::ChangeEntry {
+            key: bytes::Bytes::copy_from_slice(key),
+            operation: operation.into(),
+            metadata: bytes::Bytes::copy_from_slice(metadata),
+        });
+        Ok(())
+    })?;
+    Ok(wire::ChangeRecord {
+        context: bytes::Bytes::copy_from_slice(context),
+        entries,
+    })
 }
 
 /// Rejects a change value whose keys differ from its in-memory headers, and
@@ -297,7 +401,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
         return Err(StreamError::LimitExceeded);
     }
     let mut expected = headers.keys().iter();
-    parse(bytes, |key, _, _| {
+    parse_record(bytes, headers, |key, _, _| {
         if expected
             .next()
             .is_none_or(|expected| expected.as_ref() != key)
@@ -322,7 +426,7 @@ pub(crate) fn record_headers(
 ) -> Result<RecordHeaders, StreamError> {
     if !attributes
         .iter()
-        .any(|attribute| marks(&attribute.name, &attribute.value))
+        .any(|attribute| attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT)
     {
         let headers = RecordHeaders::new(keys, attributes)?;
         validate(value, &headers)?;
@@ -407,6 +511,24 @@ impl AppendRecord {
         }
         if changes.entries.is_empty() {
             return Ok(None);
+        }
+        if !compact(&self.headers) {
+            use prost::Message;
+            let headers = RecordHeaders::new(
+                changes
+                    .entries
+                    .iter()
+                    .map(|entry| entry.key.clone().into())
+                    .collect(),
+                self.headers
+                    .attributes()
+                    .iter()
+                    .map(crate::RecordAttribute::to_owned)
+                    .collect(),
+            )?;
+            let value: OwnedBytes = changes.encode_to_vec().into();
+            validate(&value, &headers)?;
+            return Ok(Some(Self { value, headers }));
         }
         Self::changes(
             &changes.context,
