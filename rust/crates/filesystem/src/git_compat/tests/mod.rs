@@ -314,3 +314,39 @@ mod restore_paths;
 mod state;
 mod tree;
 mod wire;
+
+#[test]
+fn repository_dispatch_frames_are_bounded() {
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    let executor = TestExecutor::returning(GitFilesystemResult::Applied {
+        tree: Some(tree(1)),
+        tracked_paths: None,
+    });
+    let args = [String::from("status")];
+    let sizes = [
+        (
+            "run",
+            std::mem::size_of_val(&repository.run(GitCommand::MergeAbort, tree(1), &executor)),
+        ),
+        (
+            "run_argv",
+            std::mem::size_of_val(&repository.run_argv(&args, tree(1), "test", 1, &executor)),
+        ),
+        (
+            "resume",
+            std::mem::size_of_val(&repository.resume(&executor)),
+        ),
+        (
+            "execute",
+            std::mem::size_of_val(&repository.execute(GitCommand::MergeAbort, tree(1))),
+        ),
+        (
+            "execute_argv",
+            std::mem::size_of_val(&repository.execute_argv(&args, tree(1), "test", 1)),
+        ),
+    ];
+    for (operation, bytes) in sizes {
+        eprintln!("repository {operation} future: {bytes} bytes");
+        assert!(bytes <= 8192, "repository {operation} future: {bytes}");
+    }
+}

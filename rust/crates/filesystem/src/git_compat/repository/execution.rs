@@ -1,4 +1,5 @@
 use super::*;
+use crate::heap_future::in_heap;
 
 fn inspected_join(pending: &GitPendingTransition) -> bool {
     matches!(
@@ -18,16 +19,16 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        self.validate_workspace_tree(workspace_tree).await?;
+        in_heap(|| self.validate_workspace_tree(workspace_tree)).await?;
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
         match &command {
             GitCommand::MergeContinue => {
-                return self.continue_join(workspace_tree, executor).await;
+                return in_heap(|| self.continue_join(workspace_tree, executor)).await;
             }
-            GitCommand::MergeAbort => return self.abort_join(executor).await,
+            GitCommand::MergeAbort => return in_heap(|| self.abort_join(executor)).await,
             GitCommand::Add { .. } => {
                 if let Some(pending) = self.pending_transition().await? {
                     if matches!(pending.mutation, GitPendingMutation::Join { .. }) {
@@ -38,19 +39,20 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             }
             _ => {}
         }
-        let output = self.execute_validated(command, workspace_tree).await?;
+        let output = in_heap(|| self.execute_validated(command, workspace_tree)).await?;
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
         match output {
             GitCommandOutput::Prepared { transition, action } => {
-                self.finish(transition, &action, executor).await
+                in_heap(|| self.finish(transition, &action, executor)).await
             }
-            GitCommandOutput::Action(action) if action.is_read_only() => self
-                .perform(action.read_operation(), &action, executor)
-                .await
-                .map(GitCommandOutput::Filesystem),
+            GitCommandOutput::Action(action) if action.is_read_only() => {
+                in_heap(|| self.perform(action.read_operation(), &action, executor))
+                    .await
+                    .map(GitCommandOutput::Filesystem)
+            }
             output => Ok(output),
         }
     }
@@ -65,7 +67,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
         let command = parse_git_argv(argv, default_author, now_seconds)?;
-        self.run(command, workspace_tree, executor).await
+        in_heap(|| self.run(command, workspace_tree, executor)).await
     }
 
     /// Replays the durable pending transition with its original operation identity.
@@ -82,8 +84,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 self.abort_transition(pending.id).await?;
                 Ok(None)
             }
-            Some(pending) => self
-                .finish(pending.id, &pending.action, executor)
+            Some(pending) => in_heap(|| self.finish(pending.id, &pending.action, executor))
                 .await
                 .map(Some),
             None => Ok(None),
@@ -96,10 +97,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         action: &GitFilesystemAction,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let result = self
-            .perform(transition.operation_id(), action, executor)
-            .await?;
-        match self.complete_transition_result(transition, &result).await? {
+        let result = in_heap(|| self.perform(transition.operation_id(), action, executor)).await?;
+        match in_heap(|| self.complete_transition_result(transition, &result)).await? {
             GitCommandOutput::NoOp => Ok(GitCommandOutput::Filesystem(result)),
             output => Ok(output),
         }
@@ -111,8 +110,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         action: &GitFilesystemAction,
         executor: &E,
     ) -> Result<GitFilesystemResult, GitCompatRunError<S::Error, E::Error>> {
-        let result = executor
-            .execute(operation, action)
+        let result = in_heap(|| executor.execute(operation, action))
             .await
             .map_err(GitCompatRunError::Executor)?;
         executor
@@ -189,7 +187,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         self.validate_workspace_tree(workspace_tree).await?;
-        self.execute_validated(command, workspace_tree).await
+        in_heap(|| self.execute_validated(command, workspace_tree)).await
     }
 
     /// Parses argv and prepares the resulting typed command.
@@ -201,7 +199,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         now_seconds: i64,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         let command = parse_git_argv(argv, default_author, now_seconds)?;
-        self.execute(command, workspace_tree).await
+        in_heap(|| self.execute(command, workspace_tree)).await
     }
 
     async fn execute_validated(

@@ -71,11 +71,15 @@ impl LocalHarness {
         // retains its execution frame on the original operation ledger, so the
         // child controller never carries the entire workflow on its poll stack.
         crate::conversation::BoundedContentFuture::new(Some(&io), || async {
-            let preparation = self
-                .child_preparation(files, file, plan, workspace, &io)
-                .await?;
+            let preparation = crate::conversation::BoundedContentFuture::new(Some(&io), || {
+                self.child_preparation(files, file, plan, workspace, &io)
+            })?
+            .await?;
             // One authority fence covers every accepted staging prefix, including errors.
-            let prepared = preparation::fenced_inputs(preparation.prepare_inputs(), async {
+            let inputs = crate::conversation::BoundedContentFuture::new(Some(&io), || {
+                preparation.prepare_inputs()
+            })?;
+            let prepared = preparation::fenced_inputs(inputs, async {
                 let filesystem = workspace.filesystem.clone();
                 spawn_blocking(move || filesystem.flush_deferred_authority())
                     .await
@@ -83,7 +87,10 @@ impl LocalHarness {
                     .map_err(storage)
             })
             .await?;
-            preparation.finish(prepared, identity.reference).await
+            crate::conversation::BoundedContentFuture::new(Some(&io), || {
+                preparation.finish(prepared, identity.reference)
+            })?
+            .await
         })?
         .await
     }

@@ -1140,3 +1140,22 @@ fn journal_tracing_captures_the_poll_context() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn canonical_append_dispatch_frame_stays_bounded() {
+    type LocalJournal = FilesystemExecutionJournal<
+        acyclic_stream::LocalStream,
+        acyclic_fs::facade::LocalAuthorityBackend,
+        acyclic_fs::facade::LocalObjectBackend,
+    >;
+    fn size<F: std::future::Future>(_: impl FnOnce() -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    let arguments: Option<(&LocalJournal, OperationId, &str, &ExecutionEvent)> = None;
+    let bytes = size(|| {
+        let (journal, operation, key, event) = arguments.unwrap();
+        journal.append_with_chunks(operation, None, key, event, None)
+    });
+    eprintln!("canonical append dispatch future: {bytes} bytes");
+    assert!(bytes <= 4096, "canonical append dispatch future: {bytes}");
+}

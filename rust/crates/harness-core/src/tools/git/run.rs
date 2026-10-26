@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 /// The task-selected managed workspace and its publication authority.
 pub struct Workspace<'a> {
@@ -53,12 +54,19 @@ where
         PublicationPermit::Unrestricted,
         OperationWindowLease::publication_permit,
     );
-    let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
-    let (ignore, merge_drivers) = git_policy(workspace.view).await?;
+    let patch = BoundedContentFuture::new(None, || {
+        git_apply_patch(workspace.view, workspace.root, args)
+    })?
+    .await?;
+    let (ignore, merge_drivers) =
+        BoundedContentFuture::new(None, || git_policy(workspace.view))?.await?;
     let ignore = ignore.reserving(workspace.reserved);
     let repository =
         crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
-    let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
+    let tree = BoundedContentFuture::new(None, || {
+        git_workspace_tree(workspace.view, args, Some(permit))
+    })?
+    .await?;
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,
         fs: workspace.filesystem,
@@ -76,25 +84,25 @@ where
     };
     if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
         before_effect().await?;
-        let output = executor.diff_agent(branch, tree).await?;
+        let output = BoundedContentFuture::new(None, || executor.diff_agent(branch, tree))?.await?;
         before_effect().await?;
         return Ok(output);
     }
     let command = if let Some(identity) = workspace.checkout {
-        execute(
-            &workspace,
-            args,
-            tree,
-            patch.as_deref(),
-            &RootMaterializingGitExecutor {
-                inner: &executor,
-                root: workspace.root,
-                source_root_identity: identity,
-            },
-        )
+        let materializing = RootMaterializingGitExecutor {
+            inner: &executor,
+            root: workspace.root,
+            source_root_identity: identity,
+        };
+        BoundedContentFuture::new(None, || {
+            execute(&workspace, args, tree, patch.as_deref(), &materializing)
+        })?
         .await?
     } else {
-        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
+        BoundedContentFuture::new(None, || {
+            execute(&workspace, args, tree, patch.as_deref(), &executor)
+        })?
+        .await?
     };
     Ok(Output {
         command: command.map(|output| without_host_paths(output, &executor.repository)),

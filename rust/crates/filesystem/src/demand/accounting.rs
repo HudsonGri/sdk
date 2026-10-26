@@ -356,28 +356,46 @@ impl DemandWork {
         self.remaining()
     }
     pub(crate) fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
+        let mut output = WorkBudget::UNCHARGED;
+        self.remaining_into(Some(&mut output))?;
+        Ok(output)
+    }
+    pub(crate) fn validate_remaining(&mut self) -> Result<(), DemandError> {
+        self.check()?;
+        self.remaining_into(None)
+    }
+    fn remaining_into(&mut self, mut output: Option<&mut WorkBudget>) -> Result<(), DemandError> {
         self.reconcile_cancellation_registry()?;
-        let mut remaining = self.work.remaining(self.budget)?;
-        remaining.peak_allocation_bytes = remaining
+        self.work
+            .remaining_into(&self.budget, output.as_deref_mut())?;
+        let peak = self
+            .budget
             .peak_allocation_bytes
             .checked_sub(self.live_allocation_bytes())
             .and_then(|bytes| bytes.checked_sub(self.allocations.reserved_bytes()))
             .ok_or(crate::WorkError::Overflow)?;
-        let mut remaining = self.resource().map_or(Ok(remaining), |resource| {
-            resource
-                .remaining()
-                .map(|local| remaining.intersect_budget(local))
-        })?;
-        if self.native_scope.recheck_items {
-            remaining.items_examined =
-                self.resource()
-                    .map_or(self.initial_budget.items_examined, |resource| {
+        if let Some(remaining) = output.as_deref_mut() {
+            remaining.peak_allocation_bytes = peak;
+        }
+        let resource = self.resource();
+        if let Some(resource) = &resource {
+            if let Some(remaining) = output.as_deref_mut() {
+                *remaining = remaining.intersect_budget(resource.remaining()?);
+            } else {
+                resource.remaining_into(None)?;
+            }
+        }
+        if let Some(remaining) = output {
+            if self.native_scope.recheck_items {
+                remaining.items_examined =
+                    resource.map_or(self.initial_budget.items_examined, |resource| {
                         self.initial_budget
                             .items_examined
                             .min(resource.admitted_item_limit())
                     });
+            }
         }
-        Ok(remaining)
+        Ok(())
     }
     pub(crate) fn item_charge(&self, mut delta: WorkCounters) -> WorkCounters {
         if self.native_scope.recheck_items {

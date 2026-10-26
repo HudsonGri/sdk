@@ -626,6 +626,8 @@ impl WorkCounters {
     #[inline]
     pub fn remaining(self, budget: WorkBudget) -> Result<WorkBudget, WorkError> {
         self.verify_within(&budget)?;
+        #[cfg(test)]
+        REMAINING_PROJECTIONS.with(|count| count.set(count.get() + 1));
         Ok(WorkBudget {
             authority_records_read: budget.authority_records_read - self.authority_records_read,
             authority_records_appended: budget.authority_records_appended
@@ -655,6 +657,27 @@ impl WorkCounters {
             materializations: budget.materializations - self.materializations,
         })
     }
+
+    // The shared validator is also the complete no-projection path. Keep the
+    // ordinary public remaining() path direct: no empty output is initialized.
+    pub(crate) fn remaining_into(
+        &self,
+        budget: &WorkBudget,
+        output: Option<&mut WorkBudget>,
+    ) -> Result<(), WorkError> {
+        match output {
+            Some(output) => {
+                *output = self.remaining(*budget)?;
+                Ok(())
+            }
+            None => self.verify_within(budget),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static REMAINING_PROJECTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Hard upper bounds admitted before one operation begins.

@@ -146,6 +146,29 @@ fn checked_charge_keeps_validation_and_charge_under_one_leaf() {
     );
 }
 
+#[test]
+fn checked_charge_does_not_project_an_unused_remaining_budget() {
+    let root = NativeMaterializationWork::new(
+        crate::performance::BOUNDARY_BUDGET,
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let work = root.invocation_window().unwrap();
+    crate::performance::REMAINING_PROJECTIONS.with(|count| count.set(0));
+    work.charge_after_remaining(WorkCounters {
+        bytes_encoded: 1,
+        ..WorkCounters::UNCHARGED
+    })
+    .unwrap();
+    crate::performance::REMAINING_PROJECTIONS.with(|count| assert_eq!(count.get(), 0));
+    // A caller that requests the budget still receives the exact projection.
+    assert_eq!(
+        work.remaining().unwrap().bytes_encoded,
+        crate::performance::BOUNDARY_BUDGET.bytes_encoded - 1
+    );
+    crate::performance::REMAINING_PROJECTIONS.with(|count| assert_eq!(count.get(), 1));
+}
+
 proptest! {
     // Property: for arbitrary operation/cancellation traces and resource
     // ancestor chains, removing the outer projection preserves every result,

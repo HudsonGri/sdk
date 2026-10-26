@@ -1,5 +1,6 @@
 //! The shared git facade over the active checkout view.
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 impl CheckoutTools {
     pub(super) fn fs_arguments(
@@ -104,15 +105,20 @@ impl CheckoutTools {
         );
         let before_recovery = head(view).await?;
         if source.is_none() {
-            self.prepare_reconciliation(workspace, context, b"recover", &before_recovery)
-                .await?;
+            BoundedContentFuture::new(None, || {
+                self.prepare_reconciliation(workspace, context, b"recover", &before_recovery)
+            })?
+            .await?;
         }
         // A previous worker can disappear after opening its lease. Expiry
         // fences it; complete its durable reconciliation before opening ours.
-        let recovery = coordinator
-            .recover_workspace(volume, now, acyclic_fs::OperationReconcileLimits::default())
-            .await
-            .map_err(storage)?;
+        let recovery = BoundedContentFuture::new(None, || async {
+            coordinator
+                .recover_workspace(volume, now, acyclic_fs::OperationReconcileLimits::default())
+                .await
+                .map_err(storage)
+        })?
+        .await?;
         let recovered = recovery.is_some();
         let parent = match recovery {
             Some(outcome) => reconciliation_generation(outcome)?,
@@ -129,59 +135,64 @@ impl CheckoutTools {
             owner.verify_owner(None)?.await?;
         }
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
-        let lease = coordinator
-            .begin_with_lease_id(
-                volume.id(),
-                parent.id(),
-                context.operation_id().to_string(),
-                now,
-                now.saturating_add(GIT_PUBLICATION_LEASE_MILLIS),
-                lease_id,
-            )
-            .await
-            .map_err(storage)?;
-        let result = async {
+        let lease = BoundedContentFuture::new(None, || async {
+            coordinator
+                .begin_with_lease_id(
+                    volume.id(),
+                    parent.id(),
+                    context.operation_id().to_string(),
+                    now,
+                    now.saturating_add(GIT_PUBLICATION_LEASE_MILLIS),
+                    lease_id,
+                )
+                .await
+                .map_err(storage)
+        })?
+        .await?;
+        let result = BoundedContentFuture::new(None, || async {
             owner.verify_owner(None)?.await?;
             if source.is_none() {
-                self.capture(
-                    (workspace, checkout),
-                    watcher,
-                    context.operation_id(),
-                    0,
-                    lease.publication_permit(),
-                    Some((
-                        context.task().ordinary_journal_owner::<LocalStream>()?,
-                        false,
-                    )),
-                )
+                let journal_owner = context.task().ordinary_journal_owner::<LocalStream>()?;
+                BoundedContentFuture::new(None, || {
+                    self.capture(
+                        (workspace, checkout),
+                        watcher,
+                        context.operation_id(),
+                        0,
+                        lease.publication_permit(),
+                        Some((journal_owner, false)),
+                    )
+                })?
                 .await?;
             }
-            crate::tools::git::run_with_guard(
-                crate::tools::git::Workspace {
-                    filesystem: &workspace.filesystem,
-                    store: &workspace.store,
-                    view,
-                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
-                        source.destination.as_path()
-                    }),
-                    repository: if source.is_some() {
-                        volume.id()
-                    } else {
-                        workspace.view().workspace().id()
+            BoundedContentFuture::new(None, || {
+                crate::tools::git::run_with_guard(
+                    crate::tools::git::Workspace {
+                        filesystem: &workspace.filesystem,
+                        store: &workspace.store,
+                        view,
+                        root: source.as_ref().map_or(workspace.path.as_path(), |source| {
+                            source.destination.as_path()
+                        }),
+                        repository: if source.is_some() {
+                            volume.id()
+                        } else {
+                            workspace.view().workspace().id()
+                        },
+                        lease: Some(lease.clone()),
+                        checkout: (source.is_none() && workspace.mounted.is_none())
+                            .then_some(workspace.identity),
+                        reserved: &reserved,
+                        author: "LocalHarness",
+                        authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
+                            .unwrap_or(i64::MAX),
                     },
-                    lease: Some(lease.clone()),
-                    checkout: (source.is_none() && workspace.mounted.is_none())
-                        .then_some(workspace.identity),
-                    reserved: &reserved,
-                    author: "LocalHarness",
-                    authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
-                        .unwrap_or(i64::MAX),
-                },
-                &parsed.arguments,
-                || async { owner.verify_owner(None)?.await },
-            )
+                    &parsed.arguments,
+                    || async { owner.verify_owner(None)?.await },
+                )
+            })?
             .await
-        }
+        })?
         .await;
         let before_close = head(view).await?;
         if source.is_none()
@@ -189,20 +200,25 @@ impl CheckoutTools {
                 .as_ref()
                 .is_ok_and(|output| output.switched.is_some())
         {
-            self.prepare_reconciliation(workspace, context, b"close", &before_close)
-                .await?;
+            BoundedContentFuture::new(None, || {
+                self.prepare_reconciliation(workspace, context, b"close", &before_close)
+            })?
+            .await?;
         }
-        let closed = coordinator
-            .finish_workspace(
-                volume,
-                &lease,
-                acyclic_stream::UnixMillisClock::now_unix_millis(
-                    &acyclic_stream::SystemUnixMillisClock,
-                ),
-                acyclic_fs::OperationReconcileLimits::default(),
-            )
-            .await
-            .map_err(storage);
+        let closed = BoundedContentFuture::new(None, || async {
+            coordinator
+                .finish_workspace(
+                    volume,
+                    &lease,
+                    acyclic_stream::UnixMillisClock::now_unix_millis(
+                        &acyclic_stream::SystemUnixMillisClock,
+                    ),
+                    acyclic_fs::OperationReconcileLimits::default(),
+                )
+                .await
+                .map_err(storage)
+        })?
+        .await;
         // Closing can rebase a child after the command has already published.
         // A switched checkout belongs to the destination, so never apply the
         // source workspace's reconciliation over it.

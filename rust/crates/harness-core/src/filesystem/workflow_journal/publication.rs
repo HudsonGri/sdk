@@ -316,9 +316,12 @@ where
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let (_admission, admission) = {
-            let admission = self.read_admission(io).await?.ok_or_else(|| {
-                Error::Conflict("workflow transition has no retained admission".into())
-            })?;
+            let admission =
+                crate::conversation::BoundedContentFuture::new(io, || self.read_admission(io))?
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Conflict("workflow transition has no retained admission".into())
+                    })?;
             let held = io
                 .map(|io| io.guard_owned(io.owned_since(before)?))
                 .transpose()?;
@@ -381,7 +384,10 @@ where
         {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let (_staged, staged) = {
-                let staged = self.read_record(&reference, false, false, io).await?;
+                let staged = crate::conversation::BoundedContentFuture::new(io, || {
+                    self.read_record(&reference, false, false, io)
+                })?
+                .await?;
                 let held = io
                     .map(|io| io.guard_owned(io.owned_since(before)?))
                     .transpose()?;
@@ -393,8 +399,8 @@ where
                 ));
             }
         }
-        let appended = self
-            .append_reference(
+        let appended = crate::conversation::BoundedContentFuture::new(io, || {
+            self.append_reference(
                 &self.path,
                 idempotency_key.as_str(),
                 expected_revision,
@@ -402,28 +408,38 @@ where
                 &reference,
                 io,
             )
-            .await;
+        })?
+        .await;
         match appended {
             Ok(true) => Ok(()),
-            Ok(false) => match self.reconcile(record, io).await? {
+            Ok(false) => match crate::conversation::BoundedContentFuture::new(io, || {
+                self.reconcile(record, io)
+            })?
+            .await?
+            {
                 Some(_) => Ok(()),
                 None => Err(Error::Conflict(
                     "workflow checkpoint or ownership changed".into(),
                 )),
             },
-            Err(Error::Indeterminate(_)) if self.owner.is_none() => match self
-                .reconcile(record, io)
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => {
+                match crate::conversation::BoundedContentFuture::new(io, || {
+                    self.reconcile(record, io)
+                })?
                 .await
-            {
-                Ok(Some(_)) => Ok(()),
-                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(record.operation_id)),
-                #[cfg(not(target_arch = "wasm32"))]
-                Err(Error::NativeStream {
-                    source: StreamError::Unavailable,
-                    ..
-                }) => Err(Error::Indeterminate(record.operation_id)),
-                Err(error) => Err(error),
-            },
+                {
+                    Ok(Some(_)) => Ok(()),
+                    Ok(None) | Err(Error::Storage(_)) => {
+                        Err(Error::Indeterminate(record.operation_id))
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Err(Error::NativeStream {
+                        source: StreamError::Unavailable,
+                        ..
+                    }) => Err(Error::Indeterminate(record.operation_id)),
+                    Err(error) => Err(error),
+                }
+            }
             Err(error) => Err(error),
         }
     }

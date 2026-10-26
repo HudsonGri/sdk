@@ -26,6 +26,9 @@ mod observation;
 mod publication;
 mod replay;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod frame_tests;
+
 fn external_read_hold<'a>(
     bytes: &OwnedBytes,
     io: Option<&'a PreparationIo>,

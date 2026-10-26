@@ -279,21 +279,35 @@ impl NativeResourceAllowance {
         })
     }
     pub(crate) fn remaining(&self) -> Result<WorkBudget, DemandError> {
+        let mut output = WorkBudget::UNCHARGED;
+        self.remaining_into(Some(&mut output))?;
+        Ok(output)
+    }
+    pub(crate) fn remaining_into(
+        &self,
+        mut output: Option<&mut WorkBudget>,
+    ) -> Result<(), DemandError> {
         let state = self.lock();
         state.check()?;
-        let mut remaining = state
-            .work
-            .remaining(state.pending.remaining(self.budget)?)?;
-        remaining.peak_allocation_bytes = remaining
+        let budget = state.pending.remaining(self.budget)?;
+        state.work.remaining_into(&budget, output.as_deref_mut())?;
+        let peak = budget
             .peak_allocation_bytes
             .checked_sub(state.allocations.live_bytes())
             .and_then(|bytes| bytes.checked_sub(state.allocations.reserved_bytes()))
             .ok_or(WorkError::Overflow)?;
+        if let Some(remaining) = output.as_deref_mut() {
+            remaining.peak_allocation_bytes = peak;
+        }
         drop(state);
         if let Some(parent) = &self.parent {
-            remaining = remaining.intersect_budget(parent.remaining()?);
+            if let Some(remaining) = output {
+                *remaining = remaining.intersect_budget(parent.remaining()?);
+            } else {
+                parent.remaining_into(None)?;
+            }
         }
-        Ok(remaining)
+        Ok(())
     }
     pub(crate) fn refund(
         &self,

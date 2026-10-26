@@ -312,7 +312,7 @@ impl NativeMaterializationWork {
         delta: WorkCounters,
     ) -> Result<(), NativeTreeMaterializationError> {
         self.state(|state| {
-            state.checked_remaining()?;
+            state.validate_remaining()?;
             state.charge(delta)
         })
         .map_err(native_materialization_work_error)

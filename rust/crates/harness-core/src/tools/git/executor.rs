@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 impl<F, Fut> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F>
 where
@@ -119,13 +120,15 @@ where
                 tracked_paths,
                 ..
             } => {
-                self.capture_commit(
-                    operation_id,
-                    workspace_tree,
-                    head_tree.as_ref(),
-                    head_workspace_tree.as_ref().as_ref(),
-                    tracked_paths,
-                )
+                BoundedContentFuture::new(None, || {
+                    self.capture_commit(
+                        operation_id,
+                        workspace_tree,
+                        head_tree.as_ref(),
+                        head_workspace_tree.as_ref().as_ref(),
+                        tracked_paths,
+                    )
+                })?
                 .await
             }
             GitFilesystemAction::ForkBranch {
@@ -134,23 +137,31 @@ where
                 switch,
                 ..
             } => {
-                self.fork_branch(operation_id, branch, source_tree, *switch)
-                    .await
+                BoundedContentFuture::new(None, || {
+                    self.fork_branch(operation_id, branch, source_tree, *switch)
+                })?
+                .await
             }
             GitFilesystemAction::SwitchWorkspace { workspace_id } => {
-                self.switch_workspace(workspace_id).await
+                BoundedContentFuture::new(None, || self.switch_workspace(workspace_id))?.await
             }
             GitFilesystemAction::Diff {
                 from,
                 to,
                 tracked_paths,
-            } => self.diff(from.as_ref(), to, tracked_paths).await,
-            GitFilesystemAction::RestoreGeneration { tree, paths } => {
-                self.restore_generation(operation_id, tree, paths.as_ref())
+            } => {
+                BoundedContentFuture::new(None, || self.diff(from.as_ref(), to, tracked_paths))?
                     .await
             }
+            GitFilesystemAction::RestoreGeneration { tree, paths } => {
+                BoundedContentFuture::new(None, || {
+                    self.restore_generation(operation_id, tree, paths.as_ref())
+                })?
+                .await
+            }
             GitFilesystemAction::RestorePaths { tree, paths } => {
-                self.restore_paths(operation_id, *tree, paths).await
+                BoundedContentFuture::new(None, || self.restore_paths(operation_id, *tree, paths))?
+                    .await
             }
             GitFilesystemAction::Join {
                 target_tree,
@@ -158,9 +169,11 @@ where
                 rebase,
                 tracked_paths: tracked,
             } => {
-                // The join is the deepest facade action; its state lives on
-                // the heap so it never sizes every other command's future.
-                Box::pin(self.join(operation_id, *target_tree, *source, *rebase, tracked)).await
+                // Each action owns its state behind the shared future boundary.
+                BoundedContentFuture::new(None, || {
+                    self.join(operation_id, *target_tree, *source, *rebase, tracked)
+                })?
+                .await
             }
             GitFilesystemAction::ApplyCommit {
                 base,
@@ -169,37 +182,49 @@ where
                 tracked_paths,
                 ..
             } => {
-                self.apply_commit(
-                    operation_id,
-                    base.as_ref(),
-                    source.as_ref(),
-                    paths,
-                    tracked_paths,
-                )
+                BoundedContentFuture::new(None, || {
+                    self.apply_commit(
+                        operation_id,
+                        base.as_ref(),
+                        source.as_ref(),
+                        paths,
+                        tracked_paths,
+                    )
+                })?
                 .await
             }
-            GitFilesystemAction::Archive { tree } => self.archive(tree).await,
+            GitFilesystemAction::Archive { tree } => {
+                BoundedContentFuture::new(None, || self.archive(tree))?.await
+            }
             GitFilesystemAction::Grep {
                 pattern,
                 path,
                 tree,
-            } => self.grep(pattern, path.as_deref(), tree).await,
-            GitFilesystemAction::Blame { path, commits } => self.blame(path, commits).await,
+            } => {
+                BoundedContentFuture::new(None, || self.grep(pattern, path.as_deref(), tree))?.await
+            }
+            GitFilesystemAction::Blame { path, commits } => {
+                BoundedContentFuture::new(None, || self.blame(path, commits))?.await
+            }
             GitFilesystemAction::Clean {
                 dry_run,
                 tree,
                 tracked_paths,
             } => {
-                self.clean(operation_id, *dry_run, tree, tracked_paths)
-                    .await
+                BoundedContentFuture::new(None, || {
+                    self.clean(operation_id, *dry_run, tree, tracked_paths)
+                })?
+                .await
             }
             GitFilesystemAction::ApplyPatch { patch } => {
-                self.apply_patch(operation_id, patch).await
+                BoundedContentFuture::new(None, || self.apply_patch(operation_id, patch))?.await
             }
             GitFilesystemAction::CheckIgnore { paths, tree } => {
-                self.check_ignore(paths, tree).await
+                BoundedContentFuture::new(None, || self.check_ignore(paths, tree))?.await
             }
-            GitFilesystemAction::ShowFile { tree, path } => self.show_file(tree, path).await,
+            GitFilesystemAction::ShowFile { tree, path } => {
+                BoundedContentFuture::new(None, || self.show_file(tree, path))?.await
+            }
             unsupported => Err(Self::error(format!(
                 "Git filesystem action is not yet available in the Codex adapter: {unsupported:?}"
             ))),

@@ -21,9 +21,10 @@ where
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
-        let accepted = self
-            .append_validated(operation, expected_tail, key, event, io)
-            .await?;
+        let accepted = crate::conversation::BoundedContentFuture::new(io, || {
+            self.append_validated(operation, expected_tail, key, event, io)
+        })?
+        .await?;
         if accepted {
             crate::conversation::BoundedContentFuture::new(io, || {
                 self.publish_chunk(key, event, io)
@@ -55,7 +56,11 @@ where
         else {
             return Ok(());
         };
-        let Some(model) = self.verify_event_refs_with_io(event, io).await? else {
+        let Some(model) = crate::conversation::BoundedContentFuture::new(io, || {
+            self.verify_event_refs_with_io(event, io)
+        })?
+        .await?
+        else {
             return Ok(());
         };
         let Some(ModelPayload { channel, bytes }) =

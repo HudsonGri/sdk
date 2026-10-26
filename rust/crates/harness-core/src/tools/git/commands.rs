@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 /// Whether a command needs an exact working tree.
 ///
@@ -44,30 +45,41 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
     executor: &E,
 ) -> Result<Option<GitCommandOutput>, Error> {
     if !git_transition_command(argv)
-        && repository
-            .resume(executor)
-            .await
-            .map_err(super::errors::run_error)?
-            .is_some()
+        && BoundedContentFuture::new(None, || async {
+            repository
+                .resume(executor)
+                .await
+                .map_err(super::errors::run_error)
+        })?
+        .await?
+        .is_some()
     {
         return Ok(None);
     }
     let output = if let Some(patch) = patch {
-        repository
-            .run(
-                GitCommand::Apply {
-                    patch: patch.to_vec(),
-                },
-                workspace_tree,
-                executor,
-            )
-            .await
+        BoundedContentFuture::new(None, || async {
+            repository
+                .run(
+                    GitCommand::Apply {
+                        patch: patch.to_vec(),
+                    },
+                    workspace_tree,
+                    executor,
+                )
+                .await
+                .map_err(super::errors::run_error)
+        })?
+        .await
     } else {
-        repository
-            .run_argv(argv, workspace_tree, author, authored_at_seconds, executor)
-            .await
+        BoundedContentFuture::new(None, || async {
+            repository
+                .run_argv(argv, workspace_tree, author, authored_at_seconds, executor)
+                .await
+                .map_err(super::errors::run_error)
+        })?
+        .await
     };
-    output.map(Some).map_err(super::errors::run_error)
+    output.map(Some)
 }
 
 /// Reads a patch file from the managed workspace.

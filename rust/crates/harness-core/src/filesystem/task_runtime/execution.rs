@@ -1,5 +1,5 @@
 use super::*;
-use crate::conversation::FileRef;
+use crate::conversation::{BoundedContentFuture, FileRef};
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
@@ -96,7 +96,8 @@ where
             ));
         }
         task_context.owned_task_binding(None)?;
-        let admission = self.host.observe_admission(task).await?;
+        let admission =
+            BoundedContentFuture::new(None, || self.host.observe_admission(task))?.await?;
         if !admission.grants.contains("model:generate") {
             return Err(Error::Unauthorized(
                 "task scope lacks model:generate".into(),
@@ -116,17 +117,22 @@ where
         let run_limits = scope.run_limits();
         let operation_id = execution_operation(task, turn, None)?;
         let task_files = match &self.task_files {
-            Some(files) => match files.for_created_task(&task_context, &scope).await? {
+            Some(files) => match BoundedContentFuture::new(None, || {
+                files.for_created_task(&task_context, &scope)
+            })?
+            .await?
+            {
                 Some(created) => Some(Arc::new(created)),
                 None => Some(files.clone()),
             },
             None => None,
         };
-        let journal = self
-            .open_execution_journal(task, fence.clone(), turn, &admission)
-            .await?
-            .with_task_files(task_files)
-            .with_input_verifier(task_context.clone());
+        let journal = BoundedContentFuture::new(None, || {
+            self.open_execution_journal(task, fence.clone(), turn, &admission)
+        })?
+        .await?
+        .with_task_files(task_files)
+        .with_input_verifier(task_context.clone());
         let executor = StockExecutor::new(model, provider, context, tools)
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?

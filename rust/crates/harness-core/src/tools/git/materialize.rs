@@ -251,7 +251,10 @@ where
             .map_err(|failure| Error::from(failure.error))?
             .value;
         self.validate().await?;
-        let result = self.inner.execute(operation_id, action).await;
+        let result = crate::conversation::BoundedContentFuture::new(None, || {
+            self.inner.execute(operation_id, action)
+        })?
+        .await;
         // Conflict projection is an intentional state transition: the join
         // executor leaves the Git transition pending and returns an error so
         // the caller can present the typed conflicts. Materialize that new

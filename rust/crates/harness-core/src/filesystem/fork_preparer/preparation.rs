@@ -225,7 +225,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             let (_, references) =
                 crate::filesystem::summary_fork::split_references(&bound.prepared, io)?;
             add_summary_readers(&request, &mut reference_grants, &references, io)?;
-            let (capture, generation) = controller
+            let (capture, generation) = crate::conversation::BoundedContentFuture::new(io, || async { controller
                 .materialize_summary_context(
                     &preparer.parent,
                     &bound.prepared,
@@ -242,7 +242,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     io,
                     task,
                 )
-                .await?;
+                .await })?.await?;
             let capacity = inherited_context
                 .len()
                 .checked_add(capture.inherited_files().count())
@@ -301,7 +301,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .find(|provider| provider.provider() == selection.revision.provider())
                     {
                         Some(provider) => {
-                            self.capture(&journal, &request, index, selection, provider.as_ref())
+                            crate::conversation::BoundedContentFuture::new(io, || self.capture(&journal, &request, index, selection, provider.as_ref()))?
                                 .await?
                         }
                         None => Capture::Unsupported(stock_string_copy(
