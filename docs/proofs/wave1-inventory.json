@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T01:45:56.217444+00:00",
+  "generated_at": "2026-10-26T02:01:51.286890+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -161,6 +161,13 @@
       "repo_receipt": "docs/proofs/evidence/owner-updates-v1/observations.json",
       "sha256": "5adb3967444029527e15eabd115b9035d68d5b492e87b20b27f7f670197a35cc",
       "qualification": "none; historical controls, prerequisite smoke and owner reports only"
+    }
+  },
+  "partial_proofs": {
+    "append-eof": {
+      "repo_receipt": "docs/proofs/evidence/fs-append-eof/receipt.json",
+      "sha256": "8a59e46920f605ae3fdec68eb7bbb44868e44370d984e121f68b4458a71ea730",
+      "qualification": "exact same-oracle EOF control only; complete A5 unqualified"
     }
   },
   "cleanliness": {
@@ -484,7 +491,7 @@
     },
     {
       "id": "fs.append-segments",
-      "owner": "fs-concurrency",
+      "owner": "rb-fs",
       "risk": "data_loss_or_corruption",
       "invariant": "Appending staged immutable segments preserves the existing prefix and returns the exact EOF range in one authored batch; same-EOF aliases conflict; refusal and original-key recovery cannot publish partial or duplicate extents.",
       "proof_specification": "Provider-generic serial-concatenation/reference histories, real persistent crash/reopen DST and production publication loom; independent EOF-range and terminal-dependency controls.",
@@ -504,14 +511,21 @@
         {
           "mutation": "retry unknown outcome with fresh key",
           "status": "not_executed"
+        },
+        {
+          "mutation": "remove EOF terminal observation true->false",
+          "status": "detected_partial_obligation",
+          "receipt": "append-eof",
+          "invariant": "explicit TransactionRebase::Conflicted after same-length alias edit/delete-recreate"
         }
       ],
       "required_hooks_or_decisions": [
         "signed append_staged implementation and exact source receipts",
         "public provider-generic suite and endpoint runner",
-        "crash/acknowledgement and mid-preparation cancellation hooks"
+        "crash/acknowledgement and mid-preparation cancellation hooks",
+        "fixed persisted proptest seed/corpus: FS341 uses TestRunner::new(Config::with_cases(16)) and reports missing failure-persistence source; example outcomes do not establish deterministic gate corpus"
       ],
-      "implementation_state": "owner_fs339_six_case_memory_pass_hash_validated_mutation_persistence_endpoint_pending",
+      "implementation_state": "signed_083f_append_sources_match_fs341_ten_case_positive_and_fs342_eof_control_complete_a5_pending",
       "source": [],
       "modes": {
         "memory": {
@@ -536,11 +550,19 @@
       "owner_observations": [
         "fs339-memory-append"
       ],
-      "prior_fixture_failure": "FS338 intentionally empty segment used max_source_bytes=0, rejected before reading; corrected FS339 fixture uses max(1). Historical rejected receipt preserved; not a demonstrated product invariant failure."
+      "prior_fixture_failure": "FS338 intentionally empty segment used max_source_bytes=0, rejected before reading; corrected FS339 fixture uses max(1). Historical rejected receipt preserved; not a demonstrated product invariant failure.",
+      "partial_proof": "append-eof",
+      "partial_coverage": {
+        "memory": "EOF rebase-conflict positive and unchanged-oracle production mutant admitted",
+        "local": "one persistent reopen/exact-key example passed; EOF mutant not run on local provider and ambiguous fault not injected",
+        "hosted": "unqualified; no canonical public A5 endpoint suite",
+        "wasm_browser": "unqualified; no current adapter receipt"
+      },
+      "source_review_state": "historical_unsigned_review_superseded_for_append_files_by_signed_083f_sources; complete build includes recorded dirty inputs"
     },
     {
       "id": "fs.changefeed-cut",
-      "owner": "fs-concurrency",
+      "owner": "rb-fs",
       "risk": "data_loss_or_corruption",
       "invariant": "Snapshot cut plus exclusive follow cover each change exactly once in applied order; reconnect validates anchor and caps residency/subscriptions. Query is path prefix plus glob, optionally across same-domain volumes; approvals/*/request.json uses indexed traversal rather than a whole-tree scan. Cursor binds account/domain/cut/query/volumes/position/auth; lease expiration and revocation refuse instead of switching to latest. Charge authorized visited misses; opaque cursors retain complete pages.",
       "proof_specification": "Append between each snapshot/register/replay boundary under real providers; bounded reference-history DST and decoder fuzz.",
@@ -593,7 +615,7 @@
     },
     {
       "id": "fs.conditional-publication",
-      "owner": "fs-concurrency",
+      "owner": "rb-fs",
       "risk": "data_loss_or_corruption",
       "invariant": "Condition and bytes/metadata/authority publication linearize together; loser/stale generation changes nothing; unknown result reconciles original key. Generation fences any intervening volume publication including equal-byte ABA; Digest compares logical regular-file bytes at admission while retaining authenticated path/identity/permission dependencies; Absent remains distinct from empty.",
       "proof_specification": "Two-writer real-provider DST, production publication loom, crash/reopen and observed byte/metadata oracle.",
@@ -639,7 +661,7 @@
     },
     {
       "id": "fs.fork-many",
-      "owner": "fs-concurrency",
+      "owner": "rb-fs",
       "risk": "data_loss_or_corruption",
       "invariant": "All requested roots and authority-owned lineage publish at one cut or none; retry preserves identities; no intermediate destination visible. Agent and volume authority streams share the decided domain; fork_many contributes to the caller's composed CommitRequest with subtree fork and ForkAdopted, never opens its own commit. PreparedForkMany owns root-closure holds and contributes to the caller's sealed preparation; Unknown keeps original key/digest and recovery custody. Retire/GC release is generation fenced. Cross-cell/domain composition refuses before effects.",
       "proof_specification": "Crash-cut canonical authority DST plus production root publication loom; cost counters scale with requested roots.",
@@ -1426,6 +1448,49 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
     },
     {
+      "id": "fs.canonical-root",
+      "owner": "rb-fs",
+      "risk": "liveness",
+      "invariant": "Identical directory contents produce the same canonical content root independent of publication batch size/order, avoiding false root changes and conditional conflicts.",
+      "proof_specification": "Real kernel serial-history proptest over bulk versus incremental mutation, forks and deletion/reinsertion; bounded pure boundary logic Kani where feasible; unchanged old failing canonical_history test is the control.",
+      "negative_controls": [
+        {
+          "mutation": "old history-dependent tree split/shape implementation",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "change split limits instead of canonicalizing content boundaries",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "signed canonical-root fix from rb-fs",
+        "owner handover known failing 192-entry bulk versus 17-entry incremental regression",
+        "actual positive and old-production source/executable receipts"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
       "id": "streams.follow.namespace-wake",
       "owner": "rx-hostability",
       "risk": "liveness",
@@ -1667,7 +1732,7 @@
     "positive_proofs": 0,
     "negative_tests_detected": 10,
     "implemented_fixed_histories": 5,
-    "obligations": 29,
+    "obligations": 30,
     "remaining": "production positive, strongest concurrency/DST/Kani, all modes, remaining public APIs, unsafe/mapping CI enforcement"
   }
 }

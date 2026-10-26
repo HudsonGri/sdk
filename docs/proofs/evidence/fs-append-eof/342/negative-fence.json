@@ -1,0 +1,8 @@
+{
+  "label": "negative-fence",
+  "filter": "append_segments_fence_same_length_alias_edits_and_delete_recreate",
+  "exit": 101,
+  "seconds": 0.00910067799850367,
+  "executable_sha256": "7cd60adff9dc5caebeec6fac2ac32642c609a35321d7a31d5a26720b67a65a81",
+  "compiled_source_manifest_sha256": "2bb9f015b071b4732296907a256bfcd888e8f15dab5cf0200754100f0a2f57a9"
+}

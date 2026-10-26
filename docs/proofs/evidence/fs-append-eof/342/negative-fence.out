@@ -1,0 +1,17 @@
+
+running 1 test
+test workspace::tests::append_segments::append_segments_fence_same_length_alias_edits_and_delete_recreate ... FAILED
+
+failures:
+
+failures:
+    workspace::tests::append_segments::append_segments_fence_same_length_alias_edits_and_delete_recreate
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1530 filtered out; finished in 0.01s
+
+
+thread 'workspace::tests::append_segments::append_segments_fence_same_length_alias_edits_and_delete_recreate' (7953) panicked at rust/crates/filesystem/src/workspace/../tests/workspace/append_segments.rs:372:9:
+assertion failed: matches!(appender.rebase(16, WorkBudget::UNBOUNDED,
+    &CancellationToken::new()).await? .value, TransactionRebase::Conflicted
+    { .. })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

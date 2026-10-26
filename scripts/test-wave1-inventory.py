@@ -119,6 +119,19 @@ class EvidencePolicy(unittest.TestCase):
                 with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "cannot qualify redesigned"):
                     POLICY.check_observations(reference)
 
+    def test_partial_eof_control_cannot_claim_complete_a5(self):
+        original = MANIFEST["partial_proofs"]["append-eof"]
+        POLICY.check_append_eof(original)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = self.copy_file(root, original["repo_receipt"])
+            receipt = json.loads(target.read_text())
+            receipt["full_obligation_qualified"] = True
+            target.write_text(json.dumps(receipt))
+            reference = dict(original, sha256=POLICY.sha256(target))
+            with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "cannot qualify complete A5"):
+                POLICY.check_append_eof(reference)
+
     def test_rehashed_mac_receipt_must_still_use_linux_artifact(self):
         original = MANIFEST["owner_observations"]["updates-v1"]
         with tempfile.TemporaryDirectory() as directory:
