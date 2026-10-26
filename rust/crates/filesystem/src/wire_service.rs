@@ -445,6 +445,8 @@ include!("wire_service/references.rs");
 include!("wire_service/changes.rs");
 include!("wire_service/join_encoding.rs");
 include!("wire_service/output.rs");
+mod errors;
+use errors::status;
 
 #[cfg(test)]
 mod tests;
