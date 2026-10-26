@@ -142,41 +142,38 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .transpose()?
         .unwrap_or_default();
     let local = phase(|| open(&args, credentials)).await?;
+    if args.prompt.is_some()
+        || args.input_format == InputFormat::Jsonl
+        || acyclic_harness::tui::term::Environment::capture().is_dumb()
+    {
+        let mut agent = phase(|| client::LocalAgentClient::connect_recent(local, 4 * 1024 * 1024)).await?;
+        let mut output = std::io::stdout().lock();
+        let outcome = if let Some(prompt) = &args.prompt {
+            let id = acyclic_harness::agent::IntentId::try_from(
+                operation.unwrap_or_else(OperationId::new).to_string(),
+            )?;
+            phase(|| client::run_agent_prompt(&mut agent, &id, prompt, &mut output)).await?
+        } else {
+            phase(|| client::run_agent_jsonl(&mut agent, client::stdin_jsonl(), &mut output)).await?
+        };
+        return Ok(outcome.exit_code());
+    }
     let operation = if args.resume {
         phase(|| client::resume_local_identity(&local, operation)).await?
     } else {
         client::local_identity(operation)
     };
-    let command = args
-        .prompt
-        .as_deref()
-        .map(|prompt| client::prepare_local_prompt(operation, prompt))
-        .transpose()?;
-    if args.prompt.is_none()
-        && args.input_format != InputFormat::Jsonl
-        && !acyclic_harness::tui::term::Environment::capture().is_dumb()
-    {
-        phase(|| client::select_local_identity(&local, operation)).await?;
-        let result = phase(|| {
-            client::with_local_commands(
-                local.clone(),
-                operation,
-                view::run(local.clone(), operation, args.inline),
-            )
-        })
-        .await;
-        phase(|| client::disconnect_local(local)).await?;
-        return Ok(result?.exit_code());
-    }
-    let (mut connection, target) = phase(|| client::connect_local(local, operation)).await?;
-    let mut output = std::io::stdout().lock();
-    let outcome = if let Some(command) = command {
-        phase(|| client::run_headless(&mut connection, command, target, &mut output)).await
-    } else {
-        phase(|| client::run_jsonl(&mut connection, target, client::stdin_jsonl(), &mut output))
-            .await
-    };
-    Ok(phase(|| connection.finish(outcome)).await?.exit_code())
+    phase(|| client::select_local_identity(&local, operation)).await?;
+    let result = phase(|| {
+        client::with_local_commands(
+            local.clone(),
+            operation,
+            view::run(local.clone(), operation, args.inline),
+        )
+    })
+    .await;
+    phase(|| client::disconnect_local(local)).await?;
+    Ok(result?.exit_code())
 }
 
 // Drop the workspace owner while the runtime is still available so its native

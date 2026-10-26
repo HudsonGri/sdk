@@ -106,6 +106,14 @@ impl WireSession {
         &self.demand
     }
 
+    /// Monotonic revision of the complete selected fold, including status
+    /// streams and interest replacement. Renderers must not use only the
+    /// conversation revision to cache a composed agent view.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Close deselected follows before any newly selected follow can open.
     /// The replacement is rechecked against this session's own policy.
     ///
@@ -119,9 +127,15 @@ impl WireSession {
             demand.expanded().cloned(),
         )
         .map_err(WireSessionError::Demand)?;
+        if demand == self.demand {
+            return Ok(());
+        }
+        let revision = self.revision.checked_add(1)
+            .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
         self.follows.retain(|agent, _| demand.contains_full(agent));
         self.views.retain(|agent, _| demand.contains_full(agent));
         self.demand = demand;
+        self.revision = revision;
         Ok(())
     }
 
