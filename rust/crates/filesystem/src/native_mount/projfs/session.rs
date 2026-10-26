@@ -1,4 +1,5 @@
 use super::*;
+use crate::native_mount::retirement::SourceRetirementWait;
 
 // SAFETY: the projection loop drains before its owner stops the SDK context.
 unsafe impl Send for SendContext {}
@@ -27,6 +28,41 @@ pub(in crate::native_mount) struct ProjFsSession {
     pub(in crate::native_mount) capture_failure: Option<NativeMountError>,
     pub(in crate::native_mount) capture_attempted: bool,
     pub(super) projection_cleanup: Option<super::cleanup::ProjectionCleanup>,
+}
+
+/// Exercises the post-namespace physical stop with a real retained source,
+/// independently of the host's optional projection filter installation.
+#[cfg(test)]
+pub(in crate::native_mount) fn retire_source_in_physical_stop(
+    source: Arc<dyn MountFilesystem>,
+) -> Result<bool, NativeMountError> {
+    let original = crate::NativeMaterializationWork::new(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let mut session = ProjFsSession {
+        controller: None,
+        context: None,
+        runtime: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: Some(source),
+            destination_guard: None,
+            startup_source_watch: None,
+            terminal_source_failure: None,
+            warm_namespace: None,
+        }),
+        original_stop_work: original,
+        sdk_stop_credit: None,
+        worker_close_credit: None,
+        namespace_outcome: None,
+        qualification: None,
+        capture_failure: None,
+        capture_attempted: false,
+        projection_cleanup: None,
+    };
+    session.stop_physical()?;
+    Ok(session.retirement.is_none())
 }
 
 // SAFETY: ProjFS contexts are opaque handles. The provider synchronizes callback
@@ -270,7 +306,7 @@ impl ProjFsSession {
                 drop(self.projection_cleanup.take());
             }
             if let Some(retirement) = self.retirement.as_mut() {
-                retirement.retire(None)?;
+                retirement.retire(None, SourceRetirementWait::Physical)?;
             }
             if self
                 .retirement
@@ -295,7 +331,7 @@ impl ProjFsSession {
             .map(crate::NativeMaterializationWork::allocation_work);
         drop(installed);
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire_source_and_watch_with_cleanup(None)?;
+            retirement.retire_source_and_watch_with_join(None, SourceRetirementWait::Physical)?;
         }
         if let Some(context) = self.context {
             let credit = self
@@ -331,17 +367,21 @@ impl ProjFsSession {
                 });
         let state = std::mem::take(&mut *lock_recover(&runtime.projector.state));
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
-            capture_failure: self.capture_failure.take(),
-            cleanup_failure,
+            failures: crate::native_mount::retirement::TerminalFailures {
+                producer: self.capture_failure.take(),
+                cleanup: cleanup_failure,
+            },
             _state: state,
             callbacks: Arc::clone(&runtime.post_operation_failure),
         });
         self.runtime = None;
         drop(runtime);
         if let Some(cleanup) = self.projection_cleanup.as_mut() {
-            if self.namespace_outcome.as_ref().is_some_and(|outcome| {
-                outcome.capture_failure.is_some() || outcome.cleanup_failure.is_some()
-            }) {
+            if self
+                .namespace_outcome
+                .as_ref()
+                .is_some_and(|outcome| !outcome.failures.is_empty())
+            {
                 // Never delete data whose publication/capture failed. Remove
                 // only the detached root tag; the outcome retains the cause.
                 cleanup.0.clear();
@@ -350,7 +390,7 @@ impl ProjFsSession {
             drop(self.projection_cleanup.take());
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            retirement.retire(None)?;
+            retirement.retire(None, SourceRetirementWait::Physical)?;
         }
         if self
             .retirement
@@ -685,39 +725,29 @@ impl ProjFsSession {
 }
 
 pub(super) fn source_hresult(error: &MountSourceError) -> HRESULT {
-    match error.semantic_error() {
-        MountSourceError::AccessDenied => HRESULT::from_win32(5),
-        MountSourceError::ReadOnly => HRESULT::from_win32(19),
-        MountSourceError::NotFound => HR_FILE_NOT_FOUND,
-        MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
-        // The statuses NTFS gives a rename across kinds or over a
-        // directory that is not empty.
-        MountSourceError::NotDirectory => HR_DIRECTORY,
-        MountSourceError::IsDirectory => HR_ACCESS_DENIED,
-        MountSourceError::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
-        MountSourceError::Invalid(_) => HR_INVALID_DATA,
-        MountSourceError::Unsupported(_) => HR_NOT_SUPPORTED,
-        MountSourceError::Stale
-        | MountSourceError::Cancelled
-        | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
-            HR_FILE_INVALID
-        }
-        MountSourceError::Io(error, _) => HRESULT::from_win32(u32::from_ne_bytes(
-            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
-        )),
-        _ => HR_IO_DEVICE,
+    failure_hresult(crate::native_mount::outcome::source_failure(error))
+}
+
+fn failure_hresult(failure: crate::native_mount::outcome::NativeFailure) -> HRESULT {
+    use crate::native_mount::outcome::NativeFailure as F;
+    match failure {
+        F::AccessDenied | F::IsDirectory => HR_ACCESS_DENIED,
+        F::ReadOnly => HRESULT::from_win32(19),
+        F::NotFound => HR_FILE_NOT_FOUND,
+        F::AlreadyExists => HR_ALREADY_EXISTS,
+        F::NotDirectory => HR_DIRECTORY,
+        F::DirectoryNotEmpty => HR_DIRECTORY_NOT_EMPTY,
+        F::Invalid => HR_INVALID_DATA,
+        F::Unsupported => HR_NOT_SUPPORTED,
+        F::Stale => HR_FILE_INVALID,
+        F::Cancelled => windows::Win32::Foundation::ERROR_OPERATION_ABORTED.to_hresult(),
+        F::Allocation => HRESULT::from_win32(8),
+        F::TooLarge => HRESULT::from_win32(223),
+        F::Os(code) => HRESULT::from_win32(u32::from_ne_bytes(code.to_ne_bytes())),
+        F::Io => HR_IO_DEVICE,
     }
 }
 
-pub(super) fn native_hresult(error: &NativeMountError) -> HRESULT {
-    match error {
-        NativeMountError::Source(error) => source_hresult(error),
-        NativeMountError::Io(error) => HRESULT::from_win32(u32::from_ne_bytes(
-            error.raw_os_error().unwrap_or(1117).to_ne_bytes(),
-        )),
-        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled) => {
-            HR_FILE_INVALID
-        }
-        _ => HR_IO_DEVICE,
-    }
+pub(in crate::native_mount) fn native_hresult(error: &NativeMountError) -> HRESULT {
+    failure_hresult(crate::native_mount::outcome::callback_failure(error))
 }

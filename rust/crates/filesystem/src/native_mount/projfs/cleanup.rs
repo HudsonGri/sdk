@@ -193,10 +193,7 @@ fn collect_projection(
             if identity != stat.identity() {
                 return Err(NativeMountError::InvalidDestination);
             }
-            let held = HostRoot {
-                directory,
-                identity,
-            };
+            let held = HostRoot::from_parts(directory, identity);
             collect_projection(&held, &child, source, work, files, allocation)?;
         }
     }
