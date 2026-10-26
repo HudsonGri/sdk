@@ -1,6 +1,8 @@
 /** Shared Rust actor/session views; the runtime owns transport and controls. */
 export {
   WasmAgentCommand as PreparedAgentCommand,
+  WasmAgentControls as AgentControls,
+  WasmAgentInvocation as PreparedAgentInvocation,
   type AgentCommand,
   type AgentReply,
   type AgentPageRequest,

@@ -88,6 +88,11 @@ pub struct WireSession {
 }
 
 impl WireSession {
+    /// Shared control handles borrow the same physical session ownership.
+    pub(crate) const fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Take the platform-created pool; native and WASM use the same owner.
     #[must_use]
     pub fn new(client: Client, policy: DemandPolicy) -> Self {

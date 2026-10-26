@@ -58,11 +58,13 @@ export function assertHarnessWasmExports(value: unknown): void {
   ], true);
   const agents = hasClass(exports, "WasmAgentClient", "wasmagentclient", [
     "setView", "selectedAgents", "agentWindow", "agentRecord", "agentStatus",
-    "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "free",
+    "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "controls", "free",
   ], true);
   const commands = hasClass(exports, "WasmAgentCommand", "wasmagentcommand", [
     "bytes", "value", "reply", "execute", "validateInvocation", "free",
   ], true);
+  const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "observe", "free"], true);
+  const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);
   const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
   const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
     "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
@@ -70,7 +72,7 @@ export function assertHarnessWasmExports(value: unknown): void {
   const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
   const providers = typeof exports.WasmProviderRegistry === "function"
     || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !stream || !hypotheses || !session || !agents || !commands || !pages || !pageRequest || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  if (!contentStore || !stream || !hypotheses || !session || !agents || !commands || !controls || !invocation || !pages || !pageRequest || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

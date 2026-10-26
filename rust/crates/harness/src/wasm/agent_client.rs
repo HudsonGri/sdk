@@ -64,7 +64,7 @@ fn error(code: &str, message: impl std::fmt::Display) -> JsValue {
     error.into()
 }
 
-fn client_error(cause: AgentClientError) -> JsValue {
+pub(super) fn client_error(cause: AgentClientError) -> JsValue {
     match cause {
         AgentClientError::Record(cause) => actor_error(cause),
         cause => error(cause.code(), cause),
@@ -81,7 +81,7 @@ pub(crate) fn actor_error(cause: crate::agent::Error) -> JsValue {
     error(cause.code(), cause)
 }
 
-fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
+pub(super) fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
     if agent.length() as usize > acyclic_stream::MAX_PATH_BYTES {
         return Err(error("invalid_agent_path", "agent path exceeds byte bound"));
     }
@@ -117,6 +117,17 @@ pub struct WasmAgentClient {
 
 #[wasm_bindgen]
 impl WasmAgentClient {
+    /// Attach host-published controls to this observer's exact pool and slot.
+    pub fn controls(
+        &self,
+        encoded_binding: &js_sys::Uint8Array,
+    ) -> Result<super::agent_command::WasmAgentControls, JsValue> {
+        let binding = super::agent_command::binding(encoded_binding)?;
+        self.with_client(|client| {
+            super::agent_command::WasmAgentControls::from_controls(client.controls(binding))
+        })
+    }
+
     /// Explicit cursors select a bounded page or retained live edge. The slot
     /// must already be authenticated on the supplied stream's session pool.
     #[wasm_bindgen(constructor)]
@@ -325,11 +336,15 @@ impl WasmAgentClient {
     ) -> Result<Self, JsValue> {
         let client = AgentClient::new(pool, agent, conversation_from, status_from, credential)
             .map_err(client_error)?;
-        Ok(Self {
+        Ok(Self::from_client(client))
+    }
+
+    pub(super) fn from_client(client: AgentClient) -> Self {
+        Self {
             client: RefCell::new(Some(client)),
             reading: Cell::new(false),
             waker: RefCell::new(None),
-        })
+        }
     }
 
     fn with_client<T>(&self, read: impl FnOnce(&AgentClient) -> T) -> Result<T, JsValue> {

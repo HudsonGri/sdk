@@ -193,6 +193,7 @@ impl AgentCommand {
 
 /// Immutable admitted bytes retained by the caller while a command is in flight.
 /// Transport loss cannot turn an old intent into a newly reconstructed command.
+#[derive(Clone)]
 pub struct PreparedCommand(Vec<u8>);
 
 /// Typed local refusal before transport or host execution begins.

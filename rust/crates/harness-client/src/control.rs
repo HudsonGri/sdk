@@ -4,6 +4,116 @@ use acyclic_actors::{domain, wire};
 use acyclic_stream::{StreamError, session::Client};
 use bytes::Bytes;
 use prost::Message as _;
+use std::borrow::Cow;
+
+/// A host-published canonical Actors address and dispatch metadata. It contains
+/// no command body or reusable per-invocation ordering sequence. Authentication
+/// remains the session credential, not this routing value.
+pub struct AgentBinding(wire::InvokeActorRequest);
+
+impl AgentBinding {
+    /// Admit bounded canonical host metadata before retaining it. The host uses
+    /// the same binding for local, Actors and managed deployments.
+    pub fn new(encoded: &[u8]) -> Result<Self, CommandError> {
+        if encoded.len() > acyclic_stream::MAX_COMMAND_BYTES {
+            return Err(CommandError::Capacity);
+        }
+        let request =
+            wire::InvokeActorRequest::decode(encoded).map_err(|_| CommandError::Invalid)?;
+        if !request.body.is_empty()
+            || request.invocation_order.is_some()
+            || request.encode_to_vec().as_slice() != encoded
+        {
+            return Err(CommandError::Invalid);
+        }
+        domain::InvokeActorRequest::try_from(request.clone()).map_err(|_| CommandError::Invalid)?;
+        Ok(Self(request))
+    }
+
+    /// Attach exact admitted command bytes in Rust. No TS routing codec, fresh
+    /// intent or provider-specific control path is needed.
+    pub fn prepare<'a>(
+        &self,
+        command: &'a PreparedCommand,
+    ) -> Result<PreparedAgentInvocation<'a>, CommandError> {
+        PreparedAgentInvocation::new(command, self.encode(command)?)
+    }
+
+    /// Own both the original command and invocation across browser awaits.
+    pub fn prepare_owned(
+        &self,
+        command: PreparedCommand,
+    ) -> Result<PreparedAgentInvocation<'static>, CommandError> {
+        let encoded = self.encode(&command)?;
+        let prepared = PreparedAgentInvocation::new(&command, encoded.clone())?;
+        drop(prepared);
+        Ok(PreparedAgentInvocation {
+            command: Cow::Owned(command),
+            invocation: encoded,
+        })
+    }
+
+    fn encode(&self, command: &PreparedCommand) -> Result<Bytes, CommandError> {
+        // Body framing adds at most five bytes for this finite command budget.
+        // Check before cloning the routing metadata or allocating its body.
+        if self.0.encoded_len() + command.as_bytes().len() + 5 > acyclic_stream::MAX_COMMAND_BYTES {
+            return Err(CommandError::Capacity);
+        }
+        let mut invocation = self.0.clone();
+        invocation.body = command.as_bytes().to_vec();
+        Ok(invocation.encode_to_vec().into())
+    }
+}
+
+/// Controls use the very same pool and credential as the selected agent fold.
+/// Cloning the pool handle creates no connection, task, queue or result index.
+pub struct AgentControls {
+    client: Client,
+    credential: u32,
+    binding: AgentBinding,
+}
+
+impl AgentControls {
+    /// Compose the host's existing session and published binding. Endpoint
+    /// bootstrap belongs to the host; this constructor invents no routing.
+    pub fn new(client: Client, credential: u32, binding: AgentBinding) -> Self {
+        Self {
+            client,
+            credential,
+            binding,
+        }
+    }
+
+    /// Start bounded observation on this same authenticated pool and slot.
+    pub fn observe(
+        &self,
+        selection: crate::AgentSelection,
+    ) -> Result<crate::AgentClient, crate::AgentClientError> {
+        crate::AgentClient::new(
+            self.client.clone(),
+            selection.agent,
+            selection.conversation_from,
+            selection.status_from,
+            self.credential,
+        )
+    }
+
+    /// Prepare and retain an exact invocation before starting any transport.
+    pub fn prepare(
+        &self,
+        command: PreparedCommand,
+    ) -> Result<PreparedAgentInvocation<'static>, CommandError> {
+        self.binding.prepare_owned(command)
+    }
+
+    /// Execute once. The caller retains the prepared value on every outcome.
+    pub async fn execute(
+        &self,
+        invocation: &PreparedAgentInvocation<'_>,
+    ) -> Result<AgentReply, AgentExchangeError> {
+        invocation.execute(&self.client, self.credential).await
+    }
+}
 
 /// An interrupted exchange is distinct from a definitive host refusal. The
 /// caller's borrowed invocation remains available with its exact original intent.
@@ -62,6 +172,40 @@ mod tests {
         ));
         Ok(())
     }
+
+    #[test]
+    fn binding_preserves_routing_and_original_owned_command()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let template = invocation(Vec::new());
+        let binding = AgentBinding::new(&template.encode_to_vec())?;
+        let command = PreparedCommand::from_bytes(b"{ \"kind\" : \"root\" }".to_vec())?;
+        let original = command.as_bytes().to_vec();
+        let prepared = binding.prepare_owned(command)?;
+        let request = wire::InvokeActorRequest::decode(prepared.as_bytes().clone())?;
+        assert_eq!(request.body, original);
+        assert_eq!(request.actor_id, template.actor_id);
+        assert_eq!(request.url, template.url);
+        assert_eq!(request.method, template.method);
+        Ok(())
+    }
+
+    #[test]
+    fn binding_cannot_reuse_an_order_or_hide_a_command_body() {
+        let body = invocation(b"{\"kind\":\"root\"}".to_vec());
+        assert!(matches!(
+            AgentBinding::new(&body.encode_to_vec()),
+            Err(CommandError::Invalid)
+        ));
+        let mut ordered = invocation(Vec::new());
+        ordered.invocation_order = Some(wire::InvocationOrder {
+            session: "0".repeat(32),
+            sequence: 1,
+        });
+        assert!(matches!(
+            AgentBinding::new(&ordered.encode_to_vec()),
+            Err(CommandError::Invalid)
+        ));
+    }
 }
 
 impl AgentExchangeError {
@@ -80,7 +224,7 @@ impl AgentExchangeError {
 /// supplies the actor/method binding; neither the client nor transport invents a
 /// backend-specific route. The command remains caller-owned across every await.
 pub struct PreparedAgentInvocation<'a> {
-    command: &'a PreparedCommand,
+    command: Cow<'a, PreparedCommand>,
     invocation: Bytes,
 }
 
@@ -100,7 +244,7 @@ impl<'a> PreparedAgentInvocation<'a> {
         }
         domain::InvokeActorRequest::try_from(invocation).map_err(|_| CommandError::Invalid)?;
         Ok(Self {
-            command,
+            command: Cow::Borrowed(command),
             invocation: encoded,
         })
     }

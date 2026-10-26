@@ -86,6 +86,12 @@ pub struct AgentClient {
 }
 
 impl AgentClient {
+    /// Bind controls to this observer's exact authenticated pool and slot.
+    /// The host supplies canonical routing; no second wire owner is opened.
+    pub fn controls(&self, binding: crate::AgentBinding) -> crate::AgentControls {
+        crate::AgentControls::new(self.session.client().clone(), self.credential, binding)
+    }
+
     /// Follow from explicit exclusive cursors. Callers choose a bounded history
     /// page or retained cursor; opening never snapshots an entire conversation.
     /// The credential must already be registered on `client`.

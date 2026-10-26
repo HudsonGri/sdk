@@ -9,7 +9,7 @@ mod control;
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub use control::{AgentExchangeError, PreparedAgentInvocation};
+pub use control::{AgentBinding, AgentControls, AgentExchangeError, PreparedAgentInvocation};
 
 #[cfg(any(feature = "grpc", feature = "wasm"))]
 mod command;
