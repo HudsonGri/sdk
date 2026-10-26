@@ -1,0 +1,517 @@
+//! Single-node Actors runtime primitives over the canonical Stream transaction.
+/// Shared readiness registration and hibernation handoff.
+pub mod ready;
+#[cfg(not(target_arch = "wasm32"))]
+mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::{Clock, Runtime, SystemClock};
+
+use crate::addressing::ActorReference;
+use crate::guest::{AlarmChange, Checkpoint, Effect, GuestError, Transition, Trigger};
+use acyclic_stream::{
+    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest,
+    IdempotencyKey, ReadRequest, StreamError, StreamPath, StreamProvider,
+};
+use futures::TryStreamExt;
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, sync::Arc};
+
+/// Typed failure at the shared actor publication boundary.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Canonical provider failure, including uncertain acknowledgement.
+    #[error(transparent)]
+    Stream(#[from] StreamError),
+    /// Durable state encoding failed.
+    #[error(transparent)]
+    Codec(#[from] serde_json::Error),
+    /// Another owner or transition changed the exact durable cut.
+    #[error("actor epoch or checkpoint changed")]
+    Conflict,
+    /// The actor is paused; queued work remains unconsumed.
+    #[error("actor is paused")]
+    Paused,
+    /// The handler failed; nothing was published and the input stays queued.
+    #[error(transparent)]
+    Handler(#[from] GuestError),
+    /// A request contradicts the durable state machine.
+    #[error("invalid actor transition: {0}")]
+    Invalid(&'static str),
+}
+
+/// Alarm identity and deadline are one durable value, including cleared alarms.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Alarm {
+    generation: u64,
+    deadline_unix_ms: Option<u64>,
+    delivered_generation: Option<u64>,
+}
+impl Alarm {
+    /// Generation increases on replacement and clear; Keep preserves it.
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// No deadline means cleared; its generation is still retained.
+    pub const fn deadline_unix_ms(&self) -> Option<u64> {
+        self.deadline_unix_ms
+    }
+    /// The deadline of an armed, undelivered generation.
+    pub fn pending(&self) -> Option<u64> {
+        self.deadline_unix_ms
+            .filter(|_| self.delivered_generation != Some(self.generation))
+    }
+}
+
+/// One instance-bound input: the actor's own stream and its next sequence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subscription {
+    /// Source stream, bound when the actor's state is created.
+    pub path: StreamPath,
+    /// Next unconsumed sequence.
+    pub cursor: u64,
+}
+
+/// One committed state/cursor/alarm tuple. Fields cannot be forged by callers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct State {
+    epoch: u64,
+    checkpoint: Option<Checkpoint>,
+    subscriptions: BTreeMap<String, Subscription>,
+    alarm: Alarm,
+    paused: bool,
+}
+impl State {
+    /// Current placement fence; zero means created but never placed.
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+    /// Last committed artifact checkpoint.
+    pub const fn checkpoint(&self) -> Option<&Checkpoint> {
+        self.checkpoint.as_ref()
+    }
+    /// Instance-bound subscriptions, keyed by manifest subscription id.
+    pub const fn subscriptions(&self) -> &BTreeMap<String, Subscription> {
+        &self.subscriptions
+    }
+    /// Next unconsumed sequence of a declared subscription.
+    pub fn cursor(&self, subscription: &str) -> Option<u64> {
+        self.subscriptions.get(subscription).map(|value| value.cursor)
+    }
+    /// Current alarm, including its invalidation generation.
+    pub const fn alarm(&self) -> &Alarm {
+        &self.alarm
+    }
+    /// Whether execution is durably paused.
+    pub const fn paused(&self) -> bool {
+        self.paused
+    }
+}
+
+/// Immutable exact-cut token. Publication compares both tail and commit anchor.
+pub struct Snapshot {
+    path: StreamPath,
+    tail: u64,
+    anchor: Option<CommitId>,
+    state: Option<State>,
+}
+impl Snapshot {
+    /// Complete retained tuple, absent before creation.
+    pub const fn state(&self) -> Option<&State> {
+        self.state.as_ref()
+    }
+    /// The actor's state stream.
+    pub const fn path(&self) -> &StreamPath {
+        &self.path
+    }
+}
+
+/// A complete publication the caller may extend with its own conditions and
+/// mutations (for example a Streams fork or a filesystem contribution) before
+/// submitting it exactly once.
+pub struct PreparedPublish {
+    own: Option<StreamPath>,
+    request: CommitRequest,
+}
+impl PreparedPublish {
+    /// An empty commit for a caller that is not this actor (a client, or a
+    /// parent composing a spawn) that joins companion creates and appends.
+    pub fn foreign(key: IdempotencyKey) -> Self {
+        Self {
+            own: None,
+            request: CommitRequest {
+                conditions: Vec::new(),
+                mutations: Vec::new(),
+                idempotency_key: key,
+            },
+        }
+    }
+    /// The request, including the actor's own Head/Absent condition.
+    pub const fn request(&self) -> &CommitRequest {
+        &self.request
+    }
+    /// Add one participant, keeping conditions canonical (one per path, sorted)
+    /// and merging appends to the same path in order. The actor's own state
+    /// stream cannot be named; disagreeing cuts on one path are refused.
+    pub fn join(&mut self, effect: Effect) -> Result<(), Error> {
+        let Self { own, request } = self;
+        let touches_own = |path: &StreamPath| own.as_ref() == Some(path);
+        for condition in effect.conditions {
+            let path = condition_path(&condition);
+            if touches_own(path) {
+                return Err(Error::Invalid("effect targets actor state stream"));
+            }
+            let conditions = &mut request.conditions;
+            match conditions.binary_search_by(|existing| condition_path(existing).cmp(path)) {
+                Ok(index) if conditions.get(index) != Some(&condition) => {
+                    return Err(Error::Invalid("effects disagree on one stream's cut"));
+                }
+                Ok(_) => {}
+                Err(index) => conditions.insert(index, condition),
+            }
+        }
+        let mutations = &mut request.mutations;
+        match effect.mutation {
+            CommitMutation::Append { path, records } => {
+                if touches_own(&path) {
+                    return Err(Error::Invalid("effect targets actor state stream"));
+                }
+                let existing = mutations.iter_mut().find_map(|mutation| match mutation {
+                    CommitMutation::Append {
+                        path: existing,
+                        records,
+                    } if existing == &path => Some(records),
+                    _ => None,
+                });
+                match existing {
+                    Some(existing) => existing.extend(records),
+                    None => mutations.push(CommitMutation::Append { path, records }),
+                }
+            }
+            fork @ CommitMutation::Fork { .. } => {
+                if let CommitMutation::Fork { destination, .. } = &fork
+                    && touches_own(destination)
+                {
+                    return Err(Error::Invalid("effect targets actor state stream"));
+                }
+                mutations.push(fork);
+            }
+        }
+        Ok(())
+    }
+    /// Take the request to submit it through another commit owner.
+    pub fn into_request(self) -> CommitRequest {
+        self.request
+    }
+    /// Interpret the provider's outcome for this exact request.
+    pub const fn settle(outcome: &CommitOutcome) -> Result<(), Error> {
+        match outcome {
+            CommitOutcome::Committed(_) => Ok(()),
+            CommitOutcome::Conflict(_) => Err(Error::Conflict),
+        }
+    }
+}
+
+/// One storage mechanism for memory, durable local and hosted Stream providers.
+pub struct Store<P: StreamProvider + ?Sized> {
+    provider: Arc<P>,
+    root: StreamPath,
+}
+impl<P: StreamProvider + ?Sized> Store<P> {
+    /// Retain the caller's admitted provider session. Actor state lives at
+    /// `<root>/<encoded actor>`, inside the caller's consistency domain.
+    pub fn new(provider: Arc<P>, root: StreamPath) -> Self {
+        Self { provider, root }
+    }
+
+    /// The shared provider session.
+    pub fn provider(&self) -> &Arc<P> {
+        &self.provider
+    }
+
+    /// The state root watched for new actors.
+    pub const fn root(&self) -> &StreamPath {
+        &self.root
+    }
+
+    /// The actor's state stream.
+    pub fn path(&self, actor: &ActorReference) -> Result<StreamPath, Error> {
+        Ok(StreamPath::new(format!(
+            "{}/{}",
+            self.root,
+            acyclic_auth::encode_component(&actor.encode())
+        ))?)
+    }
+
+    /// Recover the actor address from a direct child of the state root.
+    pub fn actor(&self, path: &StreamPath) -> Result<ActorReference, Error> {
+        let name = path
+            .as_str()
+            .strip_prefix(self.root.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+            .filter(|name| !name.contains('/'))
+            .ok_or(Error::Invalid("path is not a direct child of the state root"))?;
+        let bytes = acyclic_auth::decode_component(name)
+            .map_err(|_| Error::Invalid("undecodable actor state name"))?;
+        ActorReference::decode(&bytes).map_err(|_| Error::Invalid("undecodable actor reference"))
+    }
+
+    /// The companion mutation that creates an unplaced (epoch 0) actor inside
+    /// a caller-built commit, such as a spawn. Its cursors are the first
+    /// records the actor will consume; a later `claim` preserves them.
+    pub fn create(
+        &self,
+        actor: &ActorReference,
+        subscriptions: BTreeMap<String, Subscription>,
+        checkpoint: Option<Checkpoint>,
+    ) -> Result<(CommitCondition, CommitMutation), Error> {
+        let path = self.path(actor)?;
+        if subscriptions.values().any(|value| value.path == path) {
+            return Err(Error::Invalid("actor subscribes to its own state"));
+        }
+        let state = State {
+            epoch: 0,
+            checkpoint,
+            subscriptions,
+            alarm: Alarm::default(),
+            paused: false,
+        };
+        Ok((
+            CommitCondition::Absent { path: path.clone() },
+            CommitMutation::Append {
+                path,
+                records: vec![serde_json::to_vec(&state)?.into()],
+            },
+        ))
+    }
+
+    /// Read only the final state record; recovery work is independent of history length.
+    pub async fn load(&self, actor: &ActorReference) -> Result<Snapshot, Error> {
+        self.load_path(self.path(actor)?).await
+    }
+
+    async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
+        let tail = match self.provider.tail(path.clone()).await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(error.into()),
+        };
+        if tail == 0 {
+            return Ok(Snapshot {
+                path,
+                tail,
+                anchor: None,
+                state: None,
+            });
+        }
+        let mut records = self
+            .provider
+            .read(ReadRequest {
+                path: path.clone(),
+                from: tail - 1,
+                limit: 1,
+            })
+            .await?;
+        let record = records
+            .try_next()
+            .await?
+            .ok_or(Error::Invalid("checkpoint history is incomplete"))?;
+        if record.sequence != tail - 1 {
+            return Err(Error::Invalid("checkpoint cursor changed"));
+        }
+        let state = serde_json::from_slice(&record.value)?;
+        Ok(Snapshot {
+            path,
+            tail,
+            anchor: Some(record.commit_id),
+            state: Some(state),
+        })
+    }
+
+    /// Establish a strictly newer epoch while preserving checkpoint, cursors,
+    /// alarm and pause state.
+    pub async fn claim(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        key: IdempotencyKey,
+    ) -> Result<(), Error> {
+        let mut state = previous
+            .state
+            .clone()
+            .ok_or(Error::Invalid("actor state was never created"))?;
+        if epoch <= state.epoch {
+            return Err(Error::Conflict);
+        }
+        state.epoch = epoch;
+        self.submit(self.prepare(previous, &state, Vec::new(), key)?)
+            .await
+    }
+
+    /// Pause/resume and in-flight publication share the identical CAS fence.
+    /// An unclaimed actor (epoch 0) can be paused before its first placement.
+    pub async fn set_paused(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        paused: bool,
+        key: IdempotencyKey,
+    ) -> Result<(), Error> {
+        let mut state = previous
+            .state
+            .as_ref()
+            .filter(|state| state.epoch == epoch)
+            .ok_or(Error::Conflict)?
+            .clone();
+        state.paused = paused;
+        self.submit(self.prepare(previous, &state, Vec::new(), key)?)
+            .await
+    }
+
+    /// Atomically publish the checkpoint, consumed cursor, alarm and effects.
+    pub async fn publish(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        trigger: &Trigger,
+        transition: Transition,
+        key: IdempotencyKey,
+    ) -> Result<(), Error> {
+        self.submit(self.prepare_publish(previous, epoch, trigger, transition, key)?)
+            .await
+    }
+
+    /// Build the one publication without submitting it.
+    pub fn prepare_publish(
+        &self,
+        previous: &Snapshot,
+        epoch: u64,
+        trigger: &Trigger,
+        transition: Transition,
+        key: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        let state = next(owned(previous, epoch)?, trigger, &transition)?;
+        self.prepare(previous, &state, transition.effects, key)
+    }
+
+    async fn submit(&self, prepared: PreparedPublish) -> Result<(), Error> {
+        PreparedPublish::settle(&self.provider.commit(prepared.request).await?)
+    }
+
+    fn prepare(
+        &self,
+        previous: &Snapshot,
+        state: &State,
+        effects: Vec<Effect>,
+        key: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        let own = match previous.anchor {
+            Some(commit_id) => CommitCondition::Head {
+                path: previous.path.clone(),
+                expected: previous.tail,
+                commit_id,
+            },
+            None => CommitCondition::Absent {
+                path: previous.path.clone(),
+            },
+        };
+        let mut prepared = PreparedPublish {
+            own: Some(previous.path.clone()),
+            request: CommitRequest {
+                conditions: vec![own],
+                mutations: vec![CommitMutation::Append {
+                    path: previous.path.clone(),
+                    records: vec![serde_json::to_vec(state)?.into()],
+                }],
+                idempotency_key: key,
+            },
+        };
+        for effect in effects {
+            prepared.join(effect)?;
+        }
+        Ok(prepared)
+    }
+}
+
+fn condition_path(condition: &CommitCondition) -> &StreamPath {
+    match condition {
+        CommitCondition::Head { path, .. }
+        | CommitCondition::Tail { path, .. }
+        | CommitCondition::Absent { path } => path,
+    }
+}
+
+fn owned(previous: &Snapshot, epoch: u64) -> Result<&State, Error> {
+    previous
+        .state
+        .as_ref()
+        .filter(|state| epoch != 0 && state.epoch == epoch)
+        .ok_or(Error::Conflict)
+}
+
+/// The pure durable transition: consume exactly the trigger, then apply the
+/// alarm change. Checkpoint, cursor and alarm move together or not at all.
+fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<State, Error> {
+    let mut state = state.clone();
+    if state.paused {
+        return Err(Error::Paused);
+    }
+    match trigger {
+        Trigger::Record {
+            subscription,
+            sequence,
+        } => {
+            let cursor = &mut state
+                .subscriptions
+                .get_mut(subscription)
+                .ok_or(Error::Invalid("undeclared subscription"))?
+                .cursor;
+            if *cursor != *sequence {
+                return Err(Error::Conflict);
+            }
+            *cursor = cursor
+                .checked_add(1)
+                .ok_or(Error::Invalid("subscription cursor overflow"))?;
+        }
+        Trigger::Alarm {
+            generation,
+            now_unix_ms,
+        } => {
+            if state.alarm.generation != *generation
+                || !state
+                    .alarm
+                    .pending()
+                    .is_some_and(|deadline| deadline <= *now_unix_ms)
+            {
+                return Err(Error::Conflict);
+            }
+            // Delivery consumption is distinct from the desired alarm.
+            // Keep preserves its generation/deadline without permitting a
+            // second successful firing to publish another transition.
+            state.alarm.delivered_generation = Some(*generation);
+        }
+    }
+    let deadline = match transition.alarm {
+        AlarmChange::Keep => None,
+        AlarmChange::Clear => Some(None),
+        AlarmChange::Set {
+            deadline_unix_ms: 0,
+        } => return Err(Error::Invalid("alarm deadline is zero")),
+        AlarmChange::Set { deadline_unix_ms } => Some(Some(deadline_unix_ms)),
+    };
+    if let Some(deadline) = deadline {
+        state.alarm.generation = state
+            .alarm
+            .generation
+            .checked_add(1)
+            .ok_or(Error::Invalid("alarm generation overflow"))?;
+        state.alarm.deadline_unix_ms = deadline;
+        state.alarm.delivered_generation = None;
+    }
+    state.checkpoint = Some(transition.checkpoint.clone());
+    Ok(state)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod model;
