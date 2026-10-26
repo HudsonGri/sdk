@@ -445,3 +445,39 @@ fn a_window_never_widens_a_native_work_handle() {
         words * std::mem::size_of::<usize>()
     );
 }
+
+#[test]
+fn each_window_transition_has_one_ledger_lease() {
+    let session = root();
+    let window = session.invocation_window().unwrap();
+    WINDOW_LEASES.with(|count| count.set(0));
+    window.charge(appends(1)).unwrap();
+    WINDOW_LEASES.with(|count| assert_eq!(count.get(), 1));
+}
+
+#[test]
+fn unwinding_settles_the_window_before_the_next_invocation() {
+    let session = root();
+    let window = session.invocation_window().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        window.state(|state| {
+            state.charge(appends(3)).unwrap();
+            panic!("after accepted work");
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(
+        window
+            .window
+            .as_ref()
+            .unwrap()
+            .ledger()
+            .consumed
+            .authority_records_appended,
+        3
+    );
+    assert_eq!(session.receipt().authority_records_appended, 3);
+    // The original leaf remains failed closed after an unwinding operation.
+    assert!(window.remaining().is_err());
+    assert!(session.remaining().is_err());
+}

@@ -28,6 +28,7 @@ struct WindowLedger {
 
 #[cfg(test)]
 thread_local! {
+    static WINDOW_LEASES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static WINDOW_ADDITIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -144,6 +145,8 @@ impl NativeWorkWindow {
         self.base().view_meter().allocation_owner()
     }
     fn ledger(&self) -> crate::sync::MutexGuard<'_, WindowLedger> {
+        #[cfg(test)]
+        WINDOW_LEASES.with(|count| count.set(count.get() + 1));
         self.ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -211,10 +214,42 @@ impl crate::demand::DemandWork {
         let Some(window) = window else {
             return operation(self);
         };
+        // A window is entered only while the original leaf is held. Keep
+        // its ledger leased through settlement too: there is no second lookup
+        // or copied state that can outlive that one transition.
+        struct Transition<'a, 'w> {
+            state: &'a mut crate::demand::DemandWork,
+            ledger: crate::sync::MutexGuard<'w, WindowLedger>,
+            stored: WorkBudget,
+            work: WorkCounters,
+            pending: WorkCounters,
+        }
+        impl Drop for Transition<'_, '_> {
+            fn drop(&mut self) {
+                let peak = self.state.budget.peak_allocation_bytes;
+                let settled = self.ledger.settle(
+                    (&self.work, &self.state.work),
+                    (&self.pending, &self.state.pending_reservations()),
+                    &self.stored,
+                    &self.state.original_budget(),
+                );
+                self.state.budget = match settled {
+                    Ok((settled, budget)) => {
+                        *self.ledger = settled;
+                        budget
+                    }
+                    Err(error) => {
+                        self.state.fail_window_invariant(error);
+                        self.stored
+                    }
+                };
+                self.state.budget.peak_allocation_bytes = peak;
+            }
+        }
         let stored = self.budget;
         let work = self.work;
         let pending = self.pending_reservations();
-        let ledger = *window.ledger();
+        let ledger = window.ledger();
         self.budget = match ledger.view(&self.original_budget(), &work) {
             Ok(view) => view,
             Err(error) => {
@@ -223,26 +258,14 @@ impl crate::demand::DemandWork {
             }
         };
         self.budget.peak_allocation_bytes = stored.peak_allocation_bytes;
-        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        let peak = self.budget.peak_allocation_bytes;
-        let settled = ledger.settle(
-            (&work, &self.work),
-            (&pending, &self.pending_reservations()),
-            &stored,
-            &self.original_budget(),
-        );
-        self.budget = match settled {
-            Ok((settled, budget)) => {
-                *window.ledger() = settled;
-                budget
-            }
-            Err(error) => {
-                self.fail_window_invariant(error);
-                stored
-            }
+        let transition = Transition {
+            state: self,
+            ledger,
+            stored,
+            work,
+            pending,
         };
-        self.budget.peak_allocation_bytes = peak;
-        answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        operation(transition.state)
     }
     fn fail_window_invariant(&mut self, error: WorkError) {
         self.record_native_io_failure(error.into());
