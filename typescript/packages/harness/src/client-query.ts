@@ -11,6 +11,7 @@ export {
   type AgentOutcome,
   type ChildDone,
   type WasmAgentFileRef as AgentFileRef,
+  type WasmUnknownAgentError as UnknownAgentError,
   WasmWireSession as WireSession,
   WasmFileClient as FileClient,
   type FileClientError,

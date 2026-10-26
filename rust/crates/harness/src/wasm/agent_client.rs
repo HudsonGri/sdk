@@ -7,6 +7,7 @@ use crate::{
 };
 use acyclic_stream::WasmStream;
 use js_sys::JsString;
+use prost::Message as _;
 use std::{
     cell::{Cell, RefCell},
     task::{Poll, Waker},
@@ -21,7 +22,28 @@ const AGENT_FILE_REFERENCE: &str = r#"
 export type WasmAgentFileRef = Omit<WasmFileRefWire, 'descriptor'> & {
     descriptor: Omit<WasmFileDescriptorWire, 'byte_length'> & {byte_length: bigint};
 };
+/** Indeterminate admission retains the exact canonical Streams request. */
+export interface WasmUnknownAgentError extends Error {
+    readonly name: 'agent_unknown';
+    readonly request: Uint8Array;
+}
 "#;
+
+#[wasm_bindgen(inline_js = "
+export function unknownAgentError(message, borrowedRequest) {
+    const error = new Error(message);
+    error.name = 'agent_unknown';
+    // The WASM slice expires when this call returns. Custody must own its bytes.
+    Object.defineProperty(error, 'request', {
+        value: new Uint8Array(borrowedRequest), enumerable: true
+    });
+    return error;
+}
+")]
+extern "C" {
+    #[wasm_bindgen(js_name = unknownAgentError)]
+    fn unknown_agent_error(message: &str, request: &[u8]) -> JsValue;
+}
 
 /// Bounded borrowed-view metadata; sequences and counters keep exact integers
 /// across the WASM boundary. No conversation payload is serialized here.
@@ -51,13 +73,32 @@ fn client_error(cause: AgentClientError) -> JsValue {
     error(code, cause)
 }
 
+/// One boundary adapter for the browser host's create/send/approval controls.
+/// An uncertain commit is never flattened into a string or an acknowledgement.
+pub(crate) fn actor_error(cause: crate::agent::Error) -> JsValue {
+    use crate::agent::Error;
+    let code = match &cause {
+        Error::Unknown(request) => {
+            let bytes = acyclic_stream::wire_codec::commit_to_wire(request).encode_to_vec();
+            return unknown_agent_error(&cause.to_string(), &bytes);
+        }
+        Error::Path(_) => "invalid_agent_path",
+        Error::Record(_) => "invalid_agent_record",
+        Error::NoSuchAgent => "no_such_agent",
+        Error::Stream(cause) => cause.code(),
+        Error::Actor(_) => "agent_runtime_error",
+        Error::Turn(_) => "agent_turn_error",
+    };
+    error(code, cause)
+}
+
 fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
     if agent.length() as usize > acyclic_stream::MAX_PATH_BYTES {
         return Err(error("invalid_agent_path", "agent path exceeds byte bound"));
     }
     AgentPath::try_from(agent.as_string()
         .ok_or_else(|| error("invalid_agent_path", "agent path is not a string"))?)
-        .map_err(|cause| error("invalid_agent_path", cause))
+        .map_err(actor_error)
 }
 
 struct Reading<'a> {
@@ -97,13 +138,7 @@ impl WasmAgentClient {
         let agent = agent_path(agent)?;
         let pool = stream.session_client()
             .ok_or_else(|| error("client_no_session", "provider has no authenticated session"))?;
-        let client = AgentClient::new(pool, agent, conversation_from, status_from, credential)
-            .map_err(client_error)?;
-        Ok(Self {
-            client: RefCell::new(Some(client)),
-            reading: Cell::new(false),
-            waker: RefCell::new(None),
-        })
+        Self::from_session(pool, agent, conversation_from, status_from, credential)
     }
 
     /// Replace focus (first row) and visible agents in the shared Rust core.
@@ -254,6 +289,25 @@ impl WasmAgentClient {
 }
 
 impl WasmAgentClient {
+    /// Browser hosts return the same client over their one authenticated pool.
+    /// The host retains credential custody; no second WasmStream or transport
+    /// is needed to observe agents created by that host.
+    pub(crate) fn from_session(
+        pool: acyclic_stream::session::Client,
+        agent: AgentPath,
+        conversation_from: u64,
+        status_from: u64,
+        credential: u32,
+    ) -> Result<Self, JsValue> {
+        let client = AgentClient::new(pool, agent, conversation_from, status_from, credential)
+            .map_err(client_error)?;
+        Ok(Self {
+            client: RefCell::new(Some(client)),
+            reading: Cell::new(false),
+            waker: RefCell::new(None),
+        })
+    }
+
     fn with_client<T>(&self, read: impl FnOnce(&AgentClient) -> T) -> Result<T, JsValue> {
         let client = self.client.borrow();
         let client = client.as_ref()
