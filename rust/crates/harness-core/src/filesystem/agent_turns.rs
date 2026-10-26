@@ -8,18 +8,18 @@
 //! so the executor can dispatch no other history.
 
 use super::{
-    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost, FilesystemJournalBinding,
+    FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
+    FilesystemHost, FilesystemJournalBinding,
 };
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost},
-    conversation::{
-        ContentResidencyVerifier, ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner,
-    },
+    conversation::{ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityIssuer, SchemaRegistry, Scope},
     executor::{ExecutionJournal, Executor, TurnOutput},
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
+    runtime::ContentBindings,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
@@ -30,7 +30,7 @@ use std::sync::Arc;
 pub const PRIVATE_VOLUME: &str = "private";
 
 /// The authority of one agent turn: the agent's conversation issuer, its scope
-/// over every bound volume, and a content reader bound to that scope.
+/// over every bound volume, and the agent's content bound to that scope.
 pub struct TurnAuthority {
     /// Signing custody; it must outlive the turn's journal.
     pub issuer: AuthorityIssuer,
@@ -38,24 +38,23 @@ pub struct TurnAuthority {
     pub scope: Scope,
     /// The capabilities `scope` grants, for the executor's tool authority.
     pub grants: Capabilities,
-    /// Reader of files under `scope`, for model content and tool inputs.
-    pub content: Arc<dyn ContentResidencyVerifier>,
+    /// Reader of files under `scope` and writer of the private volume, for
+    /// model content, tool inputs and the turn's own output.
+    pub content: ContentBindings,
 }
 
-/// Builds the executor of one agent turn: its tools, policy, limits and
-/// compaction, under the turn's [`TurnAuthority`].
+/// Builds the executor of one agent turn: its tools, context, policy, limits
+/// and compaction, under the turn's [`TurnAuthority`]. It may stage files (a
+/// context manifest) through the authority's private writer.
 pub trait TurnExecutors: Send + Sync {
-    /// Executor for `agent`'s next turn.
-    fn executor(&self, agent: &AgentState, authority: &TurnAuthority) -> Result<Arc<dyn Executor>>;
-}
-
-impl<F> TurnExecutors for F
-where
-    F: Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn Executor>> + Send + Sync,
-{
-    fn executor(&self, agent: &AgentState, authority: &TurnAuthority) -> Result<Arc<dyn Executor>> {
-        self(agent, authority)
-    }
+    /// Executor for `agent`'s turn `turn` on `input`.
+    fn executor<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+        input: &'a ModelContent,
+        authority: &'a TurnAuthority,
+    ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
 }
 
 /// Bounds of one agent turn.
@@ -136,8 +135,16 @@ where
         let capabilities = Capabilities::new(grants);
         let scope = issuer.issue("agent", &capabilities, Some(owner), None, &mut None)?;
         let verifier = issuer.verifier(&mut None)?;
-        let content = FilesystemContentVerifier::new(
+        let reader = FilesystemContentVerifier::new(
             Arc::clone(&self.host),
+            &verifier,
+            &scope,
+            self.limits.maximum_bytes,
+            None,
+        )?;
+        let writer = FilesystemContentPublisher::new(
+            Arc::clone(&self.host),
+            &private.volume,
             &verifier,
             &scope,
             self.limits.maximum_bytes,
@@ -155,14 +162,17 @@ where
                 io: None,
             },
         )?
-        .with_input_verifier(content.clone());
+        .with_input_verifier(reader.clone());
         Ok((
             journal,
             TurnAuthority {
                 issuer,
                 scope,
                 grants: capabilities,
-                content,
+                content: ContentBindings {
+                    reader,
+                    writer: Some(writer),
+                },
             },
         ))
     }
@@ -275,7 +285,10 @@ where
                 None => journal,
             };
             Ok(OpenTurn {
-                executor: self.executors.executor(agent, &authority)?,
+                executor: self
+                    .executors
+                    .executor(agent, turn, input, &authority)
+                    .await?,
                 journal: Arc::new(journal),
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),

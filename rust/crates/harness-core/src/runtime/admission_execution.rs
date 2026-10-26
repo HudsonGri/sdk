@@ -154,3 +154,41 @@ impl AgentHarness {
             .await
     }
 }
+
+impl AgentHarness {
+    /// A live (non-durable) context for one agent turn. Its scope is this
+    /// runtime's (tools, limits, run limits) plus the agent's volume `grants`;
+    /// the agent's private volume reads and writes through `private`, and
+    /// other volumes keep this runtime's own content bindings.
+    pub fn agent_context(
+        self: &Arc<Self>,
+        turn: OperationId,
+        grants: &Capabilities,
+        private: ContentBindings,
+    ) -> Result<TaskContext> {
+        if private.writer.is_none() {
+            return Err(Error::Invalid("agent private content has no writer".into()));
+        }
+        let mut scope = self.scope.clone();
+        scope.grants = Capabilities::new(scope.grants.iter().chain(grants.iter()));
+        let descendants = self
+            .live
+            .child(scope.concurrency_bound(self.concurrency), None)?;
+        Ok(TaskContext {
+            harness: Arc::clone(self),
+            task_id: turn,
+            durable_task: None,
+            descendants,
+            scope,
+            policy_overrides: Vec::new(),
+            owned_interactions: None,
+            owned_mailbox: None,
+            output_content: Some(private),
+            model_steps: Arc::new((AtomicUsize::new(0), None)),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_purpose: None,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
+        })
+    }
+}

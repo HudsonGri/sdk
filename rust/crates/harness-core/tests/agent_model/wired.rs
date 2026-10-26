@@ -3,6 +3,7 @@
 use super::{Result, adopted, id, intent};
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_harness_core::{
+    OperationId,
     agent::*,
     context::{CompactionPolicy, ContextPipeline},
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
@@ -15,7 +16,9 @@ use acyclic_harness_core::{
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
 };
-use acyclic_stream::{CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamProvider};
+use acyclic_stream::{
+    BoxProviderFuture, CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamProvider,
+};
 use std::sync::Arc;
 
 const LIMITS: TurnLimits = TurnLimits {
@@ -53,20 +56,37 @@ async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
     ))
 }
 
-/// The stock loop over `model`, built once per turn.
+/// The stock loop over a scripted model, built once per turn.
+struct Stock {
+    selection: Model,
+    model: Arc<ScriptedModelProvider>,
+}
+
+impl TurnExecutors for Stock {
+    fn executor<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+        _: &'a ModelContent,
+        _: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
+        Box::pin(async move {
+            Ok(Arc::new(
+                StockExecutor::new(
+                    self.selection.clone(),
+                    self.model.clone(),
+                    ContextPipeline::default(),
+                    ToolRegistry::default(),
+                )
+                .with_compaction_policy(CompactionPolicy::Disabled),
+            ) as Arc<dyn Executor>)
+        })
+    }
+}
+
 fn executors(model: Arc<ScriptedModelProvider>) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into(), serde_json::Value::Null)?;
-    Ok(Arc::new(move |_: &AgentState, _: &TurnAuthority| {
-        Ok(Arc::new(
-            StockExecutor::new(
-                selection.clone(),
-                model.clone(),
-                ContextPipeline::default(),
-                ToolRegistry::default(),
-            )
-            .with_compaction_policy(CompactionPolicy::Disabled),
-        ) as Arc<dyn Executor>)
-    }))
+    Ok(Arc::new(Stock { selection, model }))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
