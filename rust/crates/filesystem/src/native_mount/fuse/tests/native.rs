@@ -647,7 +647,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
             startup_source_watch: None,
             terminal_source_failure: None,
         }),
-        failure: None,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
         _allocation: control_allocation,
     }));
     let job_allocation = original.claim(
@@ -679,7 +679,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
     let state = state
         .lock()
         .unwrap_or_else(crate::native_mount::fuse::PoisonError::into_inner);
-    assert!(state.is_retired() && state.failure.is_none());
+    assert!(state.is_retired() && state.failure.is_empty());
     assert!(
         state
             .retirement

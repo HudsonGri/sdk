@@ -113,4 +113,4 @@ mod capture;
 pub(super) mod fence;
 #[cfg(all(target_os = "linux", not(acyclic_fs_native_loom)))]
 mod recovery_bootstrap;
-mod retirement;
+pub(in crate::native_mount) mod retirement;

@@ -162,10 +162,10 @@ where
             .store(true, std::sync::atomic::Ordering::Release);
         session.stop_with_context(&cleanup)?;
         #[cfg(windows)]
-        if let Some((cause, _)) = session
+        if let Some(cause) = session
             .namespace_outcome
             .as_mut()
-            .and_then(super::super::projfs::ProjFsNamespaceOutcome::take_capture_failures)
+            .and_then(super::super::projfs::ProjFsNamespaceOutcome::take_capture_failure)
         {
             return Err(cause.into());
         }

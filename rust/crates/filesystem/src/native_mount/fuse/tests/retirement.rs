@@ -14,6 +14,111 @@ enum Retirement {
     LastOwner,
 }
 
+#[test]
+fn failed_worker_retires_its_destination_before_reporting_both_causes()
+-> Result<(), Box<dyn std::error::Error>> {
+    for metered in [false, true] {
+        terminal_worker_retires_destination(false, metered)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn panicked_worker_retires_its_destination_without_losing_its_payload()
+-> Result<(), Box<dyn std::error::Error>> {
+    for metered in [false, true] {
+        terminal_worker_retires_destination(true, metered)?;
+    }
+    Ok(())
+}
+
+fn terminal_worker_retires_destination(
+    panicked: bool,
+    metered: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::tests::retirement::{Fixture, retired};
+
+    let Fixture {
+        root,
+        mut session,
+        work,
+        fence,
+    } = Fixture::new()?;
+    let missing = root.path().join("absent-worker-input");
+    let worker = std::thread::spawn(move || {
+        assert!(!panicked, "retained FUSE worker panic");
+        std::fs::read(missing).map(drop)
+    });
+    let cleanup_error = std::fs::read(root.path())
+        .expect_err("a directory cannot be read as source bytes");
+    let cleanup_code = cleanup_error.raw_os_error();
+    let (callbacks, _) = shared_sources(posix_config())?;
+    let core = projection_core(
+        Arc::new(callbacks),
+        crate::WorkBudget::UNBOUNDED,
+        work.cancellation(),
+    )?;
+    core.stop();
+    let state = Arc::new(Mutex::new(FuseSessionState {
+        path: super::super::FuseOwned::empty(vec![0]),
+        before: None,
+        mount: super::super::mount::Mount::default(),
+        worker: Some(worker),
+        device: None,
+        notifier: None,
+        identity: None,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: None,
+            destination_guard: session.destination_guard.take(),
+            startup_source_watch: None,
+            terminal_source_failure: Some(cleanup_error.into()),
+        }),
+        cleanup: work.reserve_work(crate::WorkCounters {
+            backend_read_operations: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
+        _allocation: work.claim(
+            std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?,
+    }));
+    let before = work.receipt();
+    // The real physical owner must return after the failed worker and source
+    // have exited. The old early-return path parks here with the fence held.
+    run_fuse_session((Arc::clone(&core), Arc::clone(&state)));
+    assert!(state.lock().map_err(|_| "retirement state poisoned")?.is_retired());
+    retired(root.path(), &fence, before, &work)?;
+    let mut facade = super::super::FuseSession {
+        core,
+        state,
+        invalidator: None,
+    };
+    let wait = crate::CancellationToken::new();
+    let stop = if metered {
+        NativeSessionStopWork::Meter(&work)
+    } else {
+        NativeSessionStopWork::AcceptedWait(&wait)
+    };
+    let first = facade.stop(&stop).expect_err("worker error must survive cleanup");
+    if panicked {
+        let NativeMountError::DriverPanicked { panic, .. } = first else {
+            panic!("worker panic changed to {first:?}");
+        };
+        let payload = panic.into_inner().map_err(|_| "panic payload poisoned")?;
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"retained FUSE worker panic"));
+    } else {
+        assert!(matches!(first, NativeMountError::Io(ref cause) if cause.kind() == std::io::ErrorKind::NotFound));
+    }
+    let second = facade.stop(&stop).expect_err("source error must remain owned");
+    assert!(matches!(second, NativeMountError::Io(ref cause) if cause.raw_os_error() == cleanup_code));
+    facade.stop(&stop)?;
+    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+    assert_eq!(work.receipt().peak_allocation_bytes, before.peak_allocation_bytes);
+    Ok(())
+}
+
 /// Runs the real physical loop after namespace/device retirement, retaining a
 /// real caller-supplied source packet. No live kernel mount is needed to drive
 /// the remaining source-join obligation.
@@ -44,7 +149,7 @@ pub(in crate::native_mount) fn retire_source_in_physical_loop(
             terminal_source_failure: None,
         }),
         cleanup: work.reserve_work(crate::WorkCounters::UNCHARGED)?,
-        failure: None,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
         _allocation: work.claim(
             std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
             1,
@@ -168,7 +273,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         identity: None,
         retirement: None,
         cleanup,
-        failure: None,
+        failure: crate::native_mount::retirement::TerminalFailures::default(),
         _allocation: allocation,
     }));
     let mut facade = super::super::FuseSession {

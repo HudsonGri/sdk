@@ -1,14 +1,39 @@
 use super::*;
 
-struct Fixture {
-    root: tempfile::TempDir,
-    session: NativeMountSession,
-    work: NativeMaterializationWork,
-    fence: PathBuf,
+#[test]
+fn taking_a_terminal_cause_preserves_the_distinct_cleanup_cause()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let producer = std::fs::read(root.path().join("absent"))
+        .expect_err("producer input must be absent");
+    let cleanup = std::fs::read(root.path())
+        .expect_err("a directory cannot be read as cleanup bytes");
+    let producer_code = producer.raw_os_error();
+    let cleanup_code = cleanup.raw_os_error();
+    assert_ne!(producer_code, cleanup_code);
+    let mut failures = crate::native_mount::retirement::TerminalFailures {
+        producer: Some(producer.into()),
+        cleanup: Some(cleanup.into()),
+    };
+    assert!(matches!(failures.take(), Some(NativeMountError::Io(cause)) if cause.raw_os_error() == producer_code));
+    assert!(!failures.is_empty());
+    let (last, extra) = failures.take_pair().ok_or("cleanup outcome was lost")?;
+    assert!(matches!(last, NativeMountError::Io(cause) if cause.raw_os_error() == cleanup_code));
+    assert!(extra.is_none());
+    assert!(failures.is_empty());
+    assert!(failures.take_pair().is_none());
+    Ok(())
+}
+
+pub(in crate::native_mount) struct Fixture {
+    pub(in crate::native_mount) root: tempfile::TempDir,
+    pub(in crate::native_mount) session: NativeMountSession,
+    pub(in crate::native_mount) work: NativeMaterializationWork,
+    pub(in crate::native_mount) fence: PathBuf,
 }
 
 impl Fixture {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub(in crate::native_mount) fn new() -> Result<Self, Box<dyn std::error::Error>> {
         registry::initialize()?;
         let root = tempfile::tempdir()?;
         let destination = root.path().join("retired-mount");
@@ -48,7 +73,7 @@ impl Fixture {
     }
 }
 
-fn retired(
+pub(in crate::native_mount) fn retired(
     root: &Path,
     fence: &Path,
     before: crate::WorkCounters,

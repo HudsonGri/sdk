@@ -1,5 +1,29 @@
 use super::*;
 
+/// Terminal data remains owned independently of physical cleanup progress.
+#[derive(Default)]
+pub(super) struct TerminalFailures {
+    pub(super) producer: Option<NativeMountError>,
+    pub(super) cleanup: Option<NativeMountError>,
+}
+
+impl TerminalFailures {
+    /// Taking one cause never consumes a distinct cause retained by the owner.
+    pub(super) fn take(&mut self) -> Option<NativeMountError> {
+        self.producer.take().or_else(|| self.cleanup.take())
+    }
+
+    #[cfg(any(windows, test))]
+    pub(super) fn take_pair(&mut self) -> Option<(NativeMountError, Option<NativeMountError>)> {
+        self.take().map(|first| (first, self.take()))
+    }
+
+    #[cfg(any(target_os = "linux", windows, test))]
+    pub(super) fn is_empty(&self) -> bool {
+        self.producer.is_none() && self.cleanup.is_none()
+    }
+}
+
 /// Caller waits can refuse; the existing physical worker joins accepted I/O.
 #[derive(Clone, Copy)]
 pub(super) enum SourceRetirementWait {

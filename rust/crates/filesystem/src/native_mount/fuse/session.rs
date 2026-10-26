@@ -23,7 +23,7 @@ pub(super) struct FuseSessionState {
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
     pub(super) cleanup: NativeWorkReservation,
-    pub(super) failure: Option<NativeMountError>,
+    pub(super) failure: crate::native_mount::retirement::TerminalFailures,
     pub(super) _allocation: NativeAllocation,
 }
 
@@ -84,14 +84,18 @@ impl FuseSessionState {
         self.before.take();
         if self.worker.is_some() {
             started(ReadOperations.delta(1))?;
-            self.worker
+            self.failure.producer = self.worker
                 .take()
                 .ok_or(NativeMountError::FuseShutdownFailed)?
                 .join()
                 .map_err(|panic| NativeMountError::DriverPanicked {
                     operation: "FUSE SDK request worker",
                     panic: Mutex::new(panic),
-                })??;
+                })
+                .and_then(|result| result.map_err(NativeMountError::from))
+                .err();
+            // The worker has physically exited even when its terminal value
+            // failed. The same owner must still retire its source and fence.
         }
         if let Some(retirement) = self.retirement.as_mut() {
             retirement.retire(None, join)?;
@@ -174,7 +178,7 @@ impl FuseSession {
             identity: None,
             retirement: None,
             cleanup,
-            failure: None,
+            failure: crate::native_mount::retirement::TerminalFailures::default(),
             _allocation: allocation,
         }));
         let job = (Arc::clone(&core), Arc::clone(&state));
@@ -309,13 +313,7 @@ impl FuseSession {
             }
         };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if meter.is_none()
-            && let Some(error) = state.failure.take()
-        {
-            return Err(error);
-        }
         state.stop(&self.core, meter, SourceRetirementWait::Caller)?;
-        state.failure.take();
         if self.invalidator.is_some() {
             state.cleanup.started_io(ReadOperations.delta(1), None)?;
         }
@@ -328,7 +326,11 @@ impl FuseSession {
                     panic: Mutex::new(panic),
                 })?;
         }
-        Ok(())
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        match state.failure.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -355,7 +357,9 @@ pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<Fu
     }
     let mut retiring = state.lock().unwrap_or_else(PoisonError::into_inner);
     if let Err(error) = retiring.stop(&core, None, SourceRetirementWait::Physical) {
-        retiring.failure.get_or_insert(error);
+        // This physical worker executes the retirement pass once. Its cleanup
+        // cause is distinct from the namespace worker's already-owned cause.
+        retiring.failure.cleanup = Some(error);
     }
     drop(retiring);
     // A refused cleanup keeps the original source, fence and join handles owned.

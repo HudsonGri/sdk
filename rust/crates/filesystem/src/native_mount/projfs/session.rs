@@ -367,8 +367,10 @@ impl ProjFsSession {
                 });
         let state = std::mem::take(&mut *lock_recover(&runtime.projector.state));
         self.namespace_outcome = Some(ProjFsNamespaceOutcome {
-            capture_failure: self.capture_failure.take(),
-            cleanup_failure,
+            failures: crate::native_mount::retirement::TerminalFailures {
+                producer: self.capture_failure.take(),
+                cleanup: cleanup_failure,
+            },
             _state: state,
             callbacks: Arc::clone(&runtime.post_operation_failure),
         });
@@ -376,7 +378,7 @@ impl ProjFsSession {
         drop(runtime);
         if let Some(cleanup) = self.projection_cleanup.as_mut() {
             if self.namespace_outcome.as_ref().is_some_and(|outcome| {
-                outcome.capture_failure.is_some() || outcome.cleanup_failure.is_some()
+                !outcome.failures.is_empty()
             }) {
                 // Never delete data whose publication/capture failed. Remove
                 // only the detached root tag; the outcome retains the cause.

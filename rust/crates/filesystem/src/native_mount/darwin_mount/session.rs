@@ -61,7 +61,7 @@ impl DriverSessionResources {
             match self.retire(&mut state, None, SourceRetirementWait::Physical) {
                 Ok(()) => return,
                 Err(error) => {
-                    state.failure.get_or_insert(error);
+                    state.failure.cleanup.get_or_insert(error);
                 }
             }
             if state.resources.is_none()
