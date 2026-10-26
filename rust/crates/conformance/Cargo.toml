@@ -10,6 +10,7 @@ description = "Internal black-box conformance suites for Acyclic service provide
 readme = "README.md"
 
 [features]
+storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "dep:object_store"]
 client-session = ["acyclic-harness/grpc", "acyclic-stream/grpc"]
 harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
@@ -17,6 +18,7 @@ s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum
 
 [dependencies]
 acyclic-agent-host-conformance = { path = "agent-host" }
+object_store = { version = "0.14.2", features = ["aws"], optional = true }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-machines = { version = "=0.2.0", path = "../machines" }
@@ -43,6 +45,11 @@ name = "qualify"
 test = false
 path = "src/bin/qualify.rs"
 required-features = ["local-runner"]
+
+[[bin]]
+name = "storage-conformance"
+test = false
+required-features = ["storage-backends"]
 
 [[bin]]
 name = "native-mount-qualify"
