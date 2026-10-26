@@ -7,7 +7,8 @@ import type {
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
-import type { AgentClient, AgentEvent, AgentWindow, StatusRecord, FileClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "../src/client.js";
+import type { AgentClient, AgentEvent, AgentWindow, StatusRecord } from "../src/client.js";
+import type { FileClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "./legacy-client.fixture.js";
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
   ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,

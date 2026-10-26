@@ -1,4 +1,5 @@
-import { FileClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+import { WasmStream, initializeClientQueries } from "../src/client.js";
+import { FileClient, ClientQuery, TaskVolume } from "./legacy-client.fixture.js";
 
 const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
 const encoder = new TextEncoder(), decoder = new TextDecoder();

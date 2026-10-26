@@ -34,6 +34,17 @@ Input staging, approval request reads and decisions belong to the runtime host.
 The browser host migration supplies those bindings; this observation adapter
 does not implement another outbox, submission transport or approval policy.
 
+The public TypeScript client no longer exports `FileClient`, `TaskVolume`,
+`ClientQuery`, `ClientViews` or their workflow-file types. New consumers use the
+actor observations above, Rust `PageWindow` for provider pages, and the owning
+host for input and approval controls. Initialization requires those actor/page
+exports without requiring the retired `WasmClientViews` class.
+
+The original FileClient recovery, ordering, publication and byte-admission tests
+retain their unchanged oracles through an internal test fixture. That fixture
+is not a supported product API or a replacement submission path. Its remaining
+host migration is separate from the actor record observation smoke.
+
 The browser host can return this same client with the Rust `from_session`
 factory, sharing its authenticated session and credential slot. It does not
 need another `WasmStream` or a polling reader.

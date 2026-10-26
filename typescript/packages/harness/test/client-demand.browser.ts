@@ -1,5 +1,6 @@
-import { DemandLoader, RequestScheduler, Harness, FileClient, ClientQuery, TaskVolume, WasmStream,
+import { DemandLoader, RequestScheduler, Harness, WasmStream,
   initializeClientQueries, PageWindow, HydrationCache, type FileRef } from "@acyclic-labs/harness";
+import { FileClient, ClientQuery, TaskVolume } from "./legacy-client.fixture.js";
 const result = document.querySelector<HTMLElement>("#result")!;
 const assert = (value: unknown, message: string): void => { if (!value) throw new Error(message); };
 try {

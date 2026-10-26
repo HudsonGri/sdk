@@ -2,7 +2,8 @@ import { beforeAll, expect, test } from "bun:test";
 import fc from "fast-check";
 import initialize from "../generated/wasm/acyclic_harness_wasm.js";
 import "fake-indexeddb/auto";
-import { FileClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+import { WasmStream, initializeClientQueries } from "../src/client.js";
+import { FileClient, ClientQuery, TaskVolume } from "./legacy-client.fixture.js";
 
 beforeAll(initializeClientQueries);
 
