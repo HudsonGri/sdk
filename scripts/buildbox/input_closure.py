@@ -10,7 +10,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import stat
@@ -57,7 +57,9 @@ def parse(value):
         path=Path(row['path'])
         if row['where']=='source' and (path.is_absolute() or '..' in path.parts):
             raise InputRefusal(row['id'],'source inputs must stay inside the uploaded source root',row['producer'])
-        if row['where']=='bb2' and not path.is_absolute():
+        # The declaration names the remote OS explicitly. Windows clients must
+        # not reinterpret an absolute Linux reference as a drive-relative path.
+        if row['where']=='bb2' and not PurePosixPath(row['path']).is_absolute():
             raise InputRefusal(row['id'],'bb2 references require an absolute immutable path',row['producer'])
         if not isinstance(row.get('sha256'),str) or not re.fullmatch('[0-9a-f]{64}',row['sha256']):
             raise InputRefusal(row['id'],'a producer-qualified SHA256 is required',row['producer'])

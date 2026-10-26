@@ -4,7 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 import sys
@@ -68,6 +68,23 @@ class InputClosureTests(unittest.TestCase):
             # does not consult the missing/changed comparison prerequisite.
             subprocess.run(child,cwd=self.root,env=self.clean_env,check=True)
             self.assertTrue(marker.exists());marker.unlink()
+
+    def test_windows_client_admits_captured_absolute_bb2_path_without_reinterpreting_it(self):
+        # Real plugins refusal, captured in the owner's 20261026T030800Z steer.
+        value=copy.deepcopy(self.value)
+        value['inputs'][0].update(where='bb2',path='/mnt/bb/wt-sdk/plugins-f2e372f6.1-1792980493426-30567-b8e274b1/.bb-plugins-retirement-ready/shipping/managed/bin/acyclic')
+        with patch.object(inputs,'Path',PureWindowsPath):
+            self.assertEqual(inputs.parse(value),value)
+        old_source=(HERE/'input_closure.py').read_text().replace(
+            "not PurePosixPath(row['path']).is_absolute()",'not path.is_absolute()')
+        old={'__file__':str(HERE/'input_closure.py'),'__name__':'old_input_path_control'}
+        exec(compile(old_source,'old-input-path-control','exec'),old)
+        old['Path']=PureWindowsPath
+        with self.assertRaisesRegex(inputs.InputRefusal.__bases__[0],'bb2 references require an absolute immutable path'):
+            old['parse'](value)
+        for path in ['relative/input','C:/borrowed-client-path']:
+            value['inputs'][0]['path']=path
+            with self.assertRaises(inputs.InputRefusal):inputs.parse(value)
 
     def test_public_run_preserves_child_bytes_status_and_canonical_declaration(self):
         child=[sys.executable,'-c',
