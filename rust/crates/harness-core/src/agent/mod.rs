@@ -8,6 +8,7 @@
 
 mod commit;
 mod driver;
+mod handler;
 pub mod kernel;
 mod machine;
 mod layout;
@@ -19,6 +20,7 @@ pub use machine::{
     Alarm, AgentState, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, step,
 };
+pub use handler::{AgentHandler, INBOX};
 pub use driver::{ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, approval_intent, turn_id};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, VOLUMES};
