@@ -32,10 +32,10 @@ pub async fn next_stage<'a>(
     next_stage_with_parent(policy, digest, parent.as_deref(), request, files, start).await
 }
 
-// The temporary task adapter retains its original parent principal spelling.
-// Only this function traverses the chain; agent callers derive the principal
-// from the admitted native agent identity above.
-pub(super) async fn next_stage_with_parent<'a>(
+// The task-file adapter (`task_volume::approval_chain`) retains its original
+// parent principal spelling. Only this function traverses the chain; agent
+// callers derive the principal from the admitted native agent identity above.
+pub(crate) async fn next_stage_with_parent<'a>(
     policy: &'a ApprovalPolicy,
     digest: [u8; 32],
     parent: Option<&str>,

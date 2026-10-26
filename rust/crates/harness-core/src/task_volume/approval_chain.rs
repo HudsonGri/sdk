@@ -1,15 +1,16 @@
-//! Adapts the existing task host to the agent-neutral approver implementation.
-//! Deleted with that host by the agent switchover; it owns no traversal or wake.
-use super::{
-    ApprovalCreate, ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalReviewFile, Approver,
-    NextStage,
-};
+//! The task host's [`ApprovalFiles`] over task files, feeding the agent-neutral
+//! approval chain. It lives with the task volume and is deleted with it; the
+//! chain, its stages and the agent backend stay in `crate::approvals`.
+use super::{Component, FileKey, FileValue, Query, TaskFile, TaskFiles};
 use crate::{
     Error, Result, TaskId,
+    approvals::{
+        ApprovalCreate, ApprovalFiles, ApprovalPolicy, ApprovalRequest, ApprovalReviewFile,
+        Approver, NextStage, check_bound,
+    },
     conversation::Limits,
     interaction::ApprovalDecisionFile,
     model::{Model, ModelProvider},
-    task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskFiles},
 };
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use futures::FutureExt as _;
@@ -31,7 +32,7 @@ pub fn next_stage<'a>(
     // Snapshot reads return Ready in their first poll: no storage, executor,
     // blocking or follow operation is admitted by this compatibility entry.
     let parent = parent.map(|parent| format!("parent:{parent}"));
-    super::chain::next_stage_with_parent(
+    crate::approvals::next_stage_with_parent(
         policy,
         digest,
         parent.as_deref(),
@@ -58,7 +59,7 @@ impl ApprovalFiles for Snapshot<'_> {
             self.files
                 .get(&key)
                 .map(|file| {
-                    super::files::check_bound(file.bytes.len(), maximum_bytes)?;
+                    check_bound(file.bytes.len(), maximum_bytes)?;
                     Ok(file.bytes.to_vec())
                 })
                 .transpose()
@@ -114,7 +115,7 @@ pub fn review_key(request: &FileValue, principal: &str) -> Result<FileKey> {
 
 /// Existing-host request fingerprint; the shared codec hashes the original bytes.
 pub fn fingerprint(request: &FileValue) -> Result<String> {
-    super::chain::fingerprint(&request.bytes)
+    crate::approvals::request_fingerprint(&request.bytes)
 }
 
 struct Volume<'a, P: ?Sized> {
@@ -133,8 +134,8 @@ impl<P: StreamProvider + ?Sized> ApprovalFiles for Volume<'_, P> {
             let Some(file) = snapshot.files.first() else {
                 return Ok(None);
             };
-            super::files::check_bound(file.bytes.len(), maximum_bytes)?;
-            crate::task_volume::publish_durable(&self.files.inner, file, None).await?;
+            check_bound(file.bytes.len(), maximum_bytes)?;
+            super::publish_durable(&self.files.inner, file, None).await?;
             Ok(Some(file.bytes.to_vec()))
         })
     }
@@ -145,26 +146,22 @@ impl<P: StreamProvider + ?Sized> ApprovalFiles for Volume<'_, P> {
         maximum_bytes: u64,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async move {
-            super::files::check_bound(bytes.len(), maximum_bytes)?;
+            check_bound(bytes.len(), maximum_bytes)?;
             let key = key(self.request, path)?;
             let write = FileValue::new(key.clone(), bytes);
             loop {
                 let snapshot = self.files.snapshot(&Query::File(key.clone()), 1).await?;
                 if let Some(file) = snapshot.files.first() {
-                    super::files::check_bound(file.bytes.len(), maximum_bytes)?;
-                    crate::task_volume::publish_durable(&self.files.inner, file, None).await?;
+                    check_bound(file.bytes.len(), maximum_bytes)?;
+                    super::publish_durable(&self.files.inner, file, None).await?;
                     return Ok(ApprovalCreate::Existing(file.bytes.to_vec()));
                 }
                 match self.files.inner.create(snapshot.generation, &write).await {
                     Ok(_) => {
-                        crate::task_volume::publish_durable(&self.files.inner, &write, None)
-                            .await?;
+                        super::publish_durable(&self.files.inner, &write, None).await?;
                         return Ok(ApprovalCreate::Created);
                     }
-                    Err(
-                        crate::task_volume::Error::Conflict(_)
-                        | crate::task_volume::Error::ImmutableConflict(_),
-                    ) => continue,
+                    Err(super::Error::Conflict(_) | super::Error::ImmutableConflict(_)) => continue,
                     Err(error) => return Err(error.into()),
                 }
             }
@@ -183,7 +180,7 @@ pub async fn automatic_review<P: StreamProvider + ?Sized>(
 ) -> Result<ApprovalReviewFile> {
     let id = request_id(request)?.as_str();
     let request_view = ApprovalRequest::new(id, &request.bytes, limits.file_bytes)?;
-    super::automatic::automatic_review(
+    crate::approvals::automatic_agent_review(
         models,
         &Volume { files, request },
         &request_view,

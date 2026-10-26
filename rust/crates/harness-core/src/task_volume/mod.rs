@@ -55,6 +55,7 @@ pub use follow::query_id;
 pub use follow::record_changes;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
 mod approval_query;
+pub mod approval_chain;
 mod approvals;
 pub use approvals::FileApproval;
 pub use heads::{HeadFile, HeadSnapshot};

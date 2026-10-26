@@ -1,5 +1,5 @@
-use super::super::RuleVerdict;
 use super::*;
+use crate::approvals::RuleVerdict;
 use crate::runtime::ToolPolicy;
 use proptest::prelude::*;
 
