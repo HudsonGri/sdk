@@ -18,7 +18,7 @@ pub(in crate::local) mod git;
 mod mounts;
 pub(in crate::local) mod owner;
 mod task_views;
-pub(in crate::local) use children::created_project;
+pub(in crate::local) use children::{LazyForkCuts, created_project};
 pub(super) mod projection;
 pub(super) mod volumes;
 #[cfg(test)]
