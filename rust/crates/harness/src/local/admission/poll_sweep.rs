@@ -235,6 +235,9 @@ impl Fixture {
             task_files,
             files: files.clone(),
             runtime,
+            agent: AgentId::from_bytes([1; 16]),
+            agent_key: None,
+            agents: tokio::sync::OnceCell::new(),
             project: self.volumes[if matches!(self.scenario, Scenario::EffectAndContinuation) {
                 1
             } else {

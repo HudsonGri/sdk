@@ -368,6 +368,9 @@ impl Opening {
         let local = LocalHarness {
             files,
             runtime,
+            agent: owner.agent,
+            agent_key: Some(owner.key),
+            agents: tokio::sync::OnceCell::new(),
             task_files,
             project: owner.project.clone(),
             scratch,
