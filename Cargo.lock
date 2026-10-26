@@ -447,6 +447,7 @@ dependencies = [
  "acyclic-stream",
  "acyclic-test-support",
  "arrayvec",
+ "async-stream",
  "async-trait",
  "base64 0.22.1",
  "blake3",

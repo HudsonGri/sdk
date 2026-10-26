@@ -73,6 +73,7 @@ acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
+async-stream = "0.3.6"
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
