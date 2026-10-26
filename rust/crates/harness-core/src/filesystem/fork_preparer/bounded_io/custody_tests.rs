@@ -22,11 +22,12 @@ fn native_recovery_keeps_custody_and_charges_the_current_window() -> Result<()> 
         .ok_or_else(|| Error::Invalid("foreign ledger adopted recovery custody".into()))?;
     assert_eq!(custody.bytes(), 8);
     assert!(custody.work().shares_allocation_context(&work));
-    let io = PreparationIo::from_native_custody_with_work(custody, &window)
-        .map_err(|custody| Error::NativeWork {
+    let io = PreparationIo::from_native_custody_with_work(custody, &window).map_err(|custody| {
+        Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
             custody: Some(custody),
-        })?;
+        }
+    })?;
     io.charged(WorkCounters {
         items_examined: 2,
         ..Default::default()
