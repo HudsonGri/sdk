@@ -166,19 +166,24 @@ class ProofCoverage(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'export profile inputs require canonical generated-export proof: rust/crates/demo/Cargo.toml'):
                 POLICY.check(root, base)
 
-    def test_real_manifest_deletion_requires_export_evidence(self):
+    def test_real_manifest_deletion_or_rename_requires_export_evidence(self):
         capture = ROOT / 'scripts/tests/fixtures/proof-policy/canonical-exports-v1/source/Cargo.toml'
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.git_repo(root)
-            shutil.copyfile(capture, root / 'Cargo.toml')
-            POLICY.git(root, 'add', '.')
-            POLICY.git(root, 'commit', '-qm', 'actual captured workspace manifest')
-            base = POLICY.git(root, 'rev-parse', 'HEAD').decode().strip()
-            POLICY.git(root, 'rm', 'Cargo.toml')
-            POLICY.git(root, 'commit', '-qm', 'remove an effective export input')
-            with self.assertRaisesRegex(ValueError, 'export profile inputs require canonical generated-export proof: Cargo.toml'):
-                POLICY.check(root, base)
+        for operation in ('delete', 'rename'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.git_repo(root)
+                shutil.copyfile(capture, root / 'Cargo.toml')
+                POLICY.git(root, 'add', '.')
+                POLICY.git(root, 'commit', '-qm', 'actual captured workspace manifest')
+                base = POLICY.git(root, 'rev-parse', 'HEAD').decode().strip()
+                if operation == 'delete':
+                    POLICY.git(root, 'rm', 'Cargo.toml')
+                else:
+                    # A rename-only diff can hide the removed manifest's name.
+                    POLICY.git(root, 'mv', 'Cargo.toml', 'Cargo.saved')
+                POLICY.git(root, 'commit', '-qm', 'remove an effective export input')
+                with self.assertRaisesRegex(ValueError, 'export profile inputs require canonical generated-export proof: Cargo.toml'):
+                    POLICY.check(root, base)
 
     def test_cli_missing_base_is_typed(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/check-proof-coverage.py')], capture_output=True, text=True)

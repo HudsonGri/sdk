@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T05:09:56.580013+00:00",
+  "generated_at": "2026-10-26T05:12:07.515510+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -135,12 +135,12 @@
       {
         "file": "scripts/check-proof-coverage.py",
         "line": 116,
-        "sha256": "2876c216b0e7ba9ffbb59a6ba5fb07177939b413eec5ca39c3114c3d2f8f3224"
+        "sha256": "2bf5c2fa2be0d225edda22d0bf7334ede35880a7fc1bd29703e17b5d5e94ebdc"
       },
       {
         "file": "scripts/check-proof-coverage.py",
         "line": 61,
-        "sha256": "2876c216b0e7ba9ffbb59a6ba5fb07177939b413eec5ca39c3114c3d2f8f3224"
+        "sha256": "2bf5c2fa2be0d225edda22d0bf7334ede35880a7fc1bd29703e17b5d5e94ebdc"
       },
       {
         "file": "scripts/proof_inventory_scan.py",
@@ -150,17 +150,17 @@
       {
         "file": "scripts/test-proof-coverage.py",
         "line": 22,
-        "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+        "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
       },
       {
         "file": "scripts/test-proof-coverage.py",
         "line": 146,
-        "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+        "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
       },
       {
         "file": "scripts/test-proof-coverage.py",
         "line": 169,
-        "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+        "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
       },
       {
         "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/verify.rs",
@@ -300,15 +300,15 @@
         {
           "file": "scripts/test-proof-coverage.py",
           "line": 146,
-          "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+          "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
         },
         {
           "file": "scripts/test-proof-coverage.py",
           "line": 169,
-          "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+          "sha256": "e942560c1fcf0cee20f0b786b849efb24c8cd20101d35b4b784ee148fe53b1c2"
         }
       ],
-      "production_negative_control": "pending: remove only the profile-input refusal, then require both unchanged new real-git regression cases to fail because ValueError was not raised",
+      "production_negative_control": "pending: remove only the profile-input refusal, then require both unchanged new real-git regression cases to fail because ValueError was not raised; independently omit --no-renames and require the rename subcase to detect the hidden removed input",
       "new_tests_run": 0,
       "negative_control_run": false,
       "historical_receipts_qualify_current_revision": false

@@ -132,7 +132,8 @@ def check(root, base):
     result = check_review(root, inventory, changed)
     # Deletions matter here too: removing a manifest/configuration can change
     # inherited defaults or the generator selected for an unchanged source.
-    all_paths = git(root, 'diff', '--name-only', '-z', base, 'HEAD', '--').decode('utf-8').split('\0')
+    # Disable rename folding so both the removed and added names are checked.
+    all_paths = git(root, 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD', '--').decode('utf-8').split('\0')
     profile_inputs = sorted(name for name in all_paths if changes_export_profile(name))
     require(not profile_inputs, 'export profile inputs require canonical generated-export proof: ' + ', '.join(profile_inputs))
     return result
