@@ -3,8 +3,8 @@
 //! Both native and browser callers supply the platform's existing authenticated
 //! Streams pool. This adapter owns no transport task, queue or recovery loop.
 
-use super::{DemandError, DemandPolicy, StreamView, WireSession, WireSessionError};
-use crate::agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord};
+use crate::{DemandError, DemandPolicy, StreamView, WireSession, WireSessionError};
+use acyclic_harness_core::agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord};
 use acyclic_stream::{StreamPath, session::Client, wire, wire_codec};
 use std::task::{Context, Poll};
 
@@ -16,7 +16,7 @@ pub enum AgentClientError {
     Session(#[from] WireSessionError),
     /// A bounded agent record failed its canonical decoder.
     #[error(transparent)]
-    Record(#[from] crate::agent::Error),
+    Record(#[from] acyclic_harness_core::agent::Error),
     /// A selected stream ended; the client must not invent an idle status.
     #[error("selected agent stream ended: {0}")]
     Closed(StreamPath),

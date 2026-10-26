@@ -1,5 +1,15 @@
 //! Bounded view demand and provider-owned pages shared by client adapters.
 
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+mod agents;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
 mod demand;
 pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
