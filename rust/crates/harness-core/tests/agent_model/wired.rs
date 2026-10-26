@@ -8,9 +8,8 @@ use acyclic_harness_core::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     executor::StockExecutor,
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, TurnLimits},
-    core::AuthorityIssuer,
     executor::Executor,
-    filesystem::TurnExecutors,
+    filesystem::{TurnAuthority, TurnExecutors},
     model::{Model, ModelContent, ModelRole},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
@@ -26,9 +25,10 @@ const LIMITS: TurnLimits = TurnLimits {
 };
 
 /// A memory filesystem host with agent `path`'s private volume.
-async fn private(
-    path: &AgentPath,
-) -> Result<Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>> {
+type Host = Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>;
+
+/// The private-volume binding of agent `path`, and its filesystem host.
+async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
     let provider = ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::<MemoryAuthorityBackend, MemoryObjectBackend>::new(
         Fs::memory(),
@@ -36,21 +36,27 @@ async fn private(
         None,
     )?;
     let owner = acyclic_harness_core::AgentId::from_bytes(path.id().to_bytes());
-    host.create_volume(&VolumeRef::new(
+    let volume = VolumeRef::new(
         provider,
         "agent-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(owner),
         &mut None,
-    )?)
-    .await?;
-    Ok(host)
+    )?;
+    host.create_volume(&volume).await?;
+    Ok((
+        host,
+        VolumeBinding {
+            name: PRIVATE_VOLUME.into(),
+            volume,
+        },
+    ))
 }
 
 /// The stock loop over `model`, built once per turn.
 fn executors(model: Arc<ScriptedModelProvider>) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new("test".into(), "text".into(), "1".into(), serde_json::Value::Null)?;
-    Ok(Arc::new(move |_: &AgentState, _: &AuthorityIssuer| {
+    Ok(Arc::new(move |_: &AgentState, _: &TurnAuthority| {
         Ok(Arc::new(
             StockExecutor::new(
                 selection.clone(),
@@ -78,19 +84,17 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
     let parent = AgentPath::root(&id(1));
     let path = parent.child(&id(2))?;
     let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]));
+    let (host, binding) = private(&path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         Arc::new(MemoryStream::default()),
-        private(&path).await?,
+        host,
         ("agents".into(), [7; 32]),
         executors(model.clone())?,
         LIMITS,
     ));
     let mut adoption = adopted(id(2));
     adoption.parent = Some(parent.clone());
-    adoption.volumes = vec![VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: "agent-private".into(),
-    }];
+    adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption);
     let wake = || requested("r1", &parent);
     let first = step(&driver, &path, Some(state.clone()), 2, wake()).await?;
@@ -124,18 +128,16 @@ async fn a_later_turn_sees_the_settled_conversation_and_nothing_else() -> Result
         ScriptedTurn::Text("one".into()),
         ScriptedTurn::Text("two".into()),
     ]));
+    let (host, binding) = private(&path).await?;
     let driver = ExecutorDriver::new(FilesystemTurnHost::new(
         stream.clone(),
-        private(&path).await?,
+        host,
         ("agents".into(), [7; 32]),
         executors(model.clone())?,
         LIMITS,
     ));
     let mut adoption = adopted(id(3));
-    adoption.volumes = vec![VolumeBinding {
-        name: PRIVATE_VOLUME.into(),
-        volume: "agent-private".into(),
-    }];
+    adoption.volumes = vec![binding];
     let state = AgentState::adopted(path.clone(), &adoption);
     let first = step(&driver, &path, Some(state), 1, requested("r1", &path)).await?;
     // Settle the first turn's conversation record as its step commit would.

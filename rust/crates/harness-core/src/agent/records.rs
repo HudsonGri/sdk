@@ -6,7 +6,7 @@
 //! the key unspent.
 
 use super::{AgentId, AgentPath, Error};
-use crate::conversation::FileRef;
+use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
 /// Largest encoded inbox, status or close record. Payloads live in volume files.
@@ -87,8 +87,8 @@ pub enum Sender {
 pub struct VolumeBinding {
     /// Agent-visible name (`private`, `project`, `result`).
     pub name: String,
-    /// Volume identity in the filesystem authority.
-    pub volume: String,
+    /// The volume: provider, name, class and owner.
+    pub volume: VolumeRef,
 }
 
 /// First record of every agent, written by the spawn fork or by root creation.
@@ -313,7 +313,6 @@ impl AgentRecord for InboxRecord {
                 }
                 for binding in &adopted.volumes {
                     check_text(&binding.name)?;
-                    check_text(&binding.volume)?;
                 }
                 if adopted.parent.as_ref().is_some_and(|parent| {
                     parent.child(&adopted.agent).is_err()
