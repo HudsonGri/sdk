@@ -4,8 +4,8 @@ use super::*;
 pub(super) struct Seed {
     scenario: Scenario,
     pub parent: PathBuf,
-    files: acyclic_test_support::snapshot::Snapshot,
-    stream: acyclic_test_support::snapshot::Snapshot,
+    files: acyclic_native_runtime::testing::snapshot::Snapshot,
+    stream: acyclic_native_runtime::testing::snapshot::Snapshot,
     pub history: Option<crate::projection::SelectedModelContext>,
 }
 
@@ -19,9 +19,9 @@ impl Seed {
         Ok(Self {
             scenario,
             parent: root.parent().expect("fixture parent").to_owned(),
-            files: acyclic_test_support::snapshot::Snapshot::capture(&root.join("filesystem"))
+            files: acyclic_native_runtime::testing::snapshot::Snapshot::capture(&root.join("filesystem"))
                 .map_err(storage)?,
-            stream: acyclic_test_support::snapshot::Snapshot::capture(&root.join("tasks"))
+            stream: acyclic_native_runtime::testing::snapshot::Snapshot::capture(&root.join("tasks"))
                 .map_err(storage)?,
             history: fixture.history.into_inner(),
         })

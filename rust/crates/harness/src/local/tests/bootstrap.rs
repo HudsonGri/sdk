@@ -1,6 +1,6 @@
 //! Share immutable empty-volume bytes, never live providers or effect ledgers.
 use super::*;
-use acyclic_test_support::snapshot::Snapshot;
+use acyclic_native_runtime::testing::snapshot::Snapshot;
 
 pub(super) struct Bootstrap {
     source: tempfile::TempDir,

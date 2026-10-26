@@ -30,7 +30,6 @@ pub(super) fn watch_code(error: &crate::watch::NativeWatchError) -> Code {
         | E::StaleCursor
         | E::SourceUnavailable
         | E::RescanAlreadyInProgress
-        | E::NoRescanInProgress
         | E::RescanInProgress => Code::FailedPrecondition,
         E::CursorBusy => Code::Aborted,
         E::Absent => Code::NotFound,
@@ -75,6 +74,7 @@ pub(super) fn mount_code(error: &crate::native_mount::MountSourceError) -> Code 
         E::Cancelled => Code::Cancelled,
         E::Work(_) | E::Allocation(_) | E::PublicationRetryLimit => Code::ResourceExhausted,
         E::NativeWork(error) => native_code(error),
+        E::Demand(error) => kernel::demand_code(error),
         E::NativeRecordJson(_, _) | E::NativeRecordCorrupt(_, _) => Code::DataLoss,
         E::NativeRecordLockTimeout(_, _) => Code::DeadlineExceeded,
         E::ServiceUnavailable(error) => io_code(error),

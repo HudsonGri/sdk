@@ -1,6 +1,6 @@
 use super::Snapshot;
 use std::io::Result;
-use acyclic_native_runtime::private_file;
+use crate::private_file;
 use std::io::Write as _;
 
 #[test]

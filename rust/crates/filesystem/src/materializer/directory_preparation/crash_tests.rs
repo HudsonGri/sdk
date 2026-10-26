@@ -119,7 +119,7 @@ fn publication_writes(selected: Vec<usize>) -> TestResult {
         "setup must not perform the measured transition"
     );
     assert!(!seed.join("checkout/added").exists());
-    let seed = acyclic_test_support::snapshot::Snapshot::capture(&seed)?;
+    let seed = acyclic_native_runtime::testing::snapshot::Snapshot::capture(&seed)?;
     let baseline = root.path().join("baseline");
     seed.restore(&baseline)?;
     succeeds(spawn(&baseline, None, false)?)?;

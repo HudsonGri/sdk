@@ -12,9 +12,6 @@ source-catalog = []
 [dependencies]
 acyclic-differential = { path = "../differential" }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-native-runtime = { path = "../native-runtime" }
-
 [dev-dependencies]
 tempfile = "3.27.0"
 proptest.workspace = true

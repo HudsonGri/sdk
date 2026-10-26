@@ -1,9 +1,9 @@
 //! Immutable bytes and permissions only; provider/host caches are never copied.
+use crate::private_file;
 use std::{
     io,
     path::{Path, PathBuf},
 };
-use acyclic_native_runtime::private_file;
 use std::io::{Read as _, Write as _};
 
 #[cfg(test)]
@@ -49,15 +49,15 @@ fn capture_file(path: &Path) -> io::Result<(Vec<u8>, bool)> {
 
 impl Snapshot {
     pub fn capture(root: &Path) -> io::Result<Self> {
-        let mut pending = vec![(
-            PathBuf::new(),
-            std::fs::symlink_metadata(root)?,
-        )];
+        let mut pending = vec![(PathBuf::new(), std::fs::symlink_metadata(root)?)];
         let mut entries = Vec::new();
         while let Some((relative, metadata)) = pending.pop() {
             let path = root.join(&relative);
             if metadata.is_symlink() || !(metadata.is_dir() || metadata.is_file()) {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "fixture snapshot accepts only regular files and directories"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fixture snapshot accepts only regular files and directories",
+                ));
             }
             let (bytes, private) = if metadata.is_dir() {
                 let mut children = std::fs::read_dir(&path)?
@@ -96,15 +96,19 @@ impl Snapshot {
         {
             let path = root.join(relative);
             match bytes {
-                Some(bytes) if *private => private_file::create(&path)?
-                    .write_all(bytes)?,
+                Some(bytes) if *private => private_file::create(&path)?.write_all(bytes)?,
                 Some(bytes) => std::fs::write(&path, bytes)?,
                 None if *private => private_file::create_directory(&path)?,
                 None => std::fs::create_dir(&path)?,
             }
         }
         // Install permissions after descendants exist, including readonly directories.
-        for Entry { relative, permissions, .. } in self.0.iter().rev() {
+        for Entry {
+            relative,
+            permissions,
+            ..
+        } in self.0.iter().rev()
+        {
             let path = root.join(relative);
             // Windows creates these independent entries writable. Only the
             // readonly bit needs restoring; avoid opening every writable entry
@@ -114,7 +118,7 @@ impl Snapshot {
                 continue;
             }
             #[cfg(all(test, windows))]
-            crate::differential::record(PermissionWrite);
+            acyclic_test_support::differential::record(PermissionWrite);
             std::fs::set_permissions(path, permissions.clone())?;
         }
         assert_eq!(&Self::capture(root)?, self, "snapshot bytes changed");

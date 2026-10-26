@@ -1,5 +1,5 @@
 use super::*;
-use crate::differential;
+use acyclic_test_support::differential;
 
 // Always release readonly files, including on an assertion or IO failure.
 struct WritableOnDrop(Vec<PathBuf>);
@@ -115,7 +115,7 @@ fn snapshot_enumeration_preserves_the_image_with_fewer_physical_queries() -> io:
         // background I/O cannot make either side of the differential pass.
         let current = std::thread::current();
         let name = current.name().expect("libtest names its test threads");
-        let output = acyclic_native_runtime::process_output(
+        let output = crate::process_output(
             std::process::Command::new(std::env::current_exe()?)
                 .args(["--exact", name, "--test-threads=1", "--nocapture"])
                 .env(CHILD, "1"),

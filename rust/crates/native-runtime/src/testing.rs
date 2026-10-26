@@ -27,6 +27,7 @@ pub use crate::resources::{
 };
 pub use process::{ProcessCapture, capture_process};
 mod metadata;
+pub mod snapshot;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(test)]
 #[cfg(acyclic_native_runtime_loom)]

@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_test_support::snapshot::Snapshot;
+use acyclic_native_runtime::testing::snapshot::Snapshot;
 
 pub(super) struct Bootstrap {
     source: Root,
