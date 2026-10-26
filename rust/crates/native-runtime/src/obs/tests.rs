@@ -371,11 +371,7 @@ proptest::proptest! {
     }
 }
 
-fn causal_registry_case(
-    foreign: bool,
-    broken: bool,
-    see: &mut Observer<'_, Seen>,
-) -> Result<(), Stop> {
+fn causal_registry_case(foreign: bool, broken: bool) -> Seen {
     let expected = usize::from(!foreign);
     let first = Capture::default();
     let second = Capture::default();
@@ -394,15 +390,16 @@ fn causal_registry_case(
     } else {
         root.follows_from_same_subscriber(&cause);
     }
-    let history = first.0.lock().unwrap().spans.clone();
+    let history = first.0.lock().unwrap();
     let root = history
+        .spans
         .iter()
         .find(|span| span.name == "test.causal.root")
         .unwrap();
-    see.see(Seen::Registry {
+    Seen::Registry {
         actual: root.follows_from.len(),
         expected,
-    })
+    }
 }
 
 proptest::proptest! {
@@ -450,9 +447,10 @@ fn observation_oracle() -> Oracle<Case, Fault, Seen> {
     Oracle::declare(|input, fault, see| match input {
         Case::Idle => unobserved_bypass(matches!(fault, Some(Fault::InstalledIdleDispatcher)), see),
         Case::Root(mode) => root_context_case(*mode, fault, see),
-        Case::Registry(foreign) => {
-            causal_registry_case(*foreign, matches!(fault, Some(Fault::ForeignRegistry)), see)
-        }
+        Case::Registry(foreign) => see.see(causal_registry_case(
+            *foreign,
+            matches!(fault, Some(Fault::ForeignRegistry)),
+        )),
     })
     .invariant("idle", |event| match event {
         Seen::Idle {
