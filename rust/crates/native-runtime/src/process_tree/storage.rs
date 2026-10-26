@@ -298,12 +298,6 @@ impl ProcessTreeStorage {
         self.io(&meter)?.terminate_descendants()
     }
 
-    fn tree_mut(&mut self) -> io::Result<&mut ProcessTree> {
-        self.slot_mut()?
-            .as_mut()
-            .ok_or_else(|| io::ErrorKind::NotFound.into())
-    }
-
     fn slot_mut(&mut self) -> io::Result<&mut Option<ProcessTree>> {
         let [slot] = self.slot.data.as_mut_slice() else {
             return Err(io::ErrorKind::InvalidData.into());

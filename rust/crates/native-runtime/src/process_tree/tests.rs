@@ -340,17 +340,7 @@ fn process_tree_helper() {
                 let _ = grandchild.wait();
             }
         }
-        "stderr-bulk" => {
-            for _ in 0..32 {
-                std::io::stderr()
-                    .write_all(&[b'e'; 8192])
-                    .expect("stderr bulk");
-            }
-            std::io::stderr()
-                .write_all(b"stderr-tail-marker")
-                .expect("stderr tail");
-            std::process::exit(7);
-        }
+        "stderr-bulk" => stderr_bulk_helper(),
         "flood" => loop {
             std::io::stdout()
                 .write_all(&[b'o'; 8192])
@@ -422,6 +412,18 @@ fn process_tree_helper() {
         "exit-code" => std::process::exit(7),
         _ => assert_eq!(mode, "known helper mode"),
     }
+}
+
+fn stderr_bulk_helper() -> ! {
+    for _ in 0..32 {
+        std::io::stderr()
+            .write_all(&[b'e'; 8192])
+            .expect("stderr bulk");
+    }
+    std::io::stderr()
+        .write_all(b"stderr-tail-marker")
+        .expect("stderr tail");
+    std::process::exit(7);
 }
 
 fn stdin_helper(mode: &str, root: &std::path::Path) {

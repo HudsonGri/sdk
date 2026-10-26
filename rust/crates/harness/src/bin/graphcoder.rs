@@ -106,10 +106,14 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
             })
             .await?,
         );
-        tokio::select! {
-            result = phase(|| acyclic_harness::local::host_files::serve(local)) => result?,
-            result = workspace_shutdown() => result?,
-        }
+        phase(|| {
+            acyclic_harness::local::host_files::serve_until(local, async {
+                workspace_shutdown()
+                    .await
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+            })
+        })
+        .await?;
         return Ok(0);
     }
     let operation = args

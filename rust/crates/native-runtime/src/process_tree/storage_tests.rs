@@ -49,7 +49,7 @@ fn bounded_poll_scopes_preserve_original_storage_and_retirement_credit() {
 fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
     let root = tempfile::tempdir().unwrap();
     let original = Arc::new(crate::tests::ReadBudgetMeter::new(256, 65536));
-    let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
+    let observer: Arc<dyn crate::NativeReadMeter> = original;
     let mut slot = ProcessTreeStorage::new(&observer).unwrap();
     let mut command = super::super::tests::command("stderr-bulk", root.path());
     command.stdout(std::process::Stdio::null());
@@ -236,7 +236,15 @@ fn dropping_cancelled_original_owner_stops_and_reaps_before_releasing_credit() {
     super::super::tests::ready(root.path(), "tree-ready", || {
         slot.try_wait().unwrap().is_some()
     });
-    let pid = slot.tree_mut().unwrap().child.as_ref().unwrap().id();
+    let pid = slot
+        .slot_mut()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .child
+        .as_ref()
+        .unwrap()
+        .id();
     let watch = super::super::custody_tests::Watch::new(pid).unwrap();
     assert!(!watch.exited());
     original.cancelled.store(true, Ordering::Release);

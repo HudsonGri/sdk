@@ -369,32 +369,58 @@ async fn split_status_without_an_atomic_claim_cannot_authorize_recovery(
 }
 
 #[tokio::test]
-async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
-    for host in ["codex", "claude-code", "pi"] {
-        let mut fixture = Fixture::for_host(host).await?;
-        let child = fixture
-            .owner
-            .dispatch(
-                OperationId::new(),
-                HostAction::Fork {
-                    parent: fixture.parent,
-                    reference: "retained-at-shutdown".into(),
-                },
-            )
-            .await?;
-        let view = child["cwd"]
-            .as_str()
-            .ok_or_else(|| Error::Invalid("fixture child cwd absent".into()))?;
-        native_write(&Path::new(view).join("retained.txt"), b"native child")?;
-        let checkout = fixture.checkout.path().to_path_buf();
-        let state = fixture._state.path().to_path_buf();
-        drop(fixture);
-        assert!(
-            !checkout.exists(),
-            "checkout cleanup traversed a live native view"
-        );
-        assert!(!state.exists(), "native state outlived fixture shutdown");
-    }
+async fn codex_native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
+    native_owner_teardown("codex").await
+}
+#[tokio::test]
+async fn claude_native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()>
+{
+    native_owner_teardown("claude-code").await
+}
+#[tokio::test]
+async fn pi_native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
+    native_owner_teardown("pi").await
+}
+async fn native_owner_teardown(host: &str) -> Result<()> {
+    let mut fixture = Fixture::for_host(host).await?;
+    let child = fixture
+        .owner
+        .dispatch(
+            OperationId::new(),
+            HostAction::Fork {
+                parent: fixture.parent,
+                reference: "retained-at-shutdown".into(),
+            },
+        )
+        .await?;
+    let view = child["cwd"]
+        .as_str()
+        .ok_or_else(|| Error::Invalid("fixture child cwd absent".into()))?;
+    native_write(&Path::new(view).join("retained.txt"), b"native child")?;
+    let checkout = fixture.checkout.path().to_path_buf();
+    let state = fixture._state.path().to_path_buf();
+    let Fixture {
+        mut owner,
+        checkout: checkout_fixture,
+        _state: state_fixture,
+        ..
+    } = fixture;
+    let coordination_thread = std::thread::current().id();
+    let (observed, retirement) = std::sync::mpsc::sync_channel(1);
+    owner.retirement_observer = Some(observed);
+    owner.retire().await?;
+    assert_ne!(
+        retirement.recv().map_err(storage)?,
+        coordination_thread,
+        "native view retirement blocked its callback coordination thread"
+    );
+    drop(checkout_fixture);
+    drop(state_fixture);
+    assert!(
+        !checkout.exists(),
+        "checkout cleanup traversed a live native view"
+    );
+    assert!(!state.exists(), "native state outlived fixture shutdown");
     Ok(())
 }
 

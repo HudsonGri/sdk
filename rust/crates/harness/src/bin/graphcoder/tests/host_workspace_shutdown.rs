@@ -37,6 +37,8 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
                 .env_clear()
                 .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
                 .env("HOME", fixture.path())
+                .env("TMPDIR", fixture.path())
+                .env("XDG_RUNTIME_DIR", fixture.path())
                 .env("CODEX_HOME", fixture.path().join("fixture-codex-home"))
                 .env("XDG_STATE_HOME", fixture.path().join("fixture-state"))
                 .current_dir(&checkout)

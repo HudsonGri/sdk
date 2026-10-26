@@ -142,6 +142,15 @@ fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
 /// Mutations use the existing immutable request/claim/result consumer; live
 /// observations never publish another command into the durable journal.
 pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
+    serve_until(local, std::future::pending()).await
+}
+
+/// Stops accepting requests, joins view retirement and disconnects the shared
+/// harness before reporting shutdown. Native callbacks keep their runtime.
+pub async fn serve_until(
+    local: Arc<LocalHarness>,
+    shutdown: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
     let workspace = local
         .workspace_path()
         .ok_or_else(|| Error::Invalid("native hosts require a checkout".into()))?
@@ -196,9 +205,28 @@ pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
             RecursiveMode::NonRecursive,
         )
         .map_err(storage)?;
+    let result = tokio::select! {
+        result = serve_requests(&local, &mut owner, &mut commands, directory.path(), session, &changed) => result,
+        result = shutdown => result,
+    };
+    drop(watcher);
+    drop(commands);
+    drop(local);
+    owner.retire().await?;
+    result
+}
+
+async fn serve_requests(
+    local: &LocalHarness,
+    owner: &mut HostWorkspaceOwner,
+    commands: &mut CommandSession<dyn acyclic_stream::StreamProvider>,
+    directory: &Path,
+    session: uuid::Uuid,
+    changed: &tokio::sync::Notify,
+) -> Result<()> {
     loop {
         let waiting = changed.notified();
-        for entry in std::fs::read_dir(directory.path().join("requests")).map_err(storage)? {
+        for entry in std::fs::read_dir(directory.join("requests")).map_err(storage)? {
             let entry = entry.map_err(storage)?;
             if entry
                 .path()
@@ -227,11 +255,11 @@ pub async fn serve(local: Arc<LocalHarness>) -> Result<()> {
                 continue;
             };
             process_request(
-                &local,
-                &mut owner,
-                &mut commands,
+                local,
+                owner,
+                commands,
                 &Component::new(session.to_string()).map_err(storage)?,
-                directory.path(),
+                directory,
                 request,
             )
             .await?;

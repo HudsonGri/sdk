@@ -131,6 +131,8 @@ struct Attached {
 pub struct HostWorkspaceOwner {
     local: Arc<LocalHarness>,
     views: BTreeMap<TaskId, Attached>,
+    #[cfg(test)]
+    retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
 }
 
 impl HostWorkspaceOwner {
@@ -144,7 +146,22 @@ impl HostWorkspaceOwner {
         Ok(Self {
             local,
             views: BTreeMap::new(),
+            #[cfg(test)]
+            retirement_observer: None,
         })
+    }
+
+    /// Joins native view retirement while the coordination runtime can still
+    /// service callbacks. The caller must release its other harness handles.
+    pub async fn retire(self) -> Result<()> {
+        let local = Arc::clone(&self.local);
+        acyclic_native_runtime::spawn_blocking(move || drop(self))
+            .await
+            .map_err(storage)?;
+        Arc::try_unwrap(local)
+            .map_err(|_| Error::Conflict("native owner still has live harness handles".into()))?
+            .disconnect()
+            .await
     }
 
     /// Dispatches a claimed workspace request. Calling this never executes a
@@ -443,5 +460,14 @@ impl HostWorkspaceOwner {
             .get(&task)
             .ok_or_else(|| Error::NotFound("native task view".into()))?;
         Ok(json!({"task":task,"cwd":attached.workspace.path()}))
+    }
+}
+
+#[cfg(test)]
+impl Drop for HostWorkspaceOwner {
+    fn drop(&mut self) {
+        if let Some(observer) = &self.retirement_observer {
+            let _ = observer.send(std::thread::current().id());
+        }
     }
 }
