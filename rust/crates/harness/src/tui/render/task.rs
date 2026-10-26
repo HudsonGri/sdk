@@ -35,7 +35,7 @@ impl ToolRows {
             self.result
                 .as_ref()
                 .map(|result| crate::tui::TranscriptOrigin {
-                    file: super::source_rows::identity(&result.key),
+                    file: super::task::identity(&result.key),
                     line: row,
                 })
         }
@@ -56,7 +56,7 @@ pub(super) enum AnswerOwner {
 }
 #[derive(Default)]
 pub(super) struct TaskRows {
-    tool_origins: super::source_rows::SourceRows,
+    tool_origins: crate::tui::SourceRows,
     identity: Option<(Arc<Query>, Component)>,
     pub(super) cut: u64,
     stream: StreamText,
@@ -337,7 +337,7 @@ impl TaskRows {
             }
             let cached = self.tools.entry(key.clone()).or_default();
             if cached.rows.is_empty() {
-                cached.origin = super::source_rows::identity(&FileKey::Task {
+                cached.origin = super::task::identity(&FileKey::Task {
                     task: task.task.clone(),
                     file: TaskFile::Tool {
                         turn: *turn,
@@ -396,7 +396,7 @@ impl TaskRows {
         }
         if full {
             self.tool_rows.clear();
-            self.tool_origins = super::source_rows::SourceRows::default();
+            self.tool_origins = crate::tui::SourceRows::default();
             for tool in self.tools.values() {
                 self.tool_rows.extend_from_slice(&tool.rows);
                 for row in 0..tool.rows.len() {
@@ -463,4 +463,8 @@ impl TaskRows {
             *new = self.tool_ranges.get(key).cloned().unwrap_or(0..0);
         }
     }
+}
+
+pub(super) fn identity(key: &FileKey) -> [u8; 32] {
+    *blake3::hash(key.path().as_bytes()).as_bytes()
 }

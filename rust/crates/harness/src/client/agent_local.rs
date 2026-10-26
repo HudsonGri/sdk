@@ -1,6 +1,6 @@
 //! Native agent input and immutable turn output; no workflow subscription.
 
-use super::{AgentClient, AgentClientError, AgentEvent};
+use super::{AgentClient, AgentClientError, AgentEvent, CommandCatalog, CommandResolution};
 use crate::{
     Error,
     agent::{Control, Delivered, InboxRecord, IntentId, Phase, Sender, StatusRecord, TurnInput},
@@ -77,6 +77,7 @@ pub struct LocalAgentClient {
     client: AgentClient,
     reader: Arc<dyn ContentResidencyVerifier>,
     maximum_output_bytes: u64,
+    catalog: CommandCatalog,
 }
 
 impl LocalAgentClient {
@@ -127,12 +128,26 @@ impl LocalAgentClient {
             LOCAL_SESSION_CREDENTIAL_SLOT,
         )?;
         let reader = local.client_reader()?;
-        Ok(Self { local, client, reader, maximum_output_bytes })
+        let catalog = CommandCatalog::builtins()?;
+        Ok(Self { local, client, reader, maximum_output_bytes, catalog })
     }
 
     /// Borrow the shared fold; frames never enter an independent native cache.
     pub const fn client(&self) -> &AgentClient {
         &self.client
+    }
+
+    /// Bootstrap catalog shared by resolution, completion and help. Authorized
+    /// project/skill capture still requires its local-owner binding; this
+    /// accessor never starts a TaskVolume command session.
+    pub const fn catalog(&self) -> &CommandCatalog {
+        &self.catalog
+    }
+
+    /// Classify composer syntax with the canonical catalog. Non-prompt actions
+    /// remain typed client intents and must never become model prompt text.
+    pub async fn resolve_command(&self, text: &str) -> Result<CommandResolution> {
+        Ok(self.catalog.resolve(text, &*self.reader, MAXIMUM_AGENT_PROMPT_BYTES as u64).await?)
     }
 
     /// Stage and send one user intent through the LocalHarness actor entry.

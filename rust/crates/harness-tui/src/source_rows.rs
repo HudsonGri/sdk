@@ -1,12 +1,8 @@
-use crate::{task_volume::FileKey, tui::TranscriptOrigin};
+use crate::TranscriptOrigin;
 use std::{
     collections::{BTreeMap, VecDeque},
     ops::Range,
 };
-
-pub(super) fn identity(key: &FileKey) -> [u8; 32] {
-    *blake3::hash(key.path().as_bytes()).as_bytes()
-}
 
 #[derive(Clone)]
 struct SourceSpan {
@@ -14,8 +10,10 @@ struct SourceSpan {
     ordinal: usize,
 }
 
+/// Sparse stable source identities over disposable transcript rows. Prefix
+/// eviction preserves surviving source ordinals without copying styled rows.
 #[derive(Default)]
-pub(super) struct SourceRows {
+pub struct SourceRows {
     // Absolute cache coordinates retain a surviving file's source ordinal when
     // the prefix advances. Only source boundaries, never styled rows, are stored.
     spans: VecDeque<([u8; 32], SourceSpan)>,
@@ -25,12 +23,14 @@ pub(super) struct SourceRows {
 }
 
 impl SourceRows {
-    pub(super) fn extend_current(&mut self, total: usize) {
+    /// Extend the final source through the new logical row count.
+    pub fn extend_current(&mut self, total: usize) {
         if let Some((file, _)) = self.spans.back() {
             self.extend(*file, total);
         }
     }
-    pub(super) fn origin(&self, line: usize) -> Option<TranscriptOrigin> {
+    /// Resolve a retained logical row to its original source identity.
+    pub fn origin(&self, line: usize) -> Option<TranscriptOrigin> {
         let at = self.base.checked_add(line)?;
         let index = self.spans.partition_point(|(_, span)| span.rows.end <= at);
         let (file, span) = self.spans.get(index)?;
@@ -39,7 +39,8 @@ impl SourceRows {
             line: span.ordinal + at - span.rows.start,
         })
     }
-    pub(super) fn resolve(&self, origin: TranscriptOrigin) -> Option<usize> {
+    /// Locate a surviving source row after prefix eviction or block replacement.
+    pub fn resolve(&self, origin: TranscriptOrigin) -> Option<usize> {
         let (_, span) = self
             .files
             .range((origin.file, 0)..=(origin.file, origin.line))
@@ -74,14 +75,16 @@ impl SourceRows {
         }
         self.end = end;
     }
-    pub(super) fn push(&mut self, origin: Option<TranscriptOrigin>) {
+    /// Append one row; absent provenance remains an explicit gap.
+    pub fn push(&mut self, origin: Option<TranscriptOrigin>) {
         if let Some(origin) = origin {
             self.append(origin, 1);
         } else {
             self.end += 1;
         }
     }
-    pub(super) fn extend(&mut self, file: [u8; 32], total: usize) {
+    /// Attribute the newly appended rows up to `total` to one source.
+    pub fn extend(&mut self, file: [u8; 32], total: usize) {
         let end = self.base + total;
         if end <= self.end {
             return;
@@ -93,7 +96,8 @@ impl SourceRows {
             .map_or(0, |(_, span)| span.ordinal + span.rows.len());
         self.append(TranscriptOrigin { file, line }, end - self.end);
     }
-    pub(super) fn truncate(&mut self, total: usize) {
+    /// Discard a suffix while preserving the remaining source identities.
+    pub fn truncate(&mut self, total: usize) {
         let end = self.base + total;
         if end >= self.end {
             return;
@@ -115,7 +119,8 @@ impl SourceRows {
         }
         self.end = end;
     }
-    pub(super) fn discard(&mut self, count: usize) {
+    /// Discard the oldest rows without changing surviving source ordinals.
+    pub fn discard(&mut self, count: usize) {
         self.base = self.base.saturating_add(count).min(self.end);
         while self
             .spans
@@ -127,9 +132,9 @@ impl SourceRows {
             }
         }
     }
-    // Replace one whole tool block using its original header/output identities.
-    // The bounded tool details need no temporary row or provenance allocation.
-    pub(super) fn replace(
+    /// Replace one complete source block using its original row identities.
+    /// Other source ranges move without copying styled rows.
+    pub fn replace(
         &mut self,
         old: Range<usize>,
         origins: impl ExactSizeIterator<Item = Option<TranscriptOrigin>>,
