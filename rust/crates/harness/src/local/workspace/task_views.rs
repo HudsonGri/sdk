@@ -43,7 +43,7 @@ impl LocalWorkspace {
         &self,
         task: TaskId,
         view: &workspace::View,
-        owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
+        owner: &dyn super::owner::ViewOwner,
     ) -> Result<workspace::View> {
         let cancellation = CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -52,7 +52,7 @@ impl LocalWorkspace {
             work: &work,
             cancellation: &cancellation,
         };
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         let name = format!("task-{task}");
         // Reopening a task retains its original fork even if the
         // parent's selected branch changed after child admission.
@@ -99,7 +99,7 @@ impl LocalWorkspace {
             )
             .await
             .map_err(storage)?;
-        owner.verify_owner(None)?.await?;
+        owner.verify().await?;
         Ok(view)
     }
 
@@ -127,6 +127,7 @@ impl LocalWorkspace {
             mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
             context_line: self.context_line().into(),
             processes: self.processes.clone(),
+            diff_bases: Arc::clone(&self.diff_bases),
             path: self.path.clone(),
             fresh: false,
             import_source: false,
@@ -221,6 +222,7 @@ impl LocalWorkspace {
             mount_advances: std::sync::atomic::AtomicUsize::new(0),
             context_line: mounts.context_line(),
             processes: self.processes.clone(),
+            diff_bases: Arc::clone(&self.diff_bases),
             mounts: Arc::clone(&mounts),
             // This cached physical handle must not retain its owning cache.
             state: StateArc::new(AsyncMutex::new(State::new(

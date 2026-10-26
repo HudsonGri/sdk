@@ -1,22 +1,16 @@
-//! One immutable baseline file per selected workspace, under the existing guard.
+//! The diff baseline of each selected workspace: its head generation when the
+//! workspace's first command began, held by the workspace owner in memory.
 use super::*;
-use crate::task_volume::{Component, FileKey, FileValue, Query};
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy)]
 pub(in crate::local) enum Baseline {
     Captured(acyclic_fs::GenerationId),
     UnreadableSource,
 }
 
-pub(in crate::local) fn key(workspace: acyclic_fs::WorkspaceId) -> Result<FileKey> {
-    Ok(FileKey::Ui {
-        directory: Component::new("diff")?,
-        name: Component::new(format!(
-            "{}.json",
-            uuid::Uuid::from_bytes(workspace.into_bytes())
-        ))?,
-    })
-}
+/// Baselines by workspace; published once each, followed by diff readers.
+pub(in crate::local) type Baselines =
+    tokio::sync::watch::Sender<std::collections::BTreeMap<acyclic_fs::WorkspaceId, Baseline>>;
 
 impl CheckoutTools {
     pub(super) async fn retain_diff_base(
@@ -24,17 +18,15 @@ impl CheckoutTools {
         workspace: &acyclic_fs::Workspace<LocalAuthorityBackend, LocalObjectBackend>,
         unreadable_source: bool,
     ) -> Result<()> {
-        let key = key(workspace.id())?;
-        // Shared with ordinary UI writes: CAS retries only unrelated file updates.
-        // There is no new synchronization primitive or nested checkout acquisition.
-        loop {
-            let snapshot = self
-                .task_files
-                .snapshot(&Query::File(key.clone()), 1)
-                .await?;
-            if !snapshot.files.is_empty() {
-                return Ok(());
-            }
+        let id = workspace.id();
+        // Commands on one workspace are serialized by its guard, so only the
+        // first one reads the head.
+        if self.workspace.diff_bases.borrow().contains_key(&id) {
+            return Ok(());
+        }
+        let baseline = if unreadable_source {
+            Baseline::UnreadableSource
+        } else {
             let generation = workspace
                 .head(
                     acyclic_fs::performance::BOUNDARY_BUDGET,
@@ -43,21 +35,31 @@ impl CheckoutTools {
                 .await
                 .map_err(storage)?
                 .value;
-            let baseline = if unreadable_source {
-                Baseline::UnreadableSource
-            } else {
-                Baseline::Captured(generation.id())
-            };
-            let bytes = serde_json::to_vec(&baseline).map_err(storage)?;
-            match self
-                .task_files
-                .write(snapshot.generation, &FileValue::new(key.clone(), bytes))
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(crate::task_volume::Error::Conflict(_)) => continue,
-                Err(error) => return Err(error.into()),
+            Baseline::Captured(generation.id())
+        };
+        self.workspace.diff_bases.send_if_modified(|bases| {
+            if bases.contains_key(&id) {
+                return false;
             }
-        }
+            bases.insert(id, baseline);
+            true
+        });
+        Ok(())
     }
+}
+
+/// Waits for `workspace`'s baseline without capturing or changing it.
+pub(in crate::local) async fn baseline(
+    bases: &Baselines,
+    workspace: acyclic_fs::WorkspaceId,
+) -> Result<Baseline> {
+    let mut bases = bases.subscribe();
+    let bases = bases
+        .wait_for(|bases| bases.contains_key(&workspace))
+        .await
+        .map_err(|_| Error::Conflict("diff baseline owner closed".into()))?;
+    bases
+        .get(&workspace)
+        .copied()
+        .ok_or_else(|| Error::Conflict("missing diff baseline".into()))
 }
