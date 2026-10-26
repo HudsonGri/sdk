@@ -179,7 +179,13 @@ pub(crate) async fn count(
         bytes,
         _custody: admission,
     });
-    let exchange = HttpRequest { url, headers, body };
+    let exchange = HttpRequest {
+        url,
+        headers,
+        body,
+        #[cfg(not(target_arch = "wasm32"))]
+        recording: provider.recording_identity(),
+    };
     send_count(provider, exchange, count, count_custody, work).await
 }
 
@@ -286,6 +292,8 @@ async fn exchange_count(
         .transpose()?;
     loop {
         let attempt = HttpRequest {
+            #[cfg(not(target_arch = "wasm32"))]
+            recording: exchange.recording.clone(),
             url: exchange.url.clone(),
             headers: exchange.headers.clone(),
             body: exchange.body.clone(),

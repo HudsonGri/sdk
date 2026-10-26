@@ -58,6 +58,8 @@ impl PreparedInput {
             url: counting::wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?,
             headers: dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false),
             body: self.count.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            recording: provider.recording_identity(),
         };
         counting::send_count(
             provider,

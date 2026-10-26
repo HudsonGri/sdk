@@ -148,6 +148,14 @@ pub enum Error {
     /// An actual SDK buffer reservation failure, without allocating a diagnostic.
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
+    /// HTTP request bytes never reached a server; no effect needs reconciliation.
+    #[error("HTTP operation {operation} was not sent ({failure})")]
+    HttpNotSent {
+        /// Original operation identity, reused by a safe reconnect.
+        operation: OperationId,
+        /// Connection or request-construction failure.
+        failure: ModelTransportFailure,
+    },
     /// Durable admission may have committed and must be reconciled.
     #[error("{}", indeterminate_display(*.0, None))]
     Indeterminate(OperationId),
@@ -490,8 +498,12 @@ impl Error {
             Self::Invalid(_) => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } => *code,
             Self::Unauthorized(_) | Self::ReadOnlyGitMetadata { .. } => ErrorCode::Unauthorized,
-            Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
-            Self::ModelUnavailable { .. } => ErrorCode::Invalid,
+            Self::ModelUnavailable { failure, .. } | Self::HttpNotSent { failure, .. }
+                if failure.retryable() =>
+            {
+                ErrorCode::Unavailable
+            }
+            Self::ModelUnavailable { .. } | Self::HttpNotSent { .. } => ErrorCode::Invalid,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
@@ -627,6 +639,7 @@ impl Error {
             | Self::TaskFailed { .. }
             | Self::GoalBlocked(_)
             | Self::ModelUnavailable { .. }
+            | Self::HttpNotSent { .. }
             | Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::Invalid(_)

@@ -549,6 +549,8 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
+ "harness-mock-model",
+ "hex",
  "httpdate",
  "js-sys",
  "keyring",
@@ -3066,6 +3068,7 @@ dependencies = [
 name = "harness-mock-model"
 version = "0.0.0"
 dependencies = [
+ "acyclic-harness-core",
  "axum",
  "futures",
  "http-body-util",

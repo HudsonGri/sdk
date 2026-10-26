@@ -143,3 +143,54 @@ fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens
         output.push(sse(json!({"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":input_tokens,"candidatesTokenCount":2,"totalTokenCount":total_tokens}})));
     }
 }
+
+/// Fully selected HTTP reply. Raw captures never pass through a provider codec.
+pub struct Reply {
+    /// HTTP status.
+    pub status: u16,
+    /// Exact content type, absent if the recorded peer omitted it.
+    pub content_type: Option<String>,
+    /// Exact chunks, with SSE framing preserved for recordings.
+    pub chunks: Vec<Vec<u8>>,
+    /// Keep the response open after these chunks.
+    pub hold: bool,
+}
+/// The single response selection path for both scripts and verified captures.
+pub fn reply(path: &str, step: &Step, input_tokens: u64) -> Option<Reply> {
+    if let Some(replay) = &step.replay {
+        return Some(Reply {
+            status: replay.provenance().status?,
+            content_type: replay.provenance().content_type.clone(),
+            chunks: replay.chunks().to_vec(),
+            hold: false,
+        });
+    }
+    // Unadmitted recording references must never become generated empty replies.
+    if step.recording.is_some() {
+        return None;
+    }
+    let (content_type, chunks) = if let Some(json) = &step.json {
+        (
+            "application/json",
+            if step.hold {
+                Vec::new()
+            } else {
+                vec![serde_json::to_vec(json).ok()?]
+            },
+        )
+    } else {
+        (
+            "text/event-stream",
+            events(path, step, input_tokens)?
+                .into_iter()
+                .map(String::into_bytes)
+                .collect(),
+        )
+    };
+    Some(Reply {
+        status: step.status.unwrap_or(200),
+        content_type: Some(content_type.into()),
+        chunks,
+        hold: step.hold,
+    })
+}
