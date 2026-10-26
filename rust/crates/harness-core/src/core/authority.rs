@@ -1,6 +1,7 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
 mod runtime_signing;
+mod stream_session;
 mod verified_scope;
 mod workload;
 pub(crate) use verified_scope::VerifiedScope;
@@ -396,13 +397,21 @@ impl AuthorityRoot {
     /// Revokes this workload and every descendant at this runtime's public trust boundary.
     pub fn revoke_workload(&self, scope: &Scope) -> Result<()> {
         self.verifier(&mut None)?.verify(scope, &mut None)?;
-        self.runtime
+        let mut trust = self
+            .runtime
             .public
             .trust
             .write()
-            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?
-            .revoked_block_ids
-            .insert(*scope.proof);
+            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
+        let revision = self
+            .runtime
+            .public
+            .revision
+            .borrow()
+            .checked_add(1)
+            .ok_or_else(|| Error::Storage("runtime trust revision overflow".into()))?;
+        trust.revoked_block_ids.insert(*scope.proof);
+        self.runtime.public.revision.send_replace(revision);
         Ok(())
     }
 
@@ -732,6 +741,7 @@ impl AuthorityVerifier {
             public: std::sync::Arc::new(runtime_signing::PublicAuthority {
                 trust: std::sync::RwLock::new(trust),
                 metadata_key: checkpoint_key,
+                revision: tokio::sync::watch::channel(0).0,
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })

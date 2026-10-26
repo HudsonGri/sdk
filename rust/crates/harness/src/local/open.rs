@@ -358,6 +358,7 @@ impl Opening {
             agent: owner.agent,
             agent_authority: Some(issuer.clone()),
             agents: tokio::sync::OnceCell::new(),
+            session: tokio::sync::OnceCell::new(),
             task_files,
             project: owner.project.clone(),
             scratch,
