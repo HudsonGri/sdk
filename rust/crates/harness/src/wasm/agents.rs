@@ -43,7 +43,8 @@ mod guest;
 mod host;
 mod providers;
 use host::{HostModel, HostTool};
-use providers::{Objects, Providers, Streams, WasmAgentProviders};
+pub use providers::WasmAgentProviders;
+use providers::{Objects, Providers, Streams};
 
 type Authorities = StreamAuthorityStore<dyn StreamProvider>;
 type BrowserTurns = FilesystemTurnHost<Streams, Authorities, Objects>;

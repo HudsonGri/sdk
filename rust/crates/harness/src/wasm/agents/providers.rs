@@ -444,6 +444,31 @@ pub struct WasmAgentProviders {
     pub(super) providers: Providers,
 }
 
+impl WasmAgentProviders {
+    /// A host's own storage, for a host that builds its artifact over this
+    /// crate: any stream provider (the agents and their volumes' authority)
+    /// and any objects provider, whose `bucket` holds the volumes' objects;
+    /// `durable` says whether both outlive the host. The handle serves
+    /// [`AgentGuest::open`](super::guest::AgentGuest::open) and
+    /// [`WasmAgents::open_hosting`](super::WasmAgents::open_hosting) like
+    /// the built-in constructors.
+    ///
+    /// # Errors
+    /// When `options` or the object limit are invalid.
+    pub fn over(
+        stream: Arc<dyn StreamProvider>,
+        objects: Arc<dyn ObjectsProvider>,
+        bucket: acyclic_objects::v1::wire::BucketRef,
+        durable: bool,
+        options: JsValue,
+    ) -> Result<Self, JsValue> {
+        let options: WasmBrowserAgentOptions = from_js(options)?;
+        Ok(Self {
+            providers: Providers::over(stream, objects, bucket, durable, &options)?,
+        })
+    }
+}
+
 #[wasm_bindgen]
 impl WasmAgentProviders {
     /// The browser profile's `IndexedDB` databases (the browser host's default).
