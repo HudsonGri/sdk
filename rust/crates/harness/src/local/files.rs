@@ -29,72 +29,19 @@ impl LocalHarness {
         Ok(selected.workspace().id())
     }
 
-    /// Bind the selected checkout's retained baseline and exact immutable query.
-    /// Waiting for its baseline file does not capture or mutate the checkout.
-    #[cfg(any(test, feature = "native-execution"))]
-    pub async fn project_diff(
+    /// Publisher of this harness's prompt inputs on its private journal volume.
+    pub(super) fn input_publisher_with_limit(
         &self,
-        budget: acyclic_fs::WorkBudget,
-        maximum: u32,
-    ) -> Result<(
-        Arc<dyn crate::conversation::ContentResidencyVerifier>,
-        VolumeRef,
-        acyclic_stream::BoxProviderStream<'static, Result<crate::context::DiffPublication>>,
-    )> {
-        use crate::task_volume::Query;
-        use futures::StreamExt as _;
-        let workspace = self
-            .workspace
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("project diff requires a checkout".into()))?;
-        let (selected, _) = workspace.selected_view().await?;
-        let selected = selected.as_ref().unwrap_or_else(|| workspace.view());
-        let key = super::checkout_tools::diff::key(selected.workspace().id())?;
-        let mut observation = self
-            .task_files
-            .observe(Query::File(key.clone()), None, 1)
-            .await?;
-        let mut baseline = observation
-            .snapshot
-            .take()
-            .and_then(|snapshot| snapshot.files.into_iter().next());
-        while baseline.is_none() {
-            let change = observation
-                .changes
-                .next()
-                .await
-                .ok_or_else(|| Error::Conflict("diff baseline follow ended".into()))??;
-            baseline = change
-                .file
-                .into_iter()
-                .chain(change.files)
-                .find(|file| file.key == key);
-        }
-        let base = serde_json::from_slice::<super::checkout_tools::diff::Baseline>(
-            &baseline
-                .ok_or_else(|| Error::Conflict("missing diff baseline".into()))?
-                .bytes,
-        )
-        .map_err(storage)?;
-        let super::checkout_tools::diff::Baseline::Captured(base) = base else {
-            return Err(Error::Unsupported(
-                "project diff before-images unavailable: checkout contains an unreadable source file".into(),
-            ));
-        };
-        let reader = FilesystemContentVerifier::new(
-            self.files
-                .for_workspace(&self.project, selected.workspace().clone())?,
+        maximum_bytes: u64,
+    ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
+        FilesystemContentPublisher::new(
+            self.files.clone(),
+            &self.journal,
             &self.verifier,
             &self.signed,
-            self.limits.file_bytes,
+            maximum_bytes,
             None,
-        )?;
-        let stream = reader
-            .file_query(&self.project, budget)
-            .await?
-            .observe_diff(base, maximum)
-            .await?;
-        Ok((reader, self.project.clone(), stream))
+        )
     }
 
     /// Read-only live queries over the agent's actual private SDK files.
