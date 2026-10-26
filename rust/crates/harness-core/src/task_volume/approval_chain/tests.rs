@@ -1,6 +1,6 @@
 use super::*;
 use crate::runtime::ToolPolicy;
-use super::super::RuleVerdict;
+use crate::approvals::RuleVerdict;
 use proptest::prelude::*;
 
 fn request() -> Result<FileValue> {

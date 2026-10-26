@@ -13,10 +13,10 @@ pub use chain::{
     ApprovalResponder, NextStage, fingerprint as request_fingerprint, next_stage as next_agent_stage,
     validate_agent_decision,
 };
+pub(crate) use chain::next_stage_with_parent;
 mod files;
+pub(crate) use files::check_bound;
 pub use files::{ApprovalCreate, ApprovalFiles, ApprovalRequest};
-mod legacy;
-pub use legacy::{automatic_review, fingerprint, next_stage, request_id, review_key};
 mod agent;
 /// Independent models that `llm` approval stages name, by name.
 pub type ApproverModels =

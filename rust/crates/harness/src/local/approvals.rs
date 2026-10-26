@@ -2,13 +2,13 @@
 use super::*;
 use crate::package::harness::worker::DriveState;
 use crate::{
-    approvals::{
-        ApprovalReviewFile, Approver, NextStage, RuleVerdict, fingerprint, next_stage, request_id,
-        review_key,
-    },
+    approvals::{ApprovalReviewFile, Approver, NextStage, RuleVerdict},
     interaction::ApprovalDecisionFile,
     runtime::{TaskStateProvider, ToolPolicy},
-    task_volume::{Component, FileKey, FileValue, Query, TaskFile},
+    task_volume::{
+        Component, FileKey, FileValue, Query, TaskFile,
+        approval_chain::{fingerprint, next_stage, request_id, review_key},
+    },
 };
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
@@ -233,7 +233,7 @@ impl LocalHarness {
                         return Ok(None);
                     }
                     start = expected.stage + 1;
-                    let review = crate::approvals::automatic_review(
+                    let review = crate::task_volume::approval_chain::automatic_review(
                         &self.approval_models,
                         task_files,
                         request,
