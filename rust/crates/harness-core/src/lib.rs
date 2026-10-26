@@ -82,8 +82,6 @@ pub mod extension;
 pub mod filesystem;
 pub mod fork;
 pub mod goal;
-#[cfg(feature = "grpc")]
-pub mod grpc;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub mod hooks;
 #[doc(hidden)]
