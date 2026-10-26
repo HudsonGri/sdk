@@ -254,11 +254,8 @@ mod tests {
             tree.try_wait(None).map_or(true, |status| status.is_some())
         });
         let child = tree.child.take().unwrap();
-        let failure = retire_after_observation(
-            &mut tree,
-            child,
-            Err(io::ErrorKind::Interrupted.into()),
-        );
+        let failure =
+            retire_after_observation(&mut tree, child, Err(io::ErrorKind::Interrupted.into()));
         let retained = tree.child.is_some()
             && tree.custody.is_some()
             && std::fs::read_dir(&records).unwrap().count() == 1;
