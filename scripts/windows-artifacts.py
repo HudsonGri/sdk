@@ -67,12 +67,43 @@ def fetch_export(records, build_log):
         [*transport, "ssh", *config, "bb2", shlex.join(command)], text=True))
     require_capacity(records, sizes["bytes"] + sizes["expanded_bytes"])
     incoming = records / ("incoming-" + uuid.uuid4().hex + ".tar.gz")
-    incoming.touch(exist_ok=False)
-    target = ("/mnt/" + incoming.drive[0].lower() + incoming.as_posix()[2:]
-              if os.name == "nt" else str(incoming))
     # A failed transfer is retained at its exclusive path. A later --consume
     # uses this same immutable producer; it cannot rerun Cargo or overwrite it.
-    subprocess.run([*transport, "scp", *config, "bb2:" + remote, target], check=True)
+    # SCP writes to its stdout pipe, never reopening/truncating the destination.
+    # The sole materializer owns both reservation and bounded digest copying.
+    command = ["scp", *config, "bb2:" + remote, "/dev/stdout"]
+    if transport:
+        # WSL inherits a Windows-owned stdout pipe whose /proc fd cannot be
+        # reopened by its unprivileged user. A POSIX-owned pipe lets SCP open
+        # /dev/stdout; cat only forwards that pipe to the inherited descriptor.
+        # "$@" preserves argv literally, and pipefail retains SCP's status.
+        command = [*transport, "bash", "-o", "pipefail", "-c",
+                   '"$@" | cat', "windows-export", *command]
+    errors = incoming.with_suffix(".stderr")
+    step = "reserve-transfer"
+    received = 0
+    try:
+        with materializer.reserved_file(incoming, sizes["bytes"]) as output:
+            step = "copy-reserved-transfer"
+            with errors.open("xb") as stderr:
+                with subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                      stdout=subprocess.PIPE, stderr=stderr) as process:
+                    try:
+                        materializer.write_reserved(process.stdout, output, sizes["bytes"], expected)
+                    finally:
+                        received = output.tell()
+                        process.stdout.close()
+                    status = process.wait()
+                    if status:
+                        raise subprocess.CalledProcessError(status, command)
+    except Exception as error:
+        with incoming.with_suffix(".failure.json").open("x", encoding="utf-8") as receipt:
+            json.dump({
+            "step": step, "expected_bytes": sizes["bytes"], "received_bytes": received,
+            "expected_sha256": expected, "path": str(incoming), "stderr": str(errors),
+            }, receipt, indent=2)
+        recovery = "bash scripts/windows-test.sh --consume " + shlex.quote(str(records))
+        raise RuntimeError(f"Windows export step={step} failed: {error}; recovery={recovery}") from error
     if incoming.stat().st_size != sizes["bytes"] or digest(incoming) != expected:
         raise ValueError("Fetched archive SHA-256/size mismatch: " + str(incoming))
     if archive.exists():

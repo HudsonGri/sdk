@@ -53,6 +53,28 @@ class Materialization(unittest.TestCase):
         for name, expected in self.contents.items():
             self.assertEqual((result / name).read_bytes(), expected)
 
+    def test_reserved_stream_never_reopens_or_outgrows_admitted_backing(self):
+        path = self.root / "transfer"
+        data = self.archive.read_bytes()
+        expected = hashlib.sha256(data).hexdigest()
+        with module.reserved_file(path, len(data)) as output:
+            identity = path.stat()
+            self.assertEqual(identity.st_size, len(data))
+            self.assertTrue(output.seekable())
+            module.write_reserved(io.BytesIO(data), output, len(data), expected)
+            self.assertEqual(output.tell(), len(data))
+            self.assertEqual(path.stat().st_ino, identity.st_ino)
+        self.assertEqual(path.read_bytes(), data)
+        with self.assertRaises(FileExistsError):
+            with module.reserved_file(path, len(data)):
+                self.fail("existing transfer was reopened")
+        oversized = self.root / "oversized"
+        with module.reserved_file(oversized, len(data)) as output:
+            with self.assertRaisesRegex(ValueError, "payload changed"):
+                module.write_reserved(io.BytesIO(data + b"extra"), output, len(data), expected)
+            self.assertEqual(output.tell(), len(data))
+            self.assertEqual(oversized.stat().st_size, len(data))
+
     def test_capacity_rejection_copies_no_payload_and_publishes_no_fixture(self):
         reserved, copied = [], []
         reserve, write = module._reserve_file, module._write_member

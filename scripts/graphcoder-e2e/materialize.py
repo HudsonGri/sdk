@@ -5,6 +5,7 @@ allocation failure cannot expose a partly materialized executable fixture.
 The host adapters only reserve extents; inventory and publication are shared.
 """
 import ctypes
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
@@ -76,7 +77,14 @@ def _reserve_windows(stream, size):
         raise ValueError("destination extents were not exclusively reserved")
 
 
-def _reserve_file(path, size):
+@contextmanager
+def reserved_file(path, size):
+    """Own a new file and its physical extents through every payload write.
+
+    Consumers receive the already allocated handle; reopening with truncation
+    would release the capacity they just admitted. The exclusive path remains
+    available to the caller for retaining a failed transfer's evidence.
+    """
     with path.open("xb+") as stream:
         if os.name == "nt":
             _reserve_windows(stream, size)
@@ -85,21 +93,32 @@ def _reserve_file(path, size):
             stream.truncate(size)
             if os.fstat(stream.fileno()).st_blocks * 512 < size:
                 raise ValueError("destination extents were not physically reserved")
+        yield stream
+
+
+def _reserve_file(path, size):
+    with reserved_file(path, size):
+        pass
+
+
+def write_reserved(source, output, size, expected):
+    """Copy exactly the admitted bytes without truncating or growing backing."""
+    digest = hashlib.sha256()
+    remaining = size
+    while remaining:
+        chunk = source.read(min(remaining, 128 * 1024))
+        if not chunk:
+            raise ValueError("truncated admitted payload")
+        output.write(chunk)
+        digest.update(chunk)
+        remaining -= len(chunk)
+    if source.read(1) or digest.hexdigest() != expected:
+        raise ValueError("payload changed after admission")
 
 
 def _write_member(source, path, size, expected):
-    digest = hashlib.sha256()
-    remaining = size
     with path.open("r+b") as output:
-        while remaining:
-            chunk = source.read(min(remaining, 128 * 1024))
-            if not chunk:
-                raise ValueError("truncated archive member")
-            output.write(chunk)
-            digest.update(chunk)
-            remaining -= len(chunk)
-        if source.read(1) or digest.hexdigest() != expected:
-            raise ValueError("archive member changed after admission")
+        write_reserved(source, output, size, expected)
 
 
 def materialize(archive, expected_sha256, inventory, parent, identity=None):

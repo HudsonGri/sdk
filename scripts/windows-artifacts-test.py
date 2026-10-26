@@ -2,6 +2,7 @@
 """Real Windows export admission and interrupted-transfer regression controls."""
 
 import errno
+from contextlib import nullcontext
 import hashlib
 import io
 import json
@@ -14,8 +15,9 @@ import unittest
 from unittest.mock import patch
 
 
-path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).with_name("windows-artifacts.py")
-sys.argv[1:] = []
+path = Path(__file__).with_name("windows-artifacts.py")
+if len(sys.argv) > 1 and sys.argv[1].endswith(".py"):
+    path = Path(sys.argv.pop(1))
 api = ModuleType("windows_artifacts")
 api.__file__ = str(path)
 exec(compile(path.read_bytes(), str(path), "exec"), api.__dict__)
@@ -199,6 +201,7 @@ class AdmissionTests(unittest.TestCase):
         log = "; src wt-sdk/fixture-job target sdk/fixture;\nWIN_TEST_ARCHIVE " + "0" * 64 + " .bb-win-test-0123abcd.tar.gz\n"
         with (patch.object(api.subprocess, "check_output", return_value='{"bytes": 100, "expanded_bytes": 200}'),
               patch.object(api.subprocess, "run", side_effect=AssertionError("unexpected SCP")),
+              patch.object(api.subprocess, "Popen", side_effect=AssertionError("unexpected SCP")),
               patch.object(api.shutil, "disk_usage", return_value=SimpleNamespace(free=0))):
             with self.assertRaises(OSError):
                 api.fetch_export(self.records, log)
@@ -213,11 +216,18 @@ class AdmissionTests(unittest.TestCase):
 
         def transfer(argv, **kwargs):
             incoming = next(self.records.glob("incoming-*.tar.gz"))
-            incoming.write_bytes(data)
+            # A local pipe supplies our archive protocol bytes. This does not
+            # simulate an SSH/SCP response; real transport has its own receipt.
+            self.assertEqual(incoming.stat().st_size, len(data))
+            self.assertEqual(argv[-1], "/dev/stdout")
+            self.assertEqual(kwargs["stdout"], api.subprocess.PIPE)
+            self.assertEqual(kwargs["stdin"], api.subprocess.DEVNULL)
+            return nullcontext(SimpleNamespace(stdout=io.BytesIO(data), wait=lambda: 0))
 
         sizes = json.dumps(dict(bytes=len(data), expanded_bytes=100))
         with (patch.object(api.subprocess, "check_output", return_value=sizes),
-              patch.object(api.subprocess, "run", side_effect=transfer) as scp):
+              patch.object(api.subprocess, "Popen", side_effect=transfer) as scp,
+              patch.object(api.subprocess, "run", side_effect=AssertionError("unreserved transfer"))):
             first = api.fetch_export(self.records, log)
             second = api.fetch_export(self.records, log)
         self.assertEqual(first, second)
@@ -226,6 +236,36 @@ class AdmissionTests(unittest.TestCase):
         retained = list((self.records / "failed-transfers").glob("*/" + partial.name))
         self.assertEqual(len(retained), 1)
         self.assertEqual(retained[0].read_bytes(), b"interrupted SCP")
+
+    def test_transfer_physical_reservation_failure_starts_no_scp(self):
+        log = "; src wt-sdk/fixture-job target sdk/fixture;\nWIN_TEST_ARCHIVE " + "0" * 64 + " .bb-win-test-0123abcd.tar.gz\n"
+        with (patch.object(api.subprocess, "check_output", return_value='{"bytes": 100, "expanded_bytes": 200}'),
+              patch.object(api.materializer, "reserved_file", create=True, side_effect=OSError(errno.ENOSPC, "physical admission refused")) as reserve,
+              patch.object(api.subprocess, "Popen", side_effect=AssertionError("SCP before physical admission")),
+              patch.object(api.subprocess, "run", side_effect=AssertionError("SCP before physical admission"))):
+            with self.assertRaisesRegex(RuntimeError, "step=reserve-transfer.*recovery=bash scripts/windows-test.sh --consume"):
+                api.fetch_export(self.records, log)
+        self.assertEqual(reserve.call_count, 1)
+        refusal, = self.records.glob("incoming-*.failure.json")
+        self.assertEqual(json.loads(refusal.read_text())["received_bytes"], 0)
+
+    def test_failed_transfer_keeps_reserved_backing_and_exact_received_count(self):
+        archive, checksum, _ = self.export()
+        data = archive.read_bytes()
+        log = "; src wt-sdk/fixture-job target sdk/fixture;\nWIN_TEST_ARCHIVE " + checksum + " .bb-win-test-0123abcd.tar.gz\n"
+        def interrupted(argv, **kwargs):
+            return nullcontext(SimpleNamespace(stdout=io.BytesIO(data[:10]), wait=lambda: 1))
+        with (patch.object(api.subprocess, "check_output", return_value=json.dumps(dict(bytes=len(data), expanded_bytes=100))),
+              patch.object(api.subprocess, "Popen", side_effect=interrupted)):
+            with self.assertRaisesRegex(RuntimeError, "step=copy-reserved-transfer.*truncated admitted payload"):
+                api.fetch_export(self.records, log)
+        incoming, = self.records.glob("incoming-*.tar.gz")
+        self.assertEqual(incoming.stat().st_size, len(data))
+        self.assertEqual(incoming.read_bytes()[:10], data[:10])
+        refusal, = self.records.glob("incoming-*.failure.json")
+        record = json.loads(refusal.read_text())
+        self.assertEqual(record["received_bytes"], 10)
+        self.assertEqual(record["expected_bytes"], len(data))
 
 
 if __name__ == "__main__":
