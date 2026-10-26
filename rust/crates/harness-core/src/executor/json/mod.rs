@@ -44,7 +44,14 @@ pub(crate) use admission::admit_value_layout;
 #[cfg(test)]
 pub(crate) use admission::assert_layout_covers_decode;
 pub(crate) use admission::json_owned_value_shape_bounded;
-#[cfg(any(test, fuzzing, feature = "test-support"))]
+#[cfg(any(
+    test,
+    all(
+        any(fuzzing, feature = "test-support"),
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    )
+))]
 pub(crate) use admission::layout_reservation;
 pub(crate) use admission::serialized_layout_bytes;
 #[cfg(feature = "filesystem")]
