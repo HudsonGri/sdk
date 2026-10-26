@@ -51,3 +51,16 @@ hashes and chunk lengths before serving. Raw captures bypass template substituti
 and SSE generation. Edited bodies, active captures, and steps combining raw and
 generated responses are refused. An unadmitted recording reference cannot fall
 back to an empty generated response.
+
+Derived Responses replay uses `acyclic_harness_providers::decode_recording(adapter,
+body, maximum, dispatch).await` before any selector substitution. It calls the same
+SSE and Responses decoder as live dispatch, with strict semantic coverage enabled.
+It returns the complete batch only after validating the full consumed recording.
+Plain function calls and at most one plain assistant text message are supported;
+terminal text is `MessageCompleted`, without duplicated incremental `Content`.
+Namespaces, custom calls, reasoning, annotations/logprobs, unknown item semantics,
+incomplete output, inconsistent terminal calls and trailing events are refused.
+Unsupported adapters are refused. This conservative API does not certify arbitrary
+provider semantics. Keep the verified raw bodies and provenance immutable; label
+substituted replay as derived and encode it only through the shared mock wire path.
+Raw replay does not use this projection policy and remains byte exact.

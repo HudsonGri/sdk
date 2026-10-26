@@ -8,6 +8,8 @@ mod gemini;
 mod limits_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod message_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod projection_tests;
 mod reasoning;
 mod responses;
 pub(crate) use reasoning::family;
@@ -40,6 +42,7 @@ pub(crate) struct State<'work> {
     thinking: BTreeMap<u64, reasoning::Thinking>,
     origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
     budget: budget::Budget<'work>,
+    projection: bool,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
@@ -60,15 +63,52 @@ pub(crate) fn events_named<'a>(
     names: Option<&'a crate::tool_names::Names<'a>>,
     origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+    events_with_coverage(adapter, body, maximum, dispatch, names, origin, false)
+}
+
+/// Decode a complete recording for a derived replay. No event batch escapes on
+/// incomplete coverage. Live dispatch deliberately retains its streaming policy.
+///
+/// Supports Responses plain function calls and at most one plain assistant text
+/// message. Refuses namespaces, custom calls, reasoning, annotations, unknown
+/// semantics, incomplete output and trailing events. Returned text is terminal
+/// `MessageCompleted`, not incremental `Content`. Raw recordings stay unchanged.
+pub async fn decode_recording(
+    adapter: Adapter,
+    body: BoxProviderStream<'_, Result<Bytes>>,
+    maximum: usize,
+    dispatch: ModelDispatch,
+) -> Result<Vec<ModelEvent>> {
+    if adapter != Adapter::Responses {
+        return Err(invalid("recording projection supports only Responses"));
+    }
+    use futures::TryStreamExt as _;
+    events_with_coverage(adapter, body, maximum, dispatch, None, None, true)
+        .try_collect()
+        .await
+}
+
+fn events_with_coverage<'a>(
+    adapter: Adapter,
+    body: BoxProviderStream<'a, Result<Bytes>>,
+    maximum: usize,
+    dispatch: ModelDispatch,
+    names: Option<&'a crate::tool_names::Names<'a>>,
+    origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
+    projection: bool,
+) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
         let mut state = State::new(maximum);
+        state.projection = projection;
         state.set_origin(origin)?;
         while let Some(data) = input.next().await {
             let data = data?;
             let deltas = parse(&mut state, adapter, &data)?;
-            for event in deltas { yield event; }
-            if state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
+            // Projection uses the authoritative terminal message, avoiding an
+            // unbounded retained copy of every incremental text delta.
+            if !projection { for event in deltas { yield event; } }
+            if !projection && state.terminal && (data == "[DONE]" || matches!(adapter, Adapter::Anthropic | Adapter::Responses)) { break; }
         }
         if let Some(names) = names { state.restore_names(names, |_| Ok(()))?; }
         let events = finish(state, adapter, dispatch)?;
@@ -252,6 +292,7 @@ impl<'work> State<'work> {
             thinking: BTreeMap::new(),
             origin: None,
             budget: budget::Budget::new(maximum),
+            projection: false,
         }
     }
 

@@ -1,6 +1,10 @@
 use super::{JsonSelection, bind, lookup, lookup_mut, validate_pointer};
 use crate::{Step, Tool};
-use acyclic_harness_core::model::ModelEvent;
+use acyclic_harness_core::{
+    OperationId,
+    model::{ModelDispatch, ModelEvent},
+};
+use acyclic_harness_providers::Adapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -45,9 +49,21 @@ pub(super) fn decode_recording(step: &Step) -> Result<Step, String> {
     {
         return Err("selector projection requires a successful Responses exchange".into());
     }
+    let body = Box::pin(futures::stream::iter(
+        replay
+            .chunks()
+            .iter()
+            .map(|chunk| Ok(axum::body::Bytes::copy_from_slice(chunk))),
+    ));
     let events = futures::executor::block_on(acyclic_harness_providers::decode_recording(
-        replay,
+        Adapter::Responses,
+        body,
         projection.maximum_event_bytes,
+        ModelDispatch {
+            operation_id: OperationId::from_bytes([0; 16]),
+            step: 0,
+            request_digest: [0; 32],
+        },
     ))
     .map_err(|error| error.to_string())?;
     let mut decoded = Step::default();

@@ -48,16 +48,12 @@ mod prepared;
 mod projection;
 mod protocol;
 mod reasoning;
-#[cfg(not(target_arch = "wasm32"))]
-mod recording_replay;
 mod registry;
 mod resolved;
 mod retry;
 mod spec;
 mod sse;
 mod stream;
-#[cfg(not(target_arch = "wasm32"))]
-pub use recording_replay::decode_recording;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
@@ -81,6 +77,7 @@ pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
 pub use spec::{Authentication, ProviderSpec, RetrySpec, TimeoutSpec};
+pub use stream::decode_recording;
 
 use acyclic_harness_core::{Error, Result};
 use serde_json::Value;
