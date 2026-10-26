@@ -247,6 +247,7 @@ where
             schemas,
             maximum_payload_bytes,
             input_verifier: None,
+            bound_selection: None,
             interactions,
             owner: None,
             execution: None,
@@ -328,6 +329,15 @@ where
         self.history_read_limits = Some(limits);
         self.invalidate_execution_caches();
         Ok(self)
+    }
+
+    /// Binds the only selection this journal's turn may dispatch: the agent
+    /// turn host's projection of the agent's own conversation stream.
+    #[must_use]
+    pub fn with_bound_selection(mut self, selected: crate::projection::SelectedModelContext) -> Self {
+        self.bound_selection = Some(selected);
+        self.invalidate_execution_caches();
+        self
     }
 
     /// Routes turn-input attachment admission through an explicitly bound provider set.
