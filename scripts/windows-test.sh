@@ -113,7 +113,7 @@ admission={'artifacts':{}}
 rows=[]
 host_rows=[]
 
-def stage(label, artifacts, is_test, runtime_host=False):
+def stage(label, artifacts, is_test):
     specifications=[];identities=set()
     for v,log in artifacts:
         if not v.get('executable') or bool(v['profile']['test']) != is_test:continue
@@ -134,24 +134,19 @@ def stage(label, artifacts, is_test, runtime_host=False):
         value=selected[spec['name']]
         assert Path(value['source']).suffix.lower()=='.exe', 'Cargo artifact is not a Windows executable'
         row=dict(remote=value['path'],cargo_path=value['source'],name=spec['name'],target=spec['target'],test=is_test,sha256=value['sha256'])
-        (host_rows if runtime_host else rows).append(row)
+        rows.append(row)
         print('WIN_TEST_REMOTE_EXE',json.dumps(row),flush=True)
 
-# The native host is compiled and staged before test feature unification can
-# replace Cargo's output pathname. It belongs to this same job/source graph.
-host_package=next(package for package in metadata['packages'] if package['name']=='acyclic-native-runtime')
-host_flags=[];i=0
-while i<len(c['cargo']):
-    arg=c['cargo'][i];key=arg.split('=',1)[0]
-    if arg in ('--release','--offline','--frozen'):host_flags.append(arg)
-    elif key in ('--profile','--jobs','-j'):
-        host_flags.append(arg)
-        if '=' not in arg:i+=1;host_flags.append(c['cargo'][i])
-    i+=1
-build(['cargo','xwin','build','--locked','--target','x86_64-pc-windows-msvc','-p','acyclic-native-runtime','--bin','acyclic-process-host','--message-format=json-render-diagnostics']+host_flags,'process-host',host_package['id'])
-stage('process-host',all_artifacts,False,runtime_host=True)
-assert len(host_rows)==1 and host_rows[0]['target']=='acyclic-process-host'
-all_artifacts.clear()
+# The sole composable host producer stages before test feature unification.
+from types import ModuleType
+host_factory=ModuleType('acyclic_native_host_producer')
+host_factory.__file__=str(root/'scripts/windows-native-host.py')
+exec(compile(Path(host_factory.__file__).read_bytes(),host_factory.__file__,'exec'),host_factory.__dict__)
+host=host_factory.produce(root,root/(c['stem']+'-process-host'),
+    expected_source=host_factory.source_catalog(root),cargo_args=c['cargo'])
+host_rows.append(host['row'])
+admission['artifacts'].update(host['admission'])
+logs.append(host['log'])
 
 keys={arg.split('=',1)[0] for arg in c['cargo']}
 unit_selection=bool(keys & {'--lib','--bin','--bins','--example','--examples','--bench','--benches'})
@@ -197,9 +192,8 @@ for row in rows+host_rows:
             h=hashlib.file_digest(f.open('rb'),'sha256').hexdigest()
             assert f.name not in dlls or dlls[f.name]['sha256']==h, 'Ambiguous runtime DLL '+f.name
             dlls[f.name]=dict(remote=str(f),sha256=h)
-host_receipt=dict(exit=0,target='x86_64-pc-windows-msvc',executable_sha256=host_rows[0]['sha256'],source={name:value for name,value in files.items() if name.startswith(('rust/crates/native-runtime/','rust/crates/host-platform/')) or name in ('Cargo.toml','Cargo.lock','rust-toolchain.toml','.cargo/config.toml')},cargo_admission=admission['artifacts'][host_rows[0]['name']])
-host_receipt_path=root/(c['stem']+'-host-receipt.json')
-host_receipt_path.write_text(json.dumps(host_receipt))
+host_receipt=host['receipt']
+host_receipt_path=host['receipt_path']
 process_host=dict(host_rows[0],receipt=host_receipt,receipt_sha256=hashlib.file_digest(host_receipt_path.open('rb'),'sha256').hexdigest())
 manifest=dict(crate=p['name'],crate_dir=Path(p['manifest_path']).parent.relative_to(root).as_posix(),target_dir=str(target),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),artifacts=rows,artifact_admission=admission,process_host=process_host,source=files,dlls=dlls,build_seconds=time.monotonic()-start)
 manifest_path=root/(c['stem']+'-manifest.json');manifest_path.write_text(json.dumps(manifest))
@@ -292,7 +286,7 @@ def main():
     records.mkdir(parents=True)
     if os.environ.get('WIN_TEST_TARGET_DIR') or os.environ.get('WIN_TEST_PERSISTENT_SOURCE_CLOCK'):
         fail('Windows builds require build-slot job-owned targets; custom targets/source clocks are prohibited')
-    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
+    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py', 'scripts/windows-native-host.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)

@@ -6,12 +6,14 @@ belongs to the admitted external process host; this module never owns a Job or
 uses PID-based tree killing. OpenAI Codex <noreply@openai.com>.
 """
 
+from contextlib import contextmanager
 import ctypes
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -120,6 +122,8 @@ class Commands:
         self.acquired = False
         self.lease_wait_seconds = 0
         self.results = []
+        self.selections = []
+        self._selection = None
         self.cancellation = cancellation
 
     def __enter__(self):
@@ -160,23 +164,47 @@ class Commands:
         identity = uuid.uuid4().hex
         fixture = self.records / "profiles" / identity
         fixture.mkdir(parents=True)
-        home = fixture / "home"
-        codex = home / ".codex-fixture"
-        temp = self.records / "tmp" / identity
-        for folder in (codex, temp, home / "AppData/Local", home / "AppData/Roaming"):
-            folder.mkdir(parents=True)
-        env = os.environ.copy()
-        for key in list(env):
-            upper = key.upper()
-            if upper.endswith("API_KEY") or "AUTH_TOKEN" in upper or upper in (
-                "OPENAI_ACCESS_TOKEN", "CODEX_ACCESS_TOKEN", "RUST_MIN_STACK"
-            ):
-                del env[key]
+        bridge = self.source / "scripts/graphcoder-e2e/scratch.mjs"
+        node = shutil.which("node")
+        if not bridge.is_file() or node is None:
+            raise RuntimeError("Windows command step=shared-profile-input: missing node or scratch.mjs; "
+                               "recovery=admit Node and the source-matched shared scratch.mjs profile bridge")
+        # Bootstrap has only OS launch inputs and its own temporary directory.
+        # All product profile selectors and their directories come from the
+        # shared factory, through this same process owner and fleet lease.
+        inherited = {key: value for key, value in os.environ.items() if key.upper() in (
+            "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "LANG", "LC_ALL",
+            "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROGRAMFILES", "PROGRAMFILES(X86)",
+        )}
+        temporary = fixture / "bootstrap"
+        temporary.mkdir()
+        result = self._run(
+            [str(Path(node).resolve()), str(bridge), "profile", str(fixture)],
+            cwd=self.source, name="shared-profile", sha256=digest(node),
+            prepared_environment=(identity + "-profile", dict(inherited, TEMP=str(temporary), TMP=str(temporary))),
+            profile=True,
+        )
+        if result["exit"]:
+            raise RuntimeError("Windows command step=shared-profile-bootstrap failed: " + str(result["exit"])
+                               + "; recovery=node scripts/graphcoder-e2e/scratch.mjs profile ABSOLUTE_SETTINGS")
+        try:
+            profile = json.loads(Path(result["log"]).read_text(encoding="utf-8"))
+            if not isinstance(profile, dict) or "HOME" not in profile or not all(
+                    isinstance(key, str) and isinstance(value, str) for key, value in profile.items()):
+                raise ValueError("profile bridge must emit a nonempty string environment")
+        except (OSError, ValueError) as error:
+            raise RuntimeError("Windows command step=shared-profile-protocol: " + str(error)
+                               + "; recovery=adopt the source-matched scratch.mjs profile CLI") from error
+        # Merge explicitly selected non-profile test inputs only. Inherited
+        # HOME/auth/provider settings never enter the bootstrap or product.
+        selected = {key: value for key, value in os.environ.items()
+                    if key.upper().startswith(("ACYCLIC_", "E2E_", "WIN_TEST_"))
+                    and not (key.upper().endswith("API_KEY") or "AUTH_TOKEN" in key.upper()
+                             or key.upper().endswith("ACCESS_TOKEN"))}
+        env = dict(inherited, **selected, **profile)
+        home = Path(profile["HOME"])
         env.update(
-            HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(codex),
-            TEMP=str(temp), TMP=str(temp), LOCALAPPDATA=str(home / "AppData/Local"),
-            APPDATA=str(home / "AppData/Roaming"), HOMEDRIVE=home.drive,
-            HOMEPATH=str(home)[len(home.drive):], RUST_TEST_THREADS="4",
+            HOMEDRIVE=home.drive, HOMEPATH=str(home)[len(home.drive):], RUST_TEST_THREADS="4",
             ACYCLIC_TEST_SOURCE_ROOT=str(self.source), GIT_CONFIG_NOSYSTEM="1",
             GIT_CONFIG_GLOBAL=str(home / ".gitconfig"), E2E_PROCESS_HOST=str(self.host),
             PYTHONDONTWRITEBYTECODE="1",
@@ -187,8 +215,38 @@ class Commands:
             env.pop("ACYCLIC_TEST_BINARY", None)
         return identity, env
 
+    @contextmanager
+    def _libtest_selection(self):
+        """The libtest adapter owns nonvacuity across its whole selection."""
+        if self._selection is not None:
+            raise RuntimeError("a libtest selection already owns this runner")
+        selected = []
+        self._selection = selected
+        try:
+            yield
+        except BaseException:
+            raise
+        else:
+            result = dict(commands=len(selected), passed=sum(row["passed_tests"] for row in selected),
+                          exits=[row["exit"] for row in selected],
+                          listing=bool(selected) and all(row["listing"] for row in selected))
+            self.selections.append(result)
+            (self.records / "libtest-selections.json").write_text(
+                json.dumps(self.selections, indent=2), encoding="utf-8")
+            if not selected or (all(row["exit"] == 0 for row in selected)
+                                and result["passed"] == 0 and not result["listing"]):
+                raise RuntimeError("libtest selection reported ZERO passing tests")
+        finally:
+            self._selection = None
+
     def run(self, argv, *, cwd, name, sha256, libtest=False):
-        """Run admitted argv. Only the libtest adapter adds libtest arguments."""
+        """Run admitted argv, including shared profile preparation in timing."""
+        return self._run(argv, cwd=cwd, name=name, sha256=sha256, libtest=libtest,
+                         started=time.monotonic())
+
+    def _run(self, argv, *, cwd, name, sha256, libtest=False,
+             prepared_environment=None, profile=False, started=None):
+        """The same native process lifecycle for profile bootstrap and commands."""
         if not self.acquired:
             raise RuntimeError("Windows fleet lease is not held")
         if self.cancellation is not None and self.cancellation.requested:
@@ -205,8 +263,11 @@ class Commands:
             if any(value.startswith("--test-threads") for value in argv[1:]):
                 raise ValueError("the runner owns --test-threads=4")
             argv.append("--test-threads=4")
-        identity, env = self._environment()
-        start = time.monotonic()
+        identity, env = prepared_environment or self._environment()
+        completions = self.records / "native-completions"
+        completions.mkdir(exist_ok=True)
+        completion_path = completions / (identity + ".json")
+        start = time.monotonic() if started is None else started
         summaries = []
         log_path = self.records / (identity + ".log")
         proc = None
@@ -215,7 +276,7 @@ class Commands:
         try:
             with log_path.open("x", encoding="utf-8") as log:
                 proc = subprocess.Popen(
-                    [str(self.host), *argv], cwd=cwd, env=env,
+                    [str(self.host), "--completion", str(completion_path), *argv], cwd=cwd, env=env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                 )
@@ -242,55 +303,94 @@ class Commands:
         cancelled = control.cancelled
         outcome = 130 if cancelled else rc
         verification_error = None
+        native_completion = None
+        try:
+            native_completion = json.loads(completion_path.read_text(encoding="utf-8"))
+            if (not isinstance(native_completion, dict)
+                    or set(native_completion) != {"schema", "process_tree_retired", "exit_code", "cancelled"}
+                    or native_completion["schema"] != "acyclic.process-custody-completion.v1"
+                    or native_completion["process_tree_retired"] is not True
+                    or type(native_completion["exit_code"]) is not int
+                    or native_completion["exit_code"] != rc
+                    or type(native_completion["cancelled"]) is not bool):
+                raise ValueError("native completion schema or exit differs")
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            verification_error = ("Windows command step=native-custody-completion: " + str(error)
+                                  + "; recovery=build the source-matched acyclic-process-host through scripts/windows-test.sh")
+        passed = sum(int(match.group(1)) for value in summaries
+                     if (match := re.search(r"\b([0-9]+) passed\b", value)))
         if libtest and outcome == 0 and "--list" not in argv:
-            if not summaries or not any(re.search(r"\b[1-9][0-9]* passed\b", value) for value in summaries):
-                verification_error = "libtest selected ZERO passing tests: " + repr(argv)
+            empty = bool(summaries) and all(re.match(
+                r"^test result: ok\. 0 passed; 0 failed; 0 ignored;", value) for value in summaries)
+            if not summaries or (passed == 0 and (self._selection is None or not empty)):
+                verification_error = verification_error or "libtest selected ZERO passing tests: " + repr(argv)
         result = dict(
             target=name, executable=str(executable), argv=argv,
-            exit=1 if verification_error else outcome, process_exit=rc, cancelled=cancelled,
+            exit=outcome if outcome else (1 if verification_error else 0), process_exit=rc, cancelled=cancelled,
             seconds=round(elapsed, 6), under_10s=elapsed < 10,
             lease_wait_seconds=self.lease_wait_seconds,
             summaries=summaries, sha256=sha256, fixture=identity,
             log=str(log_path), process_host_sha256=digest(self.host),
             verification_error=verification_error,
+            native_completion=native_completion, native_completion_path=str(completion_path),
+            passed_tests=passed,
+            listing=libtest and "--list" in argv,
         )
         # Each completed command owns one immutable structured receipt. The
         # invocation summary below is only a view: reusing a producer/records
         # directory must never erase an earlier invocation's evidence.
-        receipts = self.records / "receipts"
+        receipts = self.records / ("profile-receipts" if profile else "receipts")
         receipts.mkdir(exist_ok=True)
+        if profile:
+            result["profile_source_sha256"] = digest(self.source / "scripts/graphcoder-e2e/scratch.mjs")
+        else:
+            result["profile_receipt"] = str(self.records / "profile-receipts" / (identity + "-profile.json"))
         with (receipts / (identity + ".json")).open("x", encoding="utf-8") as receipt:
             json.dump(result, receipt, indent=2)
-        self.results.append(result)
-        (self.records / "results.json").write_text(json.dumps(self.results, indent=2), encoding="utf-8")
-        print("WIN_TEST_RESULT", json.dumps(result), flush=True)
+        if not profile:
+            self.results.append(result)
+            if libtest and self._selection is not None:
+                self._selection.append(result)
+            (self.records / "results.json").write_text(json.dumps(self.results, indent=2), encoding="utf-8")
+        print("WIN_TEST_PROFILE" if profile else "WIN_TEST_RESULT", json.dumps(result), flush=True)
         if verification_error:
             raise RuntimeError(verification_error)
-        return outcome if 0 <= outcome < 256 else 1
+        return result if profile else (outcome if 0 <= outcome < 256 else 1)
 
 
-def run_tests(records, manifest, runtime, *, cancellation=None):
-    """The libtest adapter over the same generic command custody API."""
-    source = records / "source"
+def fixture_binary(records, manifest):
+    """Select the single admitted normal binary independently of its target name."""
     fixtures = [row for row in manifest["artifacts"] if not row["test"]]
     if len(fixtures) > 1:
-        raise ValueError("ambiguous normal executable fixture")
-    binary = records / "bin" / fixtures[0]["name"] if fixtures else None
+        raise RuntimeError("Ambiguous normal executable fixture")
+    if not fixtures:
+        return None
+    binary = (Path(records) / "bin" / fixtures[0]["name"]).resolve()
+    if not binary.is_file():
+        raise RuntimeError("Missing admitted normal executable fixture")
+    return binary
+
+
+def run_tests(records, manifest, runtime, *, cancellation=None, source=None):
+    """The libtest adapter over the same generic command custody API."""
+    source = Path(source).resolve() if source is not None else records / "source"
+    binary = fixture_binary(records, manifest)
     if "process_host" in manifest:
         host = admitted_host(source, records / "bin" / manifest["process_host"]["name"],
                              records / "host-receipt.json")
     else:
         host = admitted_host(source, os.environ["E2E_PROCESS_HOST"], os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"])
     with Commands(records, source, host, binary, cancellation=cancellation) as commands:
-        for row in manifest["artifacts"]:
-            if row["test"]:
-                rc = commands.run(
-                    [str((records / "bin" / row["name"]).resolve()), *runtime],
-                    cwd=source / manifest["crate_dir"], name=row["target"],
-                    sha256=row["sha256"], libtest=True,
-                )
-                if rc:
-                    return rc
+        with commands._libtest_selection():
+            for row in manifest["artifacts"]:
+                if row["test"]:
+                    rc = commands.run(
+                        [str((records / "bin" / row["name"]).resolve()), *runtime],
+                        cwd=source / manifest["crate_dir"], name=row["target"],
+                        sha256=row["sha256"], libtest=True,
+                    )
+                    if rc:
+                        return rc
     if not commands.results:
         raise RuntimeError("no admitted test executables")
     print("WIN_TEST_COMPLETE", len(commands.results), "suites;", records / "results.json", flush=True)
