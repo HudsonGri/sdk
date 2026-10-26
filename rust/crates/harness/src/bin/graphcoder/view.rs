@@ -106,6 +106,7 @@ pub async fn run(
                         Ok(resolution) => resolution,
                         Err(client::LocalAgentError::Harness(error @ (
                             acyclic_harness::Error::Invalid(_) | acyclic_harness::Error::NotFound(_)
+                            | acyclic_harness::Error::Unsupported(_)
                         ))) => {
                             input.set_chat_draft(&text);
                             renderer.notice(&error.to_string());
