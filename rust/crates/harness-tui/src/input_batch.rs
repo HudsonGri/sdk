@@ -56,4 +56,3 @@ pub fn frame_due(batch: &std::collections::VecDeque<crate::key_event::InputEvent
         Some(_) => false,
     }
 }
-
