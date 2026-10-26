@@ -32,9 +32,13 @@ def selection_probes(module, records, source, python, checksum):
         ("malformed-empty", [0, 1], [0, 0]),
     ):
         directory = records / label
-        fixture = directory / "source/scripts/graphcoder-e2e"
-        fixture.mkdir(parents=True)
-        shutil.copyfile(source / "scripts/graphcoder-e2e/owned-process.cs", fixture / "owned-process.cs")
+        # Copy the actual admitted host source closure, rather than pairing the
+        # new native host with the former C# fixture source.
+        receipt = json.loads(Path(os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"]).read_text(encoding="utf-8"))
+        for name in receipt["source"]:
+            destination = directory / "source" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source / name, destination)
         counter = directory / "invocations"
         # These are protocol fixtures, not product tests. Both manifest entries
         # invoke the same hash-admitted installed executable with different
@@ -211,7 +215,22 @@ def main():
         plan_path.write_text(json.dumps(plan), encoding="utf-8")
         assert subprocess.call([python, "-X", "utf8", str(module_path), str(plan_path)]) == 0
         cli_results = json.loads((records / "cli/results.json").read_text(encoding="utf-8"))
-        lease_wait_seconds = commands.lease_wait_seconds + cli_results[0]["lease_wait_seconds"]
+        # A second independent invocation can update the convenience summary,
+        # but every first invocation receipt must remain byte-for-byte intact.
+        receipts = records / "receipts"
+        retained = {path.name: path.read_bytes() for path in receipts.glob("*.json")}
+        assert len(retained) == len(commands.results)
+        with module.Commands(records, source, host) as successor:
+            assert successor.run([python, "-c", probe], cwd=source,
+                                 name="successor-invocation", sha256=checksum) == 0
+        for name, original in retained.items():
+            assert (receipts / name).read_bytes() == original, "earlier receipt was overwritten"
+        assert len(list(receipts.glob("*.json"))) == len(retained) + 1
+        for result in [*commands.results, *successor.results]:
+            path = receipts / (result["fixture"] + ".json")
+            assert json.loads(path.read_text(encoding="utf-8")) == result
+        lease_wait_seconds = (commands.lease_wait_seconds + successor.lease_wait_seconds
+                              + cli_results[0]["lease_wait_seconds"])
         selection_probes(module, records, source, python, checksum)
         for label in ("empty-first", "empty-last", "all-empty", "failure", "listing", "malformed-empty"):
             rows = json.loads((records / label / "results.json").read_text(encoding="utf-8"))

@@ -15,7 +15,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import time
 import uuid
 
@@ -93,7 +92,7 @@ start=time.monotonic()
 base=['cargo','xwin','test','--no-run','--locked','--target','x86_64-pc-windows-msvc','-p',p['name'],'--message-format=json-render-diagnostics']
 all_artifacts=[]
 logs=[]
-def build(cmd,label):
+def build(cmd,label,package_id=p['id']):
     log=root/(c['stem']+'-'+label+'.jsonl')
     logs.append(log)
     print('WIN_TEST_BUILD',json.dumps(cmd),flush=True)
@@ -103,7 +102,7 @@ def build(cmd,label):
             output.write(line)
             try: v=json.loads(line)
             except ValueError: continue
-            if v.get('reason')=='compiler-artifact' and v.get('package_id')==p['id']:
+            if v.get('reason')=='compiler-artifact' and v.get('package_id')==package_id:
                 all_artifacts.append((v,log))
         rc=proc.wait()
     assert rc==0, 'Cross-build failed with exit '+str(rc)+'; no Windows tests were run'
@@ -112,8 +111,9 @@ def build(cmd,label):
 # the same Cargo output pathname. Both graphs use the one artifact stager.
 admission={'artifacts':{}}
 rows=[]
+host_rows=[]
 
-def stage(label, artifacts, is_test):
+def stage(label, artifacts, is_test, runtime_host=False):
     specifications=[];identities=set()
     for v,log in artifacts:
         if not v.get('executable') or bool(v['profile']['test']) != is_test:continue
@@ -134,13 +134,29 @@ def stage(label, artifacts, is_test):
         value=selected[spec['name']]
         assert Path(value['source']).suffix.lower()=='.exe', 'Cargo artifact is not a Windows executable'
         row=dict(remote=value['path'],cargo_path=value['source'],name=spec['name'],target=spec['target'],test=is_test,sha256=value['sha256'])
-        rows.append(row)
+        (host_rows if runtime_host else rows).append(row)
         print('WIN_TEST_REMOTE_EXE',json.dumps(row),flush=True)
+
+# The native host is compiled and staged before test feature unification can
+# replace Cargo's output pathname. It belongs to this same job/source graph.
+host_package=next(package for package in metadata['packages'] if package['name']=='acyclic-native-runtime')
+host_flags=[];i=0
+while i<len(c['cargo']):
+    arg=c['cargo'][i];key=arg.split('=',1)[0]
+    if arg in ('--release','--offline','--frozen'):host_flags.append(arg)
+    elif key in ('--profile','--jobs','-j'):
+        host_flags.append(arg)
+        if '=' not in arg:i+=1;host_flags.append(c['cargo'][i])
+    i+=1
+build(['cargo','xwin','build','--locked','--target','x86_64-pc-windows-msvc','-p','acyclic-native-runtime','--bin','acyclic-process-host','--message-format=json-render-diagnostics']+host_flags,'process-host',host_package['id'])
+stage('process-host',all_artifacts,False,runtime_host=True)
+assert len(host_rows)==1 and host_rows[0]['target']=='acyclic-process-host'
+all_artifacts.clear()
 
 keys={arg.split('=',1)[0] for arg in c['cargo']}
 unit_selection=bool(keys & {'--lib','--bin','--bins','--example','--examples','--bench','--benches'})
 integration_selection=bool(keys & {'--test','--tests','--all-targets'}) or not unit_selection
-bins=[t for t in p['targets'] if 'bin' in t['kind']]
+bins=[t for t in p['targets'] if 'bin' in t['kind'] and t['name']!='acyclic-process-host']
 if integration_selection and bins:
     assert len(bins)==1, 'Ambiguous normal executable fixture: '+repr([t['name'] for t in bins])
     shared=[];i=0
@@ -174,19 +190,24 @@ for name in tracked+c['fixtures']:
         assert f.is_file(), 'Missing runtime fixture: '+str(f)
         files[f.as_posix()]=hashlib.file_digest(f.open('rb'),'sha256').hexdigest()
 dlls={}
-for row in rows:
+for row in rows+host_rows:
     folder=Path(row['cargo_path']).parent
     for directory in (folder,folder.parent,folder/'deps'):
         for f in directory.glob('*.dll'):
             h=hashlib.file_digest(f.open('rb'),'sha256').hexdigest()
             assert f.name not in dlls or dlls[f.name]['sha256']==h, 'Ambiguous runtime DLL '+f.name
             dlls[f.name]=dict(remote=str(f),sha256=h)
-manifest=dict(crate=p['name'],crate_dir=Path(p['manifest_path']).parent.relative_to(root).as_posix(),target_dir=str(target),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),artifacts=rows,artifact_admission=admission,source=files,dlls=dlls,build_seconds=time.monotonic()-start)
+host_receipt=dict(exit=0,target='x86_64-pc-windows-msvc',executable_sha256=host_rows[0]['sha256'],source={name:value for name,value in files.items() if name.startswith(('rust/crates/native-runtime/','rust/crates/host-platform/')) or name in ('Cargo.toml','Cargo.lock','rust-toolchain.toml','.cargo/config.toml')},cargo_admission=admission['artifacts'][host_rows[0]['name']])
+host_receipt_path=root/(c['stem']+'-host-receipt.json')
+host_receipt_path.write_text(json.dumps(host_receipt))
+process_host=dict(host_rows[0],receipt=host_receipt,receipt_sha256=hashlib.file_digest(host_receipt_path.open('rb'),'sha256').hexdigest())
+manifest=dict(crate=p['name'],crate_dir=Path(p['manifest_path']).parent.relative_to(root).as_posix(),target_dir=str(target),head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),artifacts=rows,artifact_admission=admission,process_host=process_host,source=files,dlls=dlls,build_seconds=time.monotonic()-start)
 manifest_path=root/(c['stem']+'-manifest.json');manifest_path.write_text(json.dumps(manifest))
 archive=root/(c['stem']+'.tar.gz')
 with tarfile.open(archive,'w:gz',compresslevel=1) as tar:
     tar.add(manifest_path,arcname='manifest.json')
-    for row in rows:tar.add(row['remote'],arcname='bin/'+row['name'])
+    for row in rows+host_rows:tar.add(row['remote'],arcname='bin/'+row['name'])
+    tar.add(host_receipt_path,arcname='host-receipt.json')
     for name,row in dlls.items():tar.add(row['remote'],arcname='bin/'+name)
     for name in files:tar.add(name,arcname='source/'+name)
     for log in logs:tar.add(log,arcname='logs/'+log.name)
@@ -241,11 +262,19 @@ def main():
         print('Usage from your worktree: bash Q:/lanes/win-test.sh <crate> [cargo test args] [FILTER] [-- libtest args]')
         print('Examples: acyclic-harness-core --all-features --lib hooks::release_tests')
         print('          acyclic-plugin --all-features --bin acyclic pi_native')
+        print('Resume a completed producer: windows-test.sh --consume RECORDS [FILTER] [-- libtest args]')
         print('Optional WIN_TEST_FIXTURES: JSON array of additional worktree-relative fixture files/directories.')
         print('Optional WIN_TEST_SCRATCH_ROOT: Windows records directory (default D:/lane-scratch/<worktree>).')
         return 0 if len(sys.argv) > 1 else 2
     root = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()).resolve()
     os.chdir(root)
+    if sys.argv[1] == '--consume':
+        if len(sys.argv) < 3:
+            fail('Usage: windows-test.sh --consume RECORDS [FILTER] [-- libtest args]')
+        cargo, runtime = arguments(sys.argv[3:])
+        if cargo:
+            fail('--consume only accepts runtime filters/options; it never runs Cargo')
+        return consume(root, Path(sys.argv[2]), runtime)
     cargo, runtime = arguments(sys.argv[2:])
     fixtures = json.loads(os.environ.get('WIN_TEST_FIXTURES', '[]'))
     if not isinstance(fixtures, list) or not all(isinstance(x, str) for x in fixtures):
@@ -261,15 +290,12 @@ def main():
         fail('Windows lane scratch must stay under D:/lane-scratch: ' + str(scratch))
     records = scratch / 'win-test' / stem[-12:]
     records.mkdir(parents=True)
-    archive = records / (stem + '.tar.gz')
     if os.environ.get('WIN_TEST_TARGET_DIR') or os.environ.get('WIN_TEST_PERSISTENT_SOURCE_CLOCK'):
         fail('Windows builds require build-slot job-owned targets; custom targets/source clocks are prohibited')
-    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py'):
+    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)
-    shared_runner = runner_module(root / 'scripts/windows-runner.py')
-    shared_runner.admitted_host(root, os.environ['E2E_PROCESS_HOST'], os.environ['WIN_TEST_PROCESS_HOST_RECEIPT'])
     config = dict(crate=sys.argv[1], cargo=cargo, stem=stem, fixtures=fixtures)
     payload, program = remote_invocation(config)
     import shlex
@@ -277,52 +303,31 @@ def main():
     stage = ['wsl.exe', '-d', 'Ubuntu', '-e', 'ssh', '-F', '/home/var/.ssh/buildbox/config', '-o', 'BatchMode=yes', 'bb2', shlex.join(stage_invocation(payload))]
     subprocess.run(stage, input=program, check=True)
     env = os.environ.copy()
-    env['BUILD_SLOT_REMOTE_FETCH'] = archive.name
-    fetch_dir = '/mnt/' + records.drive[0].lower() + records.as_posix()[2:]
+    # Copy-back follows successful producer receipt and disk-capacity admission.
+    env.pop('BUILD_SLOT_REMOTE_FETCH', None)
     print('WIN_TEST_RECORDS', records, flush=True)
     with (records / 'build.log').open('w', encoding='utf-8') as log:
-        process = subprocess.Popen(['pwsh.exe', '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_REMOTE_FETCH_DIR=' + fetch_dir, *payload], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        process = subprocess.Popen(['pwsh.exe', '-NoProfile', '-File', 'Q:/lanes/bs.ps1', *payload], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
         for line in process.stdout:
             log.write(line); log.flush()
             print(line, end='', flush=True)
         rc = process.wait()
     if rc:
         fail('bb2 build/export failed (exit ' + str(rc) + '); see ' + str(records / 'build.log'))
-    matches = re.findall(r'WIN_TEST_ARCHIVE ([0-9a-f]{64}) ' + re.escape(archive.name), (records / 'build.log').read_text(encoding='utf-8'))
-    if not archive.is_file() or len(matches) != 1:
-        fail('Build succeeded but BUILD_SLOT_REMOTE_FETCH did not return exactly one archive: ' + str(archive))
-    if digest(archive) != matches[0]:
-        fail('Fetched archive SHA-256 mismatch')
-    saved = records / 'artifacts.tar.gz'
-    shutil.move(str(archive), saved)
-    with tarfile.open(saved, 'r|gz') as tar:
-        manifest = None; allowed = {}; seen = set()
-        for member in tar:
-            relative(member.name)
-            if not member.isfile():
-                fail('Unexpected non-file archive member ' + member.name)
-            if member.name == 'manifest.json' and manifest is None:
-                manifest = json.load(tar.extractfile(member))
-                allowed.update({'bin/' + r['name']: r['sha256'] for r in manifest['artifacts']})
-                allowed.update({'bin/' + n: r['sha256'] for n, r in manifest['dlls'].items()})
-                allowed.update({'source/' + n: h for n, h in manifest['source'].items()})
-                (records / 'manifest.json').write_text(json.dumps(manifest, indent=2))
-                continue
-            if manifest is None or member.name in seen:
-                fail('Missing manifest or duplicate member: ' + member.name)
-            if member.name not in allowed and not (member.name.startswith('logs/' + stem) and member.name.endswith('.jsonl')):
-                fail('Unexpected archive member ' + member.name)
-            dest = records.joinpath(*relative(member.name).parts)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            with tar.extractfile(member) as src, dest.open('wb') as out:
-                shutil.copyfileobj(src, out)
-            if member.name in allowed and digest(dest) != allowed[member.name]:
-                fail('Fetched file SHA-256 mismatch: ' + member.name)
-            seen.add(member.name)
-        if manifest is None or not set(allowed).issubset(seen):
-            fail('Incomplete artifact/fixture fetch')
-    print('WIN_TEST_FETCH_VERIFIED', len(manifest['artifacts']), 'executables,', len(manifest['source']), 'source/fixture files', flush=True)
-    return run_tests(records, manifest, runtime)
+    return consume(root, records, runtime)
+
+
+def consume(root, records, runtime):
+    records = records.absolute()
+    if not records.resolve().is_relative_to(Path('D:/lane-scratch').resolve()):
+        fail('Windows export records must stay under D:/lane-scratch')
+    if not records.is_dir() or records.is_symlink() or records.is_junction():
+        fail('Windows export records must be an existing owned directory')
+    admission = runner_module(root / 'scripts/windows-artifacts.py')
+    archive, checksum = admission.fetch_export(records, (records / 'build.log').read_text(encoding='utf-8'))
+    admitted = admission.admit_archive(records, archive, checksum)
+    return run_tests(admitted.directory, admitted.manifest, runtime)
+
 
 def run_tests(records, manifest, runtime):
     # Execute the exact shared runner admitted with this producer's source.
