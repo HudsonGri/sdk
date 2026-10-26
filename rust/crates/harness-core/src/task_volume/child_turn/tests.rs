@@ -195,29 +195,29 @@ async fn histories<P: StreamProvider + 'static>(provider: Arc<P>) -> Result<()> 
         ChildState::Archived
     );
     let outcomes = volume
-        .child_results_page(&reference(), 0, 1)
+        .observe_child(&reference(), ChildResultWindow::After(0), 1)
         .await?
-        .unwrap();
+        .results;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].key, key(ChildFile::Result(1)));
     let outcomes = volume
-        .child_results_page(&reference(), 1, 1)
+        .observe_child(&reference(), ChildResultWindow::After(1), 1)
         .await?
-        .unwrap();
+        .results;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].key, key(ChildFile::Result(2)));
     assert!(
         volume
-            .child_results_page(&reference(), 2, 1)
+            .observe_child(&reference(), ChildResultWindow::After(2), 1)
             .await?
-            .unwrap()
+            .results
             .is_empty()
     );
     assert!(
         volume
-            .child_results_page(&reference(), u64::MAX, 1)
+            .observe_child(&reference(), ChildResultWindow::After(u64::MAX), 1)
             .await?
-            .unwrap()
+            .results
             .is_empty()
     );
     let observed = volume

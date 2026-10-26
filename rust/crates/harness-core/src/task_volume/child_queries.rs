@@ -102,30 +102,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         Ok(Some(reference_page(&index, after, maximum)))
     }
 
-    /// Immutable outcomes after an exact turn cursor. Only the requested
-    /// child's result range is visited; retained prompts and siblings are not.
-    pub async fn child_results_page(
-        &self,
-        reference: &Component,
-        after: u64,
-        maximum: usize,
-    ) -> Result<Option<Vec<FileValue>>> {
-        if maximum == 0 {
-            return Err(Error::LimitExceeded);
-        }
-        let (_, complete) = self.refresh_bounded::<true>(maximum as u64).await?;
-        if !complete {
-            return Ok(None);
-        }
-        let index = self.index.lock().await;
-        Ok(Some(result_page(
-            &index,
-            reference,
-            ChildResultWindow::After(after),
-            maximum,
-        )))
-    }
-
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     #[doc(hidden)]
     pub async fn child_request(&self, reference: &Component) -> Result<FileValue> {
