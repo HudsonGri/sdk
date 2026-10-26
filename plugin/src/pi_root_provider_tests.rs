@@ -1689,25 +1689,31 @@ async fn created_source_checks_reprove_only_live_state_after_one_full_observatio
     let mut substituted = observed.0.1.clone();
     substituted.roots.get_mut(&key).unwrap().source_epoch += 1;
     let substitution_work = fixture.startup.invocation_window().unwrap();
-    assert!(
-        matches!(fixture
+    assert!(matches!(
+        fixture
             .provider
             .verify_created_source(&key, &substituted, &substitution_work)
             .await,
-            Err(Error::NativeBoundary { code: ErrorCode::Unauthorized, .. }))
-    );
+        Err(Error::NativeBoundary {
+            code: ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     // And it never skips the live proof: a replaced native root is refused.
     let retained = fixture.directory.path().join("retained-project");
     std::fs::rename(&fixture.native, &retained).unwrap();
     std::fs::create_dir(&fixture.native).unwrap();
     let replacement_work = fixture.startup.invocation_window().unwrap();
-    assert!(
-        matches!(fixture
+    assert!(matches!(
+        fixture
             .provider
             .verify_created_source(&key, &observed.0.1, &replacement_work)
             .await,
-            Err(Error::NativeWork { cause: NativeTreeMaterializationError::AllocationChanged { .. }, .. }))
-    );
+        Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::AllocationChanged { .. },
+            ..
+        })
+    ));
 }
 
 #[test]
