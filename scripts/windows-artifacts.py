@@ -129,15 +129,29 @@ def destination(records, name):
     return path
 
 
-def admit_archive(records, archive, expected_sha256):
+def admit_archive(records, archive, expected_sha256, *, required_members=None):
     """Return an owned, fully reserved export closure and its admitted manifest.
 
     A complete closure is verified and reused. Incomplete historical extraction
     bytes stay untouched; consumers use only the returned directory. The shared
     materializer reserves every destination extent before the first payload
     write, and publishes no fixture if capacity admission fails.
+
+    Callers selecting a case matrix supply its independent archive-member to
+    SHA-256 map in required_members (source/... for generated runtime inputs,
+    bin/... for companions). The producer cannot satisfy that selection by
+    omitting a member and its manifest row, or by declaring stale bytes valid.
+    This contract is OS-neutral and is checked before reuse or materialization.
     """
     records, archive = Path(records), Path(archive)
+    requirements = {} if required_members is None else dict(required_members)
+    folded = set()
+    for name, checksum in requirements.items():
+        materializer.member_path(name)
+        if name.casefold() in folded or not isinstance(checksum, str) or not re.fullmatch("[0-9a-f]{64}", checksum):
+            raise ValueError("Export step=selected-input-admission invalid requirement: " + str(name)
+                             + "; recovery=regenerate the selected case member/hash map from its source receipt")
+        folded.add(name.casefold())
     if not re.fullmatch("[0-9a-f]{64}", expected_sha256) or digest(archive) != expected_sha256:
         raise ValueError("Fetched archive SHA-256 mismatch")
     with tarfile.open(archive, "r:gz") as tar:
@@ -165,6 +179,10 @@ def admit_archive(records, archive, expected_sha256):
                     raise ValueError("Process host source differs from the exported graph: " + path)
         if not set(allowed).issubset(names):
             raise ValueError("Incomplete artifact/fixture fetch")
+        for name, expected in requirements.items():
+            if allowed.get(name) != expected:
+                raise ValueError("Export step=selected-input-admission missing or stale member: " + name
+                                 + "; recovery=fetch the complete source-matched producer export before launching cases")
         if "process_host" in manifest and json.load(tar.extractfile("host-receipt.json")) != manifest["process_host"]["receipt"]:
             raise ValueError("Process host receipt differs from the export manifest")
         inventory = {}
