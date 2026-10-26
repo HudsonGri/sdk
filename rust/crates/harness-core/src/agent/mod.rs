@@ -7,6 +7,7 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod commit;
+mod driver;
 pub mod kernel;
 mod machine;
 mod layout;
@@ -18,6 +19,7 @@ pub use machine::{
     Alarm, AgentState, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, step,
 };
+pub use driver::{ExecutorDriver, OpenTurn, Settled, TurnHost, approval_intent, turn_id};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, VOLUMES};
 pub use lower::{delivery_key, lower, recipients};

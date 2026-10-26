@@ -11,6 +11,9 @@ use std::{
     sync::Mutex,
 };
 
+#[path = "agent_model/driver.rs"]
+mod driver;
+
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn id(byte: u8) -> AgentId {
