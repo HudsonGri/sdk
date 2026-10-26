@@ -51,7 +51,7 @@ pub async fn run(
                 },
                 event = client.next() => {
                     match event? {
-                        client::AgentEvent::Conversation { sequence, entry } => {
+                        client::AgentEvent::Conversation { sequence, entry, .. } => {
                             if let TurnInput::Message { from: Sender::User { principal }, id, inbox, .. } = &entry.input
                                 && principal == "local"
                                 && pending.as_ref().is_some_and(|(expected, at)| expected == id && at == inbox)
@@ -62,7 +62,7 @@ pub async fn run(
                             renderer.discard_before(client.client().conversation().first_sequence());
                             renderer.append(sequence, &turn.output.text)?;
                         }
-                        client::AgentEvent::Status { status } => renderer.status(&status),
+                        client::AgentEvent::Status { status, .. } => renderer.status(&status),
                         client::AgentEvent::Progress => {}
                     }
                 },
