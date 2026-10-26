@@ -11,6 +11,8 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
+mod identity;
+pub use identity::interaction_id;
 mod kind;
 pub use kind::InteractionKind;
 mod approval;

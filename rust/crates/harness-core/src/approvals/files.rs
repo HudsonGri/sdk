@@ -86,7 +86,7 @@ impl<'a> ApprovalRequest<'a> {
     }
 }
 
-pub(super) fn check_bound(length: usize, maximum_bytes: u64) -> Result<()> {
+pub(crate) fn check_bound(length: usize, maximum_bytes: u64) -> Result<()> {
     if maximum_bytes == 0 || maximum_bytes == u64::MAX || length as u64 > maximum_bytes {
         return Err(Error::Invalid("approval file exceeds its finite byte bound".into()));
     }
