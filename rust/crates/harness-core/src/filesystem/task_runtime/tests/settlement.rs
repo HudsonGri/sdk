@@ -239,7 +239,14 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     let recovery_io = PreparationIo::from_native_work(&recovery_work)?;
     let reopened = fixture.runtime(Some(&recovery_io)).await?;
     let (attempt, custody) = reopened
-        .reconcile_task_with_native_work(lease, custody, &reopened.commands(), 1, 1_000, &recovery_work)
+        .reconcile_task_with_native_work(
+            lease,
+            custody,
+            &reopened.commands(),
+            1,
+            1_000,
+            &recovery_work,
+        )
         .await?;
     let lease = match attempt {
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { lease }) => {
@@ -261,7 +268,14 @@ async fn native_stock_tool_lost_ack_reconciles_original_fence_without_redispatch
     let settlement_work = work.invocation_window()?;
     assert_eq!(settlement_work.budget(), super::native_mail::BUDGET);
     let (attempt, custody) = reopened
-        .reconcile_task_with_native_work(lease, custody, &reopened.commands(), 1, 1_000, &settlement_work)
+        .reconcile_task_with_native_work(
+            lease,
+            custody,
+            &reopened.commands(),
+            1,
+            1_000,
+            &settlement_work,
+        )
         .await?;
     if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
         return Err(error);
