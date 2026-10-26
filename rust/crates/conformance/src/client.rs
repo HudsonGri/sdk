@@ -4,11 +4,9 @@
 //! This suite neither replaces the endpoint with memory nor creates an agent by
 //! writing records around AgentHost. It checks observation, not turn execution.
 
-use acyclic_harness::{
-    agent::{AgentPath, AgentRecord as _, ConversationEntry, StatusRecord},
-    client::{
-        AgentClient, AgentClientError, AgentEvent, AgentSelection, DemandError, WireSessionError,
-    },
+use acyclic_harness::agent::{AgentPath, AgentRecord as _, ConversationEntry, StatusRecord};
+use acyclic_harness_client::{
+    AgentClient, AgentClientError, AgentEvent, AgentSelection, DemandError, WireSessionError,
 };
 use acyclic_stream::{StreamProvider, session::Client};
 use serde::{Deserialize, Serialize};
