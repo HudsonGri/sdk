@@ -372,6 +372,52 @@ async fn split_status_without_an_atomic_claim_cannot_authorize_recovery(
 async fn codex_native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
     native_owner_teardown("codex").await
 }
+
+#[tokio::test]
+async fn native_retirement_rejects_the_former_inline_drop_before_view_admission() -> Result<()> {
+    let coordination_thread = std::thread::current().id();
+    for former_inline_drop in [false, true] {
+        let checkout = tempfile::tempdir().map_err(storage)?;
+        let state = tempfile::tempdir().map_err(storage)?;
+        let local = Arc::new(
+            LocalHarness::open(
+                LocalHarnessConfig::native_host(checkout.path())
+                    .state_directory(state.path().join("owner")),
+            )
+            .await?,
+        );
+        let mut owner = HostWorkspaceOwner::new(local)?;
+        let (observed, retirement) = std::sync::mpsc::sync_channel(1);
+        owner.retirement_observer = Some(observed);
+        if former_inline_drop {
+            // The actual former retire body from the retained original
+            // control: replace the awaited blocking-pool drop with drop(self).
+            // No view is admitted here, so the independent thread oracle can
+            // reject that ordering without blocking native view callbacks.
+            let local = Arc::clone(&owner.local);
+            drop(owner);
+            Arc::try_unwrap(local)
+                .map_err(|_| Error::Conflict("control retained a harness handle".into()))?
+                .disconnect()
+                .await?;
+        } else {
+            owner.retire().await?;
+        }
+        let off_coordination_thread = retirement.recv().map_err(storage)? != coordination_thread;
+        assert_eq!(
+            off_coordination_thread, !former_inline_drop,
+            "the retirement-thread oracle must reject the actual former inline drop"
+        );
+        let checkout_path = checkout.path().to_path_buf();
+        let state_path = state.path().to_path_buf();
+        drop(checkout);
+        drop(state);
+        assert!(!checkout_path.exists());
+        assert!(!state_path.exists());
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn claude_native_owner_teardown_removes_storage_after_retiring_retained_views() -> Result<()>
 {
