@@ -16,6 +16,8 @@ pub mod contract;
 
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
+/// Provider-backed epoch-fenced actor checkpoint and alarm storage.
+pub mod local;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.
 pub mod namespace;
 /// Shared durable timer records, derived from the harness timer stream format.
