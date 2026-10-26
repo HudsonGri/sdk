@@ -231,11 +231,6 @@ pub enum Phase {
         /// Unix milliseconds.
         deadline_unix_ms: u64,
     },
-    /// Waiting for children to finish.
-    WaitingChildren {
-        /// Number still open.
-        open: u32,
-    },
     /// Terminal.
     Done {
         /// Outcome.
