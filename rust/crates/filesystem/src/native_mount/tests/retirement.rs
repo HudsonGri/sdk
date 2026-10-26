@@ -159,7 +159,10 @@ fn terminal_source_outcome_is_reported_after_its_destination_retires()
                 #[cfg(windows)]
                 warm_namespace: None,
             };
-            let result = packet.retire(None, retirement::SourceRetirementWait::Physical);
+            let result = packet.retire(
+                None,
+                crate::native_mount::retirement::SourceRetirementWait::Physical,
+            );
             assert!(packet.is_retired());
             assert!(packet.terminal_source_failure.is_none());
             result
@@ -204,7 +207,10 @@ fn stopped_watch_cancellation_releases_the_driver_and_session_fences()
                 terminal_source_failure: None,
                 destination_guard: session.destination_guard.take(),
             };
-            let result = packet.retire(Some(&wait), retirement::SourceRetirementWait::Caller);
+            let result = packet.retire(
+                Some(&wait),
+                crate::native_mount::retirement::SourceRetirementWait::Caller,
+            );
             assert!(
                 packet.is_retired(),
                 "terminal watch outcome stranded its fence"

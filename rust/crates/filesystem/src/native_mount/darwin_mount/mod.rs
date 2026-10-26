@@ -75,8 +75,8 @@ mod context;
 use context::*;
 
 mod requests;
-pub(super) use requests::callback_errno;
 use requests::*;
+pub(super) use requests::{callback_errno, fatal};
 
 mod protocol;
 use protocol::*;
