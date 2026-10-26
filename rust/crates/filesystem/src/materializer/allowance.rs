@@ -41,6 +41,8 @@ impl NativeResourceState {
         Ok(delta)
     }
     fn completed(&mut self, delta: WorkCounters, bytes: u64) -> Result<(), DemandError> {
+        #[cfg(test)]
+        COMPLETED_CHECKS.with(|count| count.set(count.get() + 1));
         let delta = self.allocation(delta, bytes)?;
         self.work.try_add_assign(&delta)?;
         self.allocations
@@ -109,19 +111,22 @@ impl NativeResourceAllowance {
         state: &NativeResourceState,
         delta: WorkCounters,
         bytes: u64,
-    ) -> Result<(), DemandError> {
+    ) -> Result<WorkCounters, DemandError> {
         #[cfg(all(test, not(acyclic_fs_loom)))]
         if super::views::tests::skip_ancestor_check(self) {
-            return Ok(());
+            return state.allocation(delta, bytes);
         }
         state.check()?;
         let bytes = bytes
             .checked_add(state.allocations.reserved_bytes())
             .ok_or(WorkError::Overflow)?;
-        Ok(state.work.admit(
-            &state.allocation(delta, bytes)?,
-            &state.pending.remaining(self.budget)?,
-        )?)
+        let mut delta = state.allocation(delta, bytes)?;
+        state
+            .work
+            .admit(&delta, &state.pending.remaining(self.budget)?)?;
+        // Reserved storage participates in admission, but is not yet owned.
+        delta.peak_allocation_bytes -= state.allocations.reserved_bytes();
+        Ok(delta)
     }
     // Keep ancestor admissions locked until the original operation commits.
     fn transaction(
@@ -169,7 +174,7 @@ impl NativeResourceAllowance {
         if let Some(parent) = &self.parent {
             parent.admit(delta, bytes)?;
         }
-        self.check(&self.lock(), delta, bytes)
+        self.check(&self.lock(), delta, bytes).map(|_| ())
     }
     pub(crate) fn admission(
         &self,
@@ -180,8 +185,15 @@ impl NativeResourceAllowance {
         self.transaction(
             None,
             &|scope, state| {
-                scope.check(state, delta, bytes)?;
-                state.completed(delta, bytes)
+                let admitted = scope.check(state, delta, bytes)?;
+                // This exact state and delta were admitted under the same
+                // ancestor locks. Completed work needs its own overflow check;
+                // an admitted transaction already has that guarantee.
+                state.work.add_admitted(&admitted);
+                state
+                    .allocations
+                    .record_owned_bytes(bytes, &mut state.work)
+                    .map_err(|error| error.into_work_or(DemandError::OriginalWorkPoisoned))
             },
             operation,
         )
@@ -352,3 +364,11 @@ impl NativeResourceAllowance {
         })
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    static COMPLETED_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod admission_tests;

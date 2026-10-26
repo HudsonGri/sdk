@@ -431,7 +431,7 @@ impl WorkCounters {
 
     /// Adds `delta` in place after [`Self::admit`] or an equivalent overflow check has accepted exactly this `self` and `delta`.
     #[inline]
-    fn add_admitted(&mut self, delta: &Self) {
+    pub(crate) fn add_admitted(&mut self, delta: &Self) {
         macro_rules! add_in_place {
             ($($field:ident),*) => {
                 $({
