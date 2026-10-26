@@ -7,12 +7,16 @@
 //! turn's input. The host binds exactly that selection into the turn's journal,
 //! so the executor can dispatch no other history.
 
-use super::{FilesystemExecutionJournal, FilesystemHost, FilesystemJournalBinding};
+use super::{
+    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost, FilesystemJournalBinding,
+};
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost},
-    conversation::{ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, SchemaRegistry},
+    conversation::{
+        ContentResidencyVerifier, ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner,
+    },
+    core::{AggregateKind, Authority, AuthorityIssuer, SchemaRegistry, Scope},
     executor::{ExecutionJournal, Executor, TurnOutput},
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
@@ -25,19 +29,32 @@ use std::sync::Arc;
 /// Name of the volume binding that holds an agent's journal and staged turn output.
 pub const PRIVATE_VOLUME: &str = "private";
 
+/// The authority of one agent turn: the agent's conversation issuer, its scope
+/// over every bound volume, and a content reader bound to that scope.
+pub struct TurnAuthority {
+    /// Signing custody; it must outlive the turn's journal.
+    pub issuer: AuthorityIssuer,
+    /// Read and write over the agent's bound volumes.
+    pub scope: Scope,
+    /// The capabilities `scope` grants, for the executor's tool authority.
+    pub grants: Capabilities,
+    /// Reader of files under `scope`, for model content and tool inputs.
+    pub content: Arc<dyn ContentResidencyVerifier>,
+}
+
 /// Builds the executor of one agent turn: its tools, policy, limits and
-/// compaction, with tool authority issued by the agent's conversation `issuer`.
+/// compaction, under the turn's [`TurnAuthority`].
 pub trait TurnExecutors: Send + Sync {
     /// Executor for `agent`'s next turn.
-    fn executor(&self, agent: &AgentState, issuer: &AuthorityIssuer) -> Result<Arc<dyn Executor>>;
+    fn executor(&self, agent: &AgentState, authority: &TurnAuthority) -> Result<Arc<dyn Executor>>;
 }
 
 impl<F> TurnExecutors for F
 where
-    F: Fn(&AgentState, &AuthorityIssuer) -> Result<Arc<dyn Executor>> + Send + Sync,
+    F: Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn Executor>> + Send + Sync,
 {
-    fn executor(&self, agent: &AgentState, issuer: &AuthorityIssuer) -> Result<Arc<dyn Executor>> {
-        self(agent, issuer)
+    fn executor(&self, agent: &AgentState, authority: &TurnAuthority) -> Result<Arc<dyn Executor>> {
+        self(agent, authority)
     }
 }
 
@@ -91,20 +108,18 @@ where
     fn journal(
         &self,
         agent: &AgentState,
-    ) -> Result<(FilesystemExecutionJournal<P, A, O>, AuthorityIssuer)> {
+    ) -> Result<(FilesystemExecutionJournal<P, A, O>, TurnAuthority)> {
         let owner = crate::AgentId::from_bytes(agent.path.id().to_bytes());
-        let binding = agent
+        let private = agent
             .volumes
             .iter()
             .find(|binding| binding.name == PRIVATE_VOLUME)
             .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
-        let volume = VolumeRef::new(
-            self.host.provider.clone(),
-            binding.volume.clone(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(owner),
-            &mut None,
-        )?;
+        if private.volume.class() != VolumeClass::AgentPrivate
+            || *private.volume.owner() != VolumeOwner::Agent(owner)
+        {
+            return Err(Error::Unauthorized("private volume belongs to another agent".into()));
+        }
         let issuer = AuthorityIssuer::new(
             self.issuer.0.clone(),
             self.issuer.1,
@@ -113,24 +128,43 @@ where
                 id: agent.path.id().as_str().to_owned(),
             },
         );
-        let capabilities = Capabilities::new([
-            volume.capability(VolumeOperation::Read, &mut None)?,
-            volume.capability(VolumeOperation::Write, &mut None)?,
-        ]);
+        let mut grants = Vec::with_capacity(2 * agent.volumes.len());
+        for binding in &agent.volumes {
+            grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
+            grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
+        }
+        let capabilities = Capabilities::new(grants);
         let scope = issuer.issue("agent", &capabilities, Some(owner), None, &mut None)?;
+        let verifier = issuer.verifier(&mut None)?;
+        let content = FilesystemContentVerifier::new(
+            Arc::clone(&self.host),
+            &verifier,
+            &scope,
+            self.limits.maximum_bytes,
+            None,
+        )?;
         let journal = FilesystemExecutionJournal::new(
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
             &self.schemas,
             FilesystemJournalBinding {
-                volume: &volume,
-                verifier: &issuer.verifier(&mut None)?,
+                volume: &private.volume,
+                verifier: &verifier,
                 scope: &scope,
                 maximum_bytes: self.limits.maximum_bytes,
                 io: None,
             },
-        )?;
-        Ok((journal, issuer))
+        )?
+        .with_input_verifier(content.clone());
+        Ok((
+            journal,
+            TurnAuthority {
+                issuer,
+                scope,
+                grants: capabilities,
+                content,
+            },
+        ))
     }
 
     /// The agent's last settled turns, oldest first.
@@ -233,7 +267,7 @@ where
         input: &'a ModelContent,
     ) -> BoxFuture<'a, Result<OpenTurn>> {
         Box::pin(async move {
-            let (journal, issuer) = self.journal(agent)?;
+            let (journal, authority) = self.journal(agent)?;
             let history = self.history(agent).await?;
             let selected = select(agent, &journal, history, turn, input).await?;
             let journal = match &selected {
@@ -241,10 +275,10 @@ where
                 None => journal,
             };
             Ok(OpenTurn {
-                executor: self.executors.executor(agent, &issuer)?,
+                executor: self.executors.executor(agent, &authority)?,
                 journal: Arc::new(journal),
                 max_steps: self.limits.max_steps,
-                custody: Some(issuer),
+                custody: Some(authority.issuer),
                 selected,
             })
         })
