@@ -1,0 +1,43 @@
+bun test v1.4.2 (744846f84)
+
+.bb-client-bounded-before.test.ts:
+{"requests":[{"direction":"after","cursor":"c"},{"direction":"before","cursor":"b"}],"actual":["a","c"],"expected":["b","c"]}
+17 |   window.reset(page(["b", "c"]));
+18 |   await window.load("after");
+19 |   expect(window.items).toEqual(["c", "d"]);
+20 |   await window.load("before");
+21 |   console.log(JSON.stringify({ requests, actual: window.items, expected: ["b", "c"] }));
+22 |   expect(window.items).toEqual(["b", "c"]);
+                            ^
+error: expect(received).toEqual(expected)
+
+  [
+-   "b",
++   "a",
+    "c",
+  ]
+
+- Expected  - 1
++ Received  + 1
+
+      at <anonymous> (/work/src/.bb-client-bounded-before.test.ts:22:24)
+(fail) exclusive reverse load recovers the evicted neighbor without a hole [15.15ms]
+22 |   expect(window.items).toEqual(["b", "c"]);
+23 | });
+24 | test("reading an unchanged resident window retains its array identity", () => {
+25 |   const window = new PageWindow<string, string>(item => item, async () => page([]), 3);
+26 |   window.reset(page(["a", "b", "c"]));
+27 |   expect(window.items).toBe(window.items);
+                            ^
+error: expect(received).toBe(expected)
+
+Expected: [ "a", "b", "c" ]
+Received: serializes to the same string
+
+      at <anonymous> (/work/src/.bb-client-bounded-before.test.ts:27:24)
+(fail) reading an unchanged resident window retains its array identity [1.25ms]
+
+ 0 pass
+ 2 fail
+ 3 expect() calls
+Ran 2 tests across 1 file. [21.00ms]

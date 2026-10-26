@@ -1,0 +1,14 @@
+{
+  "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+  "command": [
+    "/opt/homebrew/bin/node",
+    "/Users/var/client-perf-node-cef1e4151943.YkxwhB/typescript/packages/harness/test/node-swarm.mjs"
+  ],
+  "rc": 0,
+  "seconds": 0.19426587500493042,
+  "artifacts": {
+    "typescript/packages/harness/test/node-swarm.mjs": "4a161e50d15f057b097327f3906c756e8c315162eb6c7c0523ca3648d535fc19",
+    "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm": "61f893d420abd5b3a27cec5249a827c1cff42e75e575c40e46045a0eeb6d85f4"
+  },
+  "output": "{\"name\":\"node-real-wasm-swarm\",\"node\":\"v25.5.0\",\"cases\":1,\"seconds\":0.04026733299999998}\n"
+}

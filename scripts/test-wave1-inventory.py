@@ -105,6 +105,39 @@ class EvidencePolicy(unittest.TestCase):
         shutil.copyfile(ROOT / relative, target)
         return target
 
+    def test_owner_observations_cannot_be_relabelled_as_proofs(self):
+        original = MANIFEST["owner_observations"]["updates-v1"]
+        POLICY.check_observations(original)
+        for field in ("positive_proofs", "negative_controls_detected"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = self.copy_file(root, original["repo_receipt"])
+                receipt = json.loads(target.read_text())
+                receipt[field] = 1
+                target.write_text(json.dumps(receipt))
+                reference = dict(original, sha256=POLICY.sha256(target))
+                with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "cannot qualify redesigned"):
+                    POLICY.check_observations(reference)
+
+    def test_rehashed_mac_receipt_must_still_use_linux_artifact(self):
+        original = MANIFEST["owner_observations"]["updates-v1"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = self.copy_file(root, original["repo_receipt"])
+            receipt = json.loads(target.read_text())
+            for capture in receipt["captures"]:
+                copied = self.copy_file(root, capture["repo_path"])
+                if copied.name == "current-wasm-mac-receipt.json":
+                    mac = json.loads(copied.read_text())
+                    key = next(key for key in mac["artifacts"] if key.endswith(".wasm"))
+                    mac["artifacts"][key] = "0" * 64
+                    copied.write_text(json.dumps(mac))
+                    capture.update(sha256=POLICY.sha256(copied), bytes=copied.stat().st_size)
+            target.write_text(json.dumps(receipt))
+            reference = dict(original, sha256=POLICY.sha256(target))
+            with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "Node same-artifact identity"):
+                POLICY.check_observations(reference)
+
     def copy_evidence(self, root, receipt):
         self.copy_file(root, receipt["repo_log"])
         for source in receipt["executed_oracle_sources"]:

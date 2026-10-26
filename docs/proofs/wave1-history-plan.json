@@ -1,0 +1,426 @@
+{
+  "schema_version": 1,
+  "kind": "proof_plan_not_runtime_export",
+  "canonical_five_case_pin": "df031ac762773611d634b97d331e924c3b75f1bb",
+  "runtime_api": "Only five Case variants and verify/verify_case are implemented at the canonical pin. This plan does not claim HST-06..12 Rust exports or a runtime Unqualified result exists yet.",
+  "planned_receipt_outcomes": {
+    "Qualified": "immutable positive receipt plus matching negative control",
+    "Failed": "semantic invariant witness at exact source",
+    "Unqualified": "typed missing capability/history/receipt; no skip or fallback pass"
+  },
+  "cases": [
+    {
+      "id": "HST-01",
+      "name": "AppendRetry",
+      "obligations": [
+        "streams.keys.append"
+      ],
+      "history": "rejected append key remains unspent, exact retry/lost-ack replay and changed successful payload refusal",
+      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::AppendRetry",
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-02",
+      "name": "CommitRetry",
+      "obligations": [
+        "streams.keys.commit"
+      ],
+      "history": "rejected composed key remains unspent, exact envelope replay and changed successful digest refusal",
+      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::CommitRetry",
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-03",
+      "name": "AbsentZeroTail",
+      "obligations": [
+        "streams.keys.absent-zero-tail"
+      ],
+      "history": "Tail(0) accepts absence independently of missing-path Follow",
+      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::AbsentZeroTail",
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-04",
+      "name": "SubtreeFork",
+      "obligations": [
+        "streams.fork.cut"
+      ],
+      "history": "descendant membership at one cut and private later writes",
+      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::SubtreeFork",
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-05",
+      "name": "ComposedFork",
+      "obligations": [
+        "streams.fork.cut",
+        "fs.fork-many"
+      ],
+      "history": "pre-commit forks plus companion append; extend with same-domain volume/ForkAdopted crash cuts",
+      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::ComposedFork",
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "ReceiptNotAdmitted"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-06",
+      "name": "PendingAttemptFence",
+      "obligations": [
+        "streams.keys.pending"
+      ],
+      "history": "accepted/Unknown exact-request recovery and late attempt-generation message fencing",
+      "implemented_entrypoint": null,
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-07",
+      "name": "NamespaceKeyLifetime",
+      "obligations": [
+        "streams.keys.lifetime"
+      ],
+      "history": "lost ack after >120s, retirement/GC/fork/restore never reexecutes old key",
+      "implemented_entrypoint": null,
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-08",
+      "name": "ForkClosureRetention",
+      "obligations": [
+        "streams.fork.retention"
+      ],
+      "history": "shared sealed/unsealed transitive closure survives compaction, source retirement, restore and old-generation release",
+      "implemented_entrypoint": null,
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-09",
+      "name": "NestedExclusions",
+      "obligations": [
+        "streams.fork.exclusions"
+      ],
+      "history": "pre-commit nested destination, segment-relative children exclusion, children-suffix retained and no self-inheritance",
+      "implemented_entrypoint": null,
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-10",
+      "name": "ForkAuthority",
+      "obligations": [
+        "streams.fork.authorization",
+        "auth.enforcement-fence"
+      ],
+      "history": "exact-source versus covering subtree grants, destination access, revocation and zero exposure on denial",
+      "implemented_entrypoint": null,
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-11",
+      "name": "SessionFollowCredit",
+      "obligations": [
+        "streams.follow.namespace-wake",
+        "client.session-credit",
+        "client.authority-binding"
+      ],
+      "history": "missing Follow is NotFound/no effect; existing inherited-path replay, independent credit/cancel/revoke/reconnect/native/WebSocket",
+      "implemented_entrypoint": null,
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    },
+    {
+      "id": "HST-12",
+      "name": "ChildrenTailAtCut",
+      "obligations": [
+        "streams.children.tail-at-cut",
+        "client.demand-bounds"
+      ],
+      "history": "tail projection at retained page cut, bounded full-record bytes, None missing/empty and Read beyond List",
+      "implemented_entrypoint": null,
+      "coverage": {
+        "memory": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "local": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "hosted": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        },
+        "wasm_browser": {
+          "outcome": "Unqualified",
+          "reason": "CanonicalHistoryNotExported"
+        }
+      },
+      "receipt_requirements": [
+        "full SDK commit and executable/source hashes",
+        "provider/transport and fresh namespace",
+        "same canonical oracle/history/case ID",
+        "nonzero selection and <10s fast-suite runtime",
+        "positive and old/mutated production invariant witness; setup failure never detection"
+      ]
+    }
+  ]
+}

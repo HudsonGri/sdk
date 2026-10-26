@@ -1,0 +1,21 @@
+[
+  {
+    "name": "node-swarm",
+    "command": [
+      "node",
+      ".bb-client-current-wasm-runtime/typescript/packages/harness/test/node-swarm.mjs"
+    ],
+    "rc": 0,
+    "seconds": 0.2534638079814613
+  },
+  {
+    "name": "bun-swarm",
+    "command": [
+      "bun",
+      "test",
+      "typescript/packages/harness/test/swarm-client.test.ts"
+    ],
+    "rc": 0,
+    "seconds": 0.5397755450103432
+  }
+]

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T01:24:36.244624+00:00",
+  "generated_at": "2026-10-26T01:45:56.217444+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -156,6 +156,13 @@
       "qualification": "source_review_and_rejected_run_only"
     }
   },
+  "owner_observations": {
+    "updates-v1": {
+      "repo_receipt": "docs/proofs/evidence/owner-updates-v1/observations.json",
+      "sha256": "5adb3967444029527e15eabd115b9035d68d5b492e87b20b27f7f670197a35cc",
+      "qualification": "none; historical controls, prerequisite smoke and owner reports only"
+    }
+  },
   "cleanliness": {
     "tool": "clippy",
     "command": "build-slot --remote cargo clippy -p acyclic-stream --no-deps --message-format=json --features http,local --test wave1_keys --example wave1-conformance",
@@ -274,6 +281,208 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
     },
     {
+      "id": "client.cursor-reducer",
+      "owner": "client-perf",
+      "risk": "data_loss_or_corruption",
+      "invariant": "Canonical ClientViews is deterministic for replay/live overlap; application cursor is monotonic, gapless and deduplicated across reconnect and epoch replacement.",
+      "proof_specification": "Seeded production reducer versus independent event-history model; decoder fuzz; real transport reconnect DST with the identical oracle in every mode.",
+      "negative_controls": [
+        {
+          "mutation": "drop overlap dedupe",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "advance cursor before application",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "accept stale generation",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "reorder conflicting frames",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "production WireSession and ClientViews integration",
+        "current A3/A5 replay anchors and filtered progress",
+        "real frame corpus"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "client.outbox-recovery",
+      "owner": "client-perf",
+      "risk": "data_loss_or_corruption",
+      "invariant": "Crash/reconnect preserves unsent and accepted-unacked intents; identical key/digest produces exactly one durable effect and one application settlement; Unknown never creates a fresh intent.",
+      "proof_specification": "Real persistent outbox crash-cut DST before/after send, acceptance, ack and settlement; production concurrency loom; same endpoint history.",
+      "negative_controls": [
+        {
+          "mutation": "new retry key",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "settle on transport send",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "drop accepted-unacked entry",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "lose persisted unsent entry",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "canonical outbox persistence/reopen and crash hooks",
+        "original-key receipt observations"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "client.page-window",
+      "owner": "client-perf",
+      "risk": "data_loss_or_corruption",
+      "invariant": "Exclusive edge cursors, overlap/reset/inflight fencing and eviction preserve ordered gapless unique entries; opaque A5 cursors retain whole page ownership.",
+      "proof_specification": "Production Rust PageWindow model/property histories including alternating before/after, stale response, reset, empty pages and bounded stale custody; real generated WASM in Node.",
+      "negative_controls": [
+        {
+          "mutation": "actual old TS [b,c] -> [c,d] -> [a,c] instead of [b,c]",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "partial eviction with stale opaque edge",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "admit pre-reset response",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "opposing load admission race",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "Rust PageWindow public API pending",
+        "per-entry versus opaque whole-page cursor contract",
+        "same oracle on old/mutated production"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "client.wasm-boundary",
+      "owner": "client-perf",
+      "risk": "data_loss_or_corruption",
+      "invariant": "Rust/WASM/TS preserve exact u64 cursors, values, typed errors, cancellation and callback/handle lifetimes; bindings execute the canonical core.",
+      "proof_specification": "Boundary property tests in Node against real generated WASM; separate Bun/browser/hosted receipts, frame decoder fuzz and lifetime/drop instrumentation.",
+      "negative_controls": [
+        {
+          "mutation": "truncate u64 to Number",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "stringify typed error",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "retain disposed callback",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "substitute duplicate TS reducer",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "current generated artifacts and binding source SHA",
+        "BigInt/error/disposal production observation hooks"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
       "id": "fs.append-segments",
       "owner": "fs-concurrency",
       "risk": "data_loss_or_corruption",
@@ -302,7 +511,7 @@
         "public provider-generic suite and endpoint runner",
         "crash/acknowledgement and mid-preparation cancellation hooks"
       ],
-      "implementation_state": "unsigned_owner_source_review_positive_suite_rejected_before_mutation",
+      "implementation_state": "owner_fs339_six_case_memory_pass_hash_validated_mutation_persistence_endpoint_pending",
       "source": [],
       "modes": {
         "memory": {
@@ -323,13 +532,17 @@
         }
       },
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
-      "source_review": "fs-append-initial"
+      "source_review": "fs-append-initial",
+      "owner_observations": [
+        "fs339-memory-append"
+      ],
+      "prior_fixture_failure": "FS338 intentionally empty segment used max_source_bytes=0, rejected before reading; corrected FS339 fixture uses max(1). Historical rejected receipt preserved; not a demonstrated product invariant failure."
     },
     {
       "id": "fs.changefeed-cut",
       "owner": "fs-concurrency",
       "risk": "data_loss_or_corruption",
-      "invariant": "Snapshot cut plus exclusive follow cover each change exactly once in applied order; reconnect validates anchor and caps residency/subscriptions. Query is path prefix plus glob, optionally across same-domain volumes; approvals/*/request.json uses indexed traversal rather than a whole-tree scan.",
+      "invariant": "Snapshot cut plus exclusive follow cover each change exactly once in applied order; reconnect validates anchor and caps residency/subscriptions. Query is path prefix plus glob, optionally across same-domain volumes; approvals/*/request.json uses indexed traversal rather than a whole-tree scan. Cursor binds account/domain/cut/query/volumes/position/auth; lease expiration and revocation refuse instead of switching to latest. Charge authorized visited misses; opaque cursors retain complete pages.",
       "proof_specification": "Append between each snapshot/register/replay boundary under real providers; bounded reference-history DST and decoder fuzz.",
       "negative_controls": [
         {
@@ -352,7 +565,9 @@
       "required_hooks_or_decisions": [
         "prefix/glob multi-volume query signature",
         "snapshot cut/cursor and visited-index-entry counters",
-        "append-segment changefeed API"
+        "append-segment changefeed API",
+        "retained revocable cursor lease and resumed-scope hooks",
+        "canonical bounded glob authorization including denied-name non-exposure"
       ],
       "implementation_state": "specified_pending_owner_api",
       "source": [],
@@ -380,7 +595,7 @@
       "id": "fs.conditional-publication",
       "owner": "fs-concurrency",
       "risk": "data_loss_or_corruption",
-      "invariant": "Condition and bytes/metadata/authority publication linearize together; loser/stale generation changes nothing; unknown result reconciles original key.",
+      "invariant": "Condition and bytes/metadata/authority publication linearize together; loser/stale generation changes nothing; unknown result reconciles original key. Generation fences any intervening volume publication including equal-byte ABA; Digest compares logical regular-file bytes at admission while retaining authenticated path/identity/permission dependencies; Absent remains distinct from empty.",
       "proof_specification": "Two-writer real-provider DST, production publication loom, crash/reopen and observed byte/metadata oracle.",
       "negative_controls": [
         {
@@ -426,7 +641,7 @@
       "id": "fs.fork-many",
       "owner": "fs-concurrency",
       "risk": "data_loss_or_corruption",
-      "invariant": "All requested roots and authority-owned lineage publish at one cut or none; retry preserves identities; no intermediate destination visible. Agent and volume authority streams share the decided domain; fork_many contributes to the caller's composed CommitRequest with subtree fork and ForkAdopted, never opens its own commit.",
+      "invariant": "All requested roots and authority-owned lineage publish at one cut or none; retry preserves identities; no intermediate destination visible. Agent and volume authority streams share the decided domain; fork_many contributes to the caller's composed CommitRequest with subtree fork and ForkAdopted, never opens its own commit. PreparedForkMany owns root-closure holds and contributes to the caller's sealed preparation; Unknown keeps original key/digest and recovery custody. Retire/GC release is generation fenced. Cross-cell/domain composition refuses before effects.",
       "proof_specification": "Crash-cut canonical authority DST plus production root publication loom; cost counters scale with requested roots.",
       "negative_controls": [
         {
@@ -449,7 +664,60 @@
       "required_hooks_or_decisions": [
         "caller-supplied CommitRequest composition API",
         "actual domain/participant identity",
-        "spawn-shaped crash cuts"
+        "spawn-shaped crash cuts",
+        "retained DomainCut and PreparedForkMany ownership observations",
+        "cancel/recovery hold lifetime and old-generation release cuts",
+        "actual durable body/root/participant/appends/roundtrip counters"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "streams.children.tail-at-cut",
+      "owner": "rx-hostability",
+      "risk": "data_loss_or_corruption",
+      "invariant": "ChildrenPage optional canonical relative stream tail is read at the same retained namespace/page cut, absent/empty returns None without creation, and record values/headers/framing count against page bytes; Read authority is required beyond List visibility.",
+      "proof_specification": "Same public generic provider histories with append racing page-cut capture, missing tails, oversized record and List-only denial; actual endpoint suite, no N per-child tail roundtrips.",
+      "negative_controls": [
+        {
+          "mutation": "read latest after captured cut",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "ignore record payload bytes",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "List-only tail disclosure",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "per-child tail network reads",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "signed canonical ChildrenPageRequest field/schema",
+        "actual cut and byte/admission observations"
       ],
       "implementation_state": "specified_pending_owner_api",
       "source": [],
@@ -475,7 +743,7 @@
     },
     {
       "id": "streams.fork.cut",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
       "invariant": "One pre-commit namespace membership/history cut; composed forks/append all-or-none; nested destination is a finite DAG; later writes private.",
       "proof_specification": "Seeded reference-history DST and loom of real root publication/append primitive.",
@@ -548,7 +816,7 @@
     },
     {
       "id": "streams.fork.retention",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
       "invariant": "Fork holds all sealed and unsealed transitive history through retirement, GC, compaction, fork-of-fork and restore; no payload/descendant copy at fork.",
       "proof_specification": "Real persistent crash/GC DST; root/page/payload work counters with fixed path depth and growing subtree.",
@@ -594,7 +862,7 @@
     },
     {
       "id": "streams.keys.absent-zero-tail",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
       "invariant": "Definitive conflict retains no terminal key outcome; identical later retry publishes once; exact successful replay/inspection; changed successful payload is typed mismatch; Tail0 admits absence.",
       "proof_specification": "Public generic StreamProvider black-box history, identical assertions for every provider; real concurrency/crash/lifetime coverage is tracked separately.",
@@ -643,7 +911,7 @@
     },
     {
       "id": "streams.keys.append",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
       "invariant": "Definitive conflict retains no terminal key outcome; identical later retry publishes once; exact successful replay/inspection; changed successful payload is typed mismatch; Tail0 admits absence.",
       "proof_specification": "Public generic StreamProvider black-box history, identical assertions for every provider; real concurrency/crash/lifetime coverage is tracked separately.",
@@ -692,7 +960,7 @@
     },
     {
       "id": "streams.keys.commit",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
       "invariant": "Definitive conflict retains no terminal key outcome; identical later retry publishes once; exact successful replay/inspection; changed successful payload is typed mismatch; Tail0 admits absence.",
       "proof_specification": "Public generic StreamProvider black-box history, identical assertions for every provider; real concurrency/crash/lifetime coverage is tracked separately.",
@@ -741,7 +1009,7 @@
     },
     {
       "id": "streams.keys.lifetime",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
       "invariant": "Successful key\u2192digest/receipt bindings last for namespace lifetime and remain retained by reachable fork history; a key is never expired then replayed as fresh.",
       "proof_specification": "Injected production clock, >120s retention witness, restart/snapshot and exact retry/changed digest.",
@@ -784,7 +1052,7 @@
     },
     {
       "id": "streams.keys.pending",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "data_loss_or_corruption",
       "invariant": "Pending acceptance/unknown completion is resolved under original digest; late old attempts cannot publish or release current holds.",
       "proof_specification": "DST real prepare/decision/publication crash cuts plus production attempt-generation loom.",
@@ -926,6 +1194,102 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
     },
     {
+      "id": "client.authority-binding",
+      "owner": "client-perf",
+      "risk": "authority_or_security",
+      "invariant": "Never-requested authority fails typed before delivery; retired generations remain fenced; cancelled/revoked interest cannot deliver under another current channel.",
+      "proof_specification": "Actual session server/client admission DST and existing production admissions/discovery Loom with current A3/A5 fixtures; same hostile frames at endpoint ingress.",
+      "negative_controls": [
+        {
+          "mutation": "bypass delivery admission",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "accept unrequested authority",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "erase generation fence",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "catch-all UI access error",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "canonical credential/admission transport",
+        "typed unrequested versus retired authority observation"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "client.host-composition",
+      "owner": "client-perf",
+      "risk": "authority_or_security",
+      "invariant": "HarnessBuilder presets, TUI and host/plugin shims share canonical WireSession, Registry and tools::defaults; unsupported composition refuses before effects and typed errors reach UI.",
+      "proof_specification": "Public generic composition conformance over real presets/host adapters; PTY/TestBackend for surviving TUI entrypoints; real captured provider/terminal fixtures.",
+      "negative_controls": [
+        {
+          "mutation": "private duplicate core/registry",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "silent unsupported downgrade",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "catch-all typed access mapper",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "signed HarnessBuilder and surviving host entrypoints",
+        "do not extend deleted TaskVolume/wire transport/terminal modules"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
       "id": "streams.fork.authorization",
       "owner": "b-authority",
       "risk": "authority_or_security",
@@ -973,7 +1337,7 @@
     },
     {
       "id": "streams.fork.exclusions",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "authority_or_security",
       "invariant": "Segment-relative excluded subtree absent in child and unchanged in source; similarly named sibling retained; nested fork cannot inherit its own publication.",
       "proof_specification": "Public generic nested-fork membership histories, independent segment-set model; seeded DST.",
@@ -1063,9 +1427,9 @@
     },
     {
       "id": "streams.follow.namespace-wake",
-      "owner": "streams",
+      "owner": "rx-hostability",
       "risk": "liveness",
-      "invariant": "Follow before creation/inherited-root publication is gapless per channel; applied cursor monotonic; independent credit/cancel/revoke do not lose another channel.",
+      "invariant": "Absent cursor-zero Follow returns typed NotFound with unchanged namespace; after create/fork existing-path follow is gapless, including inherited root publication, independent credit/cancel/revoke and monotonic applied cursors.",
       "proof_specification": "Shared provider history plus real registration loom; native/WebSocket endpoint DST across reconnect and leadership.",
       "negative_controls": [
         {
@@ -1087,7 +1451,7 @@
       ],
       "required_hooks_or_decisions": [
         "namespace interest wake hook",
-        "absent path cursor-zero contract",
+        "accepted absent-path NotFound/no-effect contract from rx-hostability supersedes earlier wait-before-create proposal",
         "private leader movement hook"
       ],
       "implementation_state": "specified_pending_owner_api",
@@ -1152,13 +1516,158 @@
         }
       },
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "client.demand-bounds",
+      "owner": "client-perf",
+      "risk": "resource_bounds",
+      "invariant": "At fixed visible/focused demand, 1k/10k/100k total agents respect separate retained-byte, interest and outbox budgets, including blocked producers, inflight responses and backing segments.",
+      "proof_specification": "Public generic production client scale conformance with separately prepared provider fixtures; measure from client construction through cancellation/settlement; fixed gate corpus and nightly exploration.",
+      "negative_controls": [
+        {
+          "mutation": "follow every discovered agent",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "hydrate all transcripts",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "omit blocked writer custody from budget",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "production current/peak bytes, interests and outbox probes",
+        "bounded discovery pagination/expanded nodes",
+        "ui-dataflow handoff integration",
+        "historical ui-dataflow.md folded: retired HarnessClient/wire-transport/terminal defects are not current claims",
+        "same-cut bounded children status tail projection from A3, no follow per unfocused child"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "client.session-credit",
+      "owner": "client-perf",
+      "risk": "resource_bounds",
+      "invariant": "Actual server obeys per-channel and aggregate byte credit; held backing payload retains credit; exhausted or cancelled channel does not block or leak another.",
+      "proof_specification": "Real session::serve / endpoint histories with zero credit, two channels, slow consumer, payload release, cancel/reconnect; production credit/accounting Loom.",
+      "negative_controls": [
+        {
+          "mutation": "return credit before payload release",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "couple channel budgets",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "allow unbounded blocked sends",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "production server outstanding credit and physical-open counters",
+        "shared Client::with_transport I/O seam"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "client.visible-work",
+      "owner": "client-perf",
+      "risk": "resource_bounds",
+      "invariant": "Per-frame visits/folds/copies are O(visible/changed content); unchanged JS items preserve identity; markdown work is linear incremental and input keys are neither lost nor reordered.",
+      "proof_specification": "Production frame/copy counters at fixed visible demand and 1k/10k/100k totals; markdown split-boundary fuzz/operation counts; surviving TUI PTY/TestBackend key histories.",
+      "negative_controls": [
+        {
+          "mutation": "iterate all agents on each frame",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "copy unchanged items per getter",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "reparse all markdown per chunk",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "drop or reorder input event",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "actual production visit/copy/markdown-work hooks",
+        "surviving TUI/markdown/input seams; no proof of deleted paths"
+      ],
+      "implementation_state": "specified_pending_owner_api",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
     }
   ],
   "qualification_summary": {
     "positive_proofs": 0,
     "negative_tests_detected": 10,
     "implemented_fixed_histories": 5,
-    "obligations": 19,
+    "obligations": 29,
     "remaining": "production positive, strongest concurrency/DST/Kani, all modes, remaining public APIs, unsafe/mapping CI enforcement"
   }
 }
