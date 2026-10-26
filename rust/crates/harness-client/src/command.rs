@@ -15,9 +15,9 @@ const MAX_CURSOR_BYTES: usize = 4096;
 
 /// Requested page custody. Both ceilings are enforced by the host before it
 /// returns a page; the cursor binds the exact query, authorization and cut.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(try_from = "PageWire", into = "PageWire")]
-pub struct PageRequest {
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct AgentPageRequest {
     items: u32,
     bytes: u32,
     cursor: Option<String>,
@@ -42,7 +42,7 @@ const fn default_bytes() -> u32 {
     32 * 1024
 }
 
-impl Default for PageRequest {
+impl Default for AgentPageRequest {
     fn default() -> Self {
         Self {
             items: default_items(),
@@ -52,7 +52,7 @@ impl Default for PageRequest {
     }
 }
 
-impl PageRequest {
+impl AgentPageRequest {
     /// Validate finite page ceilings and retain the host's opaque cursor intact.
     pub fn new(items: u32, bytes: u32, cursor: Option<String>) -> Result<Self, CommandError> {
         if items == 0
@@ -65,7 +65,11 @@ impl PageRequest {
         {
             return Err(CommandError::Capacity);
         }
-        Ok(Self { items, bytes, cursor })
+        Ok(Self {
+            items,
+            bytes,
+            cursor,
+        })
     }
 
     /// Maximum returned entries, including status/approval projections.
@@ -87,7 +91,7 @@ impl PageRequest {
     }
 }
 
-impl TryFrom<PageWire> for PageRequest {
+impl TryFrom<PageWire> for AgentPageRequest {
     type Error = CommandError;
 
     fn try_from(page: PageWire) -> Result<Self, Self::Error> {
@@ -95,19 +99,16 @@ impl TryFrom<PageWire> for PageRequest {
     }
 }
 
-impl From<PageRequest> for PageWire {
-    fn from(page: PageRequest) -> Self {
-        Self {
-            items: page.items,
-            bytes: page.bytes,
-            cursor: page.cursor,
-        }
+impl<'de> Deserialize<'de> for AgentPageRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        Self::try_from(PageWire::deserialize(decoder)?).map_err(serde::de::Error::custom)
     }
 }
 
 /// The same controls for local and hosted sessions. The host authorizes each
 /// operation before provider I/O and stages content through its existing owner.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
     /// Discover the root admitted by this session's credential.
@@ -115,8 +116,10 @@ pub enum AgentCommand {
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
         /// Exact recipient; selection changes cannot retarget a prepared command.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Reuse with the same body after an uncertain delivery.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
         /// The canonical harness content type, including immutable file inputs.
         body: ModelContent,
@@ -124,15 +127,19 @@ pub enum AgentCommand {
     /// Stop the current input without reporting it as successfully settled.
     Cancel {
         /// Exact recipient.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Stable cancellation identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
     /// Spawn through the host's existing fork/volume publication mechanism.
     Spawn {
         /// Exact parent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         parent: AgentPath,
         /// Stable spawning identity; the host derives the child identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
         /// Brief staged by the host, not a client-created volume grant.
         brief: ModelContent,
@@ -140,24 +147,28 @@ pub enum AgentCommand {
     /// Discover only one bounded page of direct children.
     Children {
         /// Expanded tree node.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Whole-page limits and the unchanged host continuation.
         #[serde(default)]
-        page: PageRequest,
+        page: AgentPageRequest,
     },
     /// Read pending approvals through the host's authorized interaction reader.
     Approvals {
         /// Agent whose approvals are being displayed.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Whole-page limits and the unchanged host continuation.
         #[serde(default)]
-        page: PageRequest,
+        page: AgentPageRequest,
     },
     /// Decide the exact displayed action, then use canonical approval delivery.
     Decide {
         /// Agent that owns the request.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Immutable approval identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
         /// Prevents a decision from authorizing a different action.
         binding: ApprovalBinding,
@@ -207,6 +218,13 @@ impl CommandError {
 }
 
 impl PreparedCommand {
+    /// Admit an already encoded body without rewriting its original bytes.
+    /// The caller keeps this value across an interrupted exchange.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, CommandError> {
+        Self::decode(&bytes)?;
+        Ok(Self(bytes))
+    }
+
     /// Encode without ever retaining an oversized serialization buffer.
     pub fn new(command: &AgentCommand) -> Result<Self, CommandError> {
         command.validate()?;
@@ -274,20 +292,40 @@ mod tests {
     }
 
     #[test]
+    fn admitted_encoded_body_is_not_reconstructed() -> Result<(), Box<dyn std::error::Error>> {
+        let original = concat!(
+            "{ \"kind\" : \"cancel\", ",
+            "\"agent\" : \"harness/agents/00000000000000000000000000000001\", ",
+            "\"id\" : \"cancel-1\" }"
+        )
+        .as_bytes()
+        .to_vec();
+        let prepared = PreparedCommand::from_bytes(original.clone())?;
+        assert_eq!(prepared.as_bytes(), original);
+        assert!(matches!(
+            PreparedCommand::from_bytes(br#"{"kind":"cancel"}"#.to_vec()),
+            Err(CommandError::Invalid)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn opaque_page_and_finite_defaults_survive_decode() -> Result<(), Box<dyn std::error::Error>> {
-        let page: PageRequest = serde_json::from_str(r#"{"cursor":"cut/opaque+token="}"#)?;
+        let page: AgentPageRequest = serde_json::from_str(r#"{"cursor":"cut/opaque+token="}"#)?;
         assert_eq!(page.items(), 32);
         assert_eq!(page.bytes(), 32 * 1024);
         assert_eq!(page.cursor(), Some("cut/opaque+token="));
-        assert!(serde_json::from_str::<PageRequest>(r#"{"items":0}"#).is_err());
-        assert!(serde_json::from_str::<PageRequest>(r#"{"bytes":4294967295}"#).is_err());
+        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"items":0}"#).is_err());
+        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"bytes":4294967295}"#).is_err());
         Ok(())
     }
 
     #[test]
     fn encoded_expansion_is_bounded_before_dispatch() -> Result<(), Box<dyn std::error::Error>> {
         let command = AgentCommand::Prompt {
-            agent: AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?,
+            agent: AgentPath::try_from(
+                "harness/agents/00000000000000000000000000000001".to_owned(),
+            )?,
             id: IntentId::try_from("prompt-1")?,
             // JSON escaping expands each byte; raw text length is insufficient.
             body: ModelContent::Text("\n".repeat(MAX_COMMAND_BYTES / 2)),
@@ -306,7 +344,9 @@ mod tests {
     #[test]
     fn prepared_prompt_preserves_the_intent_and_body() -> Result<(), Box<dyn std::error::Error>> {
         let command = AgentCommand::Prompt {
-            agent: AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?,
+            agent: AgentPath::try_from(
+                "harness/agents/00000000000000000000000000000001".to_owned(),
+            )?,
             id: IntentId::try_from("prompt-1")?,
             body: ModelContent::Text("exact input".into()),
         };

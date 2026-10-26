@@ -9,14 +9,15 @@ publish.workspace = true
 description = "Bounded client state shared by native and WASM harness adapters"
 
 [features]
-grpc = ["acyclic-stream/grpc", "dep:acyclic-harness-core", "dep:serde", "dep:serde_json", "dep:thiserror"]
-wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen"]
+grpc = ["acyclic-stream/grpc", "dep:acyclic-harness-core", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror"]
+wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 bytes.workspace = true
 futures.workspace = true
+prost = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }

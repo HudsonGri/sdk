@@ -60,6 +60,9 @@ export function assertHarnessWasmExports(value: unknown): void {
     "setView", "selectedAgents", "agentWindow", "agentRecord", "agentStatus",
     "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "free",
   ], true);
+  const commands = hasClass(exports, "WasmAgentCommand", "wasmagentcommand", [
+    "bytes", "value", "reply", "free",
+  ], true);
   const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
   const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
     "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
@@ -67,7 +70,7 @@ export function assertHarnessWasmExports(value: unknown): void {
   const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
   const providers = typeof exports.WasmProviderRegistry === "function"
     || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !stream || !hypotheses || !session || !agents || !pages || !pageRequest || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  if (!contentStore || !stream || !hypotheses || !session || !agents || !commands || !pages || !pageRequest || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

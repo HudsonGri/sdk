@@ -4,8 +4,15 @@
 mod command;
 #[cfg(any(feature = "grpc", feature = "wasm"))]
 pub use command::{
-    AgentCommand, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
-    PageRequest as AgentPageRequest, PreparedCommand,
+    AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
+    PreparedCommand,
+};
+#[cfg(any(feature = "grpc", feature = "wasm"))]
+mod reply;
+#[cfg(any(feature = "grpc", feature = "wasm"))]
+pub use reply::{
+    AgentControlFailure, AgentReply, ChildAgent, MAX_AGENT_REPLY_BYTES, PendingApproval,
+    decode_agent_reply, encode_agent_reply,
 };
 
 #[cfg(any(
@@ -17,14 +24,14 @@ mod agents;
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
+pub use acyclic_harness_core::agent::{
+    AgentPath, ConversationEntry, Delivered, Error as AgentError, IntentId, Phase, StatusRecord,
+};
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
-pub use acyclic_harness_core::agent::{
-    AgentPath, ConversationEntry, Delivered, Error as AgentError, IntentId, Phase, StatusRecord,
-};
+pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
 mod demand;
 pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
