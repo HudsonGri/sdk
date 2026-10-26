@@ -202,6 +202,7 @@ impl AgentClient {
     /// Fairly poll only the bounded selected streams. There is no population scan
     /// and no per-agent queue, task or unbounded status cache.
     pub fn poll_next(&mut self, context: &mut Context<'_>) -> Poll<Result<AgentEvent, AgentClientError>> {
+        let mut waiting = false;
         for offset in 0..self.streams.len() {
             let index = (self.next_stream + offset) % self.streams.len();
             let (agent, status, path) = &self.streams[index];
@@ -216,7 +217,10 @@ impl AgentClient {
                 self.next_stream = (index + 1) % self.streams.len();
             }
             let frame = match outcome {
-                Poll::Pending => continue,
+                Poll::Pending => {
+                    waiting = true;
+                    continue;
+                }
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
                 Poll::Ready(Ok(None)) => return Poll::Ready(Err(AgentClientError::Closed(path.clone()))),
                 Poll::Ready(Ok(Some(frame))) => frame,
@@ -243,7 +247,13 @@ impl AgentClient {
             };
             return Poll::Ready(event.map_err(AgentClientError::Record));
         }
-        Poll::Pending
+        if waiting {
+            Poll::Pending
+        } else {
+            // No live follow can wake this task. Report exhaustion rather than
+            // leaving the next read permanently pending after the last failure.
+            Poll::Ready(Err(AgentClientError::Closed(self.conversation.clone())))
+        }
     }
 
     /// Wait without adding a task, channel or independent follow loop.
