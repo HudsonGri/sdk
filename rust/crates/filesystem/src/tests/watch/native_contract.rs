@@ -118,7 +118,7 @@ fn assert_notice(batch: &WatchBatch, expected: &NamespacePath, excluded: &[Names
     }
 }
 
-pub(super) fn completed_write(held: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn written_fixture(held: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
     let mut fixture = fixture(held)?;
     let file = fixture.directory.path().join("observed");
     let expected = relative_namespace_path(
@@ -147,12 +147,16 @@ pub(super) fn completed_write(held: bool) -> Result<(), Box<dyn std::error::Erro
         std::fs::read_dir(fixture.directory.path().join(".git"))?.count(),
         0
     );
+    Ok(fixture)
+}
+
+pub(super) fn completed_write(held: bool) -> Result<(), Box<dyn std::error::Error>> {
+    written_fixture(held)?;
     Ok(())
 }
 
 pub(super) fn cookie_is_hidden(held: bool) -> Result<(), Box<dyn std::error::Error>> {
-    completed_write(held)?;
-    let mut fixture = fixture(held)?;
+    let mut fixture = written_fixture(held)?;
     for _ in 0..20 {
         fixture.watch.fence(FENCE)?;
         assert!(matches!(poll(&mut fixture.watch)?,
