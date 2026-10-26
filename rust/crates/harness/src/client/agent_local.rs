@@ -23,6 +23,15 @@ pub enum LocalAgentError {
     /// Original agent refusal, including exact unknown-commit custody.
     #[error(transparent)]
     Agent(#[from] crate::agent::Error),
+    /// An input's original commit is unresolved. Keep its caller identity and
+    /// exact request together through library and process error boundaries.
+    #[error("agent intent {id} has an unknown commit outcome")]
+    Unknown {
+        /// Caller identity of the unresolved prompt or control.
+        id: IntentId,
+        /// Original request, including key, conditions and mutation payloads.
+        request: Box<acyclic_stream::CommitRequest>,
+    },
     /// Original bounded JSON codec failure.
     #[error(transparent)]
     Encoding(#[from] serde_json::Error),
@@ -155,7 +164,7 @@ impl LocalAgentClient {
         if text.is_empty() || text.len() > MAXIMUM_AGENT_PROMPT_BYTES {
             return Err(Error::Invalid("agent prompt must be 1..=65536 bytes".into()).into());
         }
-        Ok(self.local.prompt(id, text).await?)
+        self.local.prompt(id, text).await.map_err(|error| input_error(id, error))
     }
 
     /// Submit once and wait for the exact receipt's settled turn. Unknown
@@ -250,11 +259,11 @@ impl LocalAgentClient {
     pub async fn cancel(&self, id: &IntentId) -> Result<Delivered> {
         let (agents, _) = self.local.agents().await?;
         let by = Sender::User { principal: "local".into() };
-        Ok(agents.send(
+        agents.send(
             self.client.agent(),
             &by,
             &InboxRecord::Cancel(Control { by: by.clone(), id: id.clone() }),
-        ).await?)
+        ).await.map_err(|error| input_error(id, error))
     }
 
     /// One canonical transition, with no timer, background reader or queue.
@@ -274,6 +283,13 @@ impl LocalAgentClient {
         Ok(AgentTurn { sequence, entry, output })
     }
 
+}
+
+fn input_error(id: &IntentId, error: crate::agent::Error) -> LocalAgentError {
+    match error {
+        crate::agent::Error::Unknown(request) => LocalAgentError::Unknown { id: id.clone(), request },
+        error => LocalAgentError::Agent(error),
+    }
 }
 
 // Local owner metadata only; data/authorization/credit are owned by the one
