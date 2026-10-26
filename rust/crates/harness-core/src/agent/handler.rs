@@ -9,7 +9,7 @@
 
 use super::{
     AgentId, AgentPath, AgentRecord, AgentState, Alarm, Error, ForkAdopted, InboxRecord, IntentId,
-    Out, Spawn, TurnDriver, Wake, create_root, delivery_key, inbox_tail, lower, recipients, step,
+    Out, Spawn, TurnDriver, Wake, create_root, delivery_key, lower, step,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -164,12 +164,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         };
         let step = step(&self.driver, &path, saved.map(|saved| saved.state), cursor, wake).await?;
-        let mut tails = BTreeMap::new();
-        for agent in recipients(&step) {
-            let tail = inbox_tail(&**self.store.provider(), &agent).await?;
-            tails.insert(agent, tail);
-        }
-        let request = lower(&step, cursor, &tails, delivery_key(&step.state, &trigger)?)?;
+        let request = lower(&step, cursor, delivery_key(&step.state, &trigger)?)?;
         let mut effects = effects(request);
         let spawned: BTreeSet<_> = step
             .outs

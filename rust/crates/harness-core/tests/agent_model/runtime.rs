@@ -159,7 +159,7 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
             ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
             "changed".into(),
             VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(id(1)),
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(id(1).to_bytes())),
             &mut None,
         )?,
     });

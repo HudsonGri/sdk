@@ -46,6 +46,7 @@ mod owner;
 mod owner_record;
 mod routing;
 mod runtime;
+#[cfg(feature = "grpc")]
 mod session;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
@@ -60,6 +61,7 @@ mod workspace;
 pub use agents::{LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
+#[cfg(feature = "grpc")]
 pub use session::{LOCAL_SESSION_CREDENTIAL_SLOT, LocalSession};
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
@@ -79,6 +81,7 @@ pub struct LocalHarness {
     agent: AgentId,
     agent_authority: Option<crate::core::AuthorityRoot>,
     agents: tokio::sync::OnceCell<agents::Hosted>,
+    #[cfg(feature = "grpc")]
     session: tokio::sync::OnceCell<LocalSession>,
     task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,

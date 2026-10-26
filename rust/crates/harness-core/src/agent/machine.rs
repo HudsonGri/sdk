@@ -12,11 +12,7 @@ use super::{
 };
 use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeSet, VecDeque},
-    future::Future,
-    pin::Pin,
-};
+use std::collections::{BTreeSet, VecDeque};
 
 /// Most children an agent may have open at once.
 pub const MAX_OPEN_CHILDREN: usize = 256;
@@ -179,14 +175,15 @@ pub struct TurnStep {
     pub wait: Wait,
 }
 
-/// Future returned by a turn driver.
-pub type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<TurnStep, Error>> + Send + 'a>>;
+/// Future returned by a turn driver: `Send` on native hosts, event-loop
+/// owned in the browser, like every provider and executor future.
+pub type TurnFuture<'a> = acyclic_stream::BoxProviderFuture<'a, Result<TurnStep, Error>>;
 
 /// Executes turn steps (model calls, tool calls) for an agent.
 ///
 /// A step may repeat after a crash; anything durable it does outside the returned
 /// effects must be keyed by `(agent, cursor)` so the repeat replays exactly.
-pub trait TurnDriver: Send + Sync {
+pub trait TurnDriver: acyclic_stream::ProviderPlatform {
     /// Runs one step. `input` is `None` when continuing or after an alarm.
     fn step<'a>(
         &'a self,
@@ -242,6 +239,9 @@ pub async fn step<T: TurnDriver + ?Sized>(
 ) -> Result<Step, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
+    // The last published phase: the creating commit published `Idle`, and
+    // admitting a record (a cancel) can itself change the phase.
+    let previous = state.as_ref().map_or(Phase::Idle, |state| state.phase.clone());
     let mut state = match (state, wake) {
         (None, Wake::Inbox { record: InboxRecord::ForkAdopted(adopted), .. }) => {
             if adopted.agent != path.id() {
@@ -257,7 +257,6 @@ pub async fn step<T: TurnDriver + ?Sized>(
         (Some(state), Wake::Alarm) => state,
         (Some(state), Wake::Inbox { record, .. }) => admit(state, record)?,
     };
-    let previous = state.phase.clone();
     if state.closed {
         cascade(&mut state, &mut outs)?;
     } else {
@@ -352,10 +351,16 @@ fn admit(mut state: AgentState, record: InboxRecord) -> Result<AgentState, Error
         InboxRecord::ForkAdopted(_) | InboxRecord::Cancel(_) | InboxRecord::Archive(_) => None,
     };
     if let Some(input) = input.filter(|_| admitted.enqueue) {
-        if state.queued.len() >= MAX_QUEUED {
-            return Err(Error::Record("agent input queue is full"));
+        // The response the waiting turn needs is always admitted; this step
+        // consumes it. Other input beyond the bound is refused, and the
+        // cursor still advances, so a full queue never wedges the inbox.
+        let awaited = matches!(
+            (&state.phase, &input),
+            (Phase::WaitingApproval { id }, TurnInput::Approval { id: response }) if id == response
+        );
+        if awaited || state.queued.len() < MAX_QUEUED {
+            state.queued.push_back(input);
         }
-        state.queued.push_back(input);
     }
     Ok(state)
 }
