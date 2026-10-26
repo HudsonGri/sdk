@@ -30,6 +30,8 @@ pub async fn run(
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     let mut input = PromptInput::default();
+    let catalog = serde_json::to_vec(&client.catalog().commands().collect::<Vec<_>>())?;
+    input.completion.set_file("commands/catalog.json", Some(&catalog))?;
     let mut viewport = Viewport::default();
     let mut renderer = AgentRenderer::new(client.client().agent().clone());
     let mut shown = None;
@@ -64,6 +66,7 @@ pub async fn run(
                         client::AgentEvent::Progress => {}
                     }
                 },
+                _ = renderer.search_progress() => {},
                 _ = async {
                     match deadline {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -85,7 +88,7 @@ pub async fn run(
         let page_rows = usize::from(areas.transcript.height);
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         client::input_burst(&mut batch, page_rows, &mut effects, |event| {
-            areas.event(&mut input, event, &mut viewport, now, &mut |_| None)
+            areas.event(&mut input, event, &mut viewport, now, &mut |byte| renderer.anchor_at(byte))
         });
         for effect in effects.drain(..) {
             if let Some(rows) = client::transcript_motion(&effect, page_rows) {
@@ -94,23 +97,72 @@ pub async fn run(
             }
             match effect {
                 InputEffect::Submit { text, edit: None, .. } => {
+                    if input.transcript_search() {
+                        input.set_transcript_search(Some(&text));
+                        renderer.search_step(false);
+                        continue;
+                    }
+                    let resolution = match client.resolve_command(&text).await {
+                        Ok(resolution) => resolution,
+                        Err(client::LocalAgentError::Harness(error @ (
+                            acyclic_harness::Error::Invalid(_) | acyclic_harness::Error::NotFound(_)
+                        ))) => {
+                            input.set_chat_draft(&text);
+                            renderer.notice(&error.to_string());
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    let prompt = match resolution {
+                        client::CommandResolution::Prompt { text, .. } => text,
+                        client::CommandResolution::Submit { request: client::CommandRequest::Quit } => {
+                            return Ok(client::HeadlessOutcome::Completed);
+                        }
+                        client::CommandResolution::Select { query: client::CommandQuery::Shortcuts } => {
+                            renderer.help(client.catalog(), &mut input);
+                            continue;
+                        }
+                        client::CommandResolution::Select { query: client::CommandQuery::Find } => {
+                            renderer.open_search(&mut input);
+                            continue;
+                        }
+                        _ => {
+                            input.set_chat_draft(&text);
+                            renderer.notice("This command's actor binding is not available yet. Your input remains in the editor.");
+                            continue;
+                        }
+                    };
                     if pending.is_some() {
                         input.set_chat_draft(&text);
                         renderer.notice("The submitted turn is still pending. Your next prompt remains in the editor.");
                         continue;
                     }
-                    if text.is_empty() || text.len() > client::MAXIMUM_AGENT_PROMPT_BYTES {
+                    if prompt.is_empty() || prompt.len() > client::MAXIMUM_AGENT_PROMPT_BYTES {
                         input.set_chat_draft(&text);
                         renderer.notice("Prompt must contain 1..=65536 bytes.");
                         continue;
                     }
                     let id = IntentId::try_from(OperationId::new().to_string())?;
-                    match client.prompt(&id, &text).await? {
+                    match client.prompt(&id, &prompt).await? {
                         Delivered::Committed { inbox } => pending = Some((id, inbox)),
                         Delivered::Closed => renderer.notice("The selected agent is closed."),
                     }
                 }
                 InputEffect::Quit => return Ok(client::HeadlessOutcome::Completed),
+                InputEffect::Host(tui::Action::Escape) if renderer.close_panel(&mut input) => {},
+                InputEffect::Host(tui::Action::App(tui::AppAction::Help)) => {
+                    renderer.help(client.catalog(), &mut input);
+                }
+                InputEffect::Host(tui::Action::App(tui::AppAction::Find)) => {
+                    renderer.open_search(&mut input);
+                }
+                InputEffect::Host(tui::Action::App(tui::AppAction::ClosePanel)) => {
+                    renderer.close_panel(&mut input);
+                }
+                InputEffect::Host(tui::Action::App(tui::AppAction::ToggleFollowTail)) => renderer.seek(None),
+                InputEffect::Host(tui::Action::App(tui::AppAction::Quit)) => return Ok(client::HeadlessOutcome::Completed),
+                InputEffect::FindStep { previous } => renderer.search_step(previous),
+                InputEffect::ScrollTo { anchor } => renderer.seek(anchor),
                 InputEffect::Interrupt | InputEffect::Host(tui::Action::Escape) => {
                     let id = IntentId::try_from(OperationId::new().to_string())?;
                     client.cancel(&id).await?;
@@ -149,7 +201,7 @@ fn paint<P: tui::term::Present>(
     renderer.layout(input, size);
     let screen = renderer.screen();
     let area = Rect::from((Position::ORIGIN, size));
-    let scroll = screen.tail_scroll(area, input);
+    let scroll = renderer.view_scroll(area, input);
     let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     present(terminal, size, shown, false,
         (screen.areas(area, input).transcript, None, None), |frame| {

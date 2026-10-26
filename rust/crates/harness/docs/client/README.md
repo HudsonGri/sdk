@@ -53,10 +53,20 @@ borrow visible rows. These are text/count bounds, not an allocator RSS claim.
 The default interactive view starts at the current tail; `--resume` selects at
 most 16 recent records. Neither mode resets the actor's persistent context.
 
+The interactive client classifies slash input through its bootstrap
+`CommandCatalog`, which also supplies completion and help. Quit, shortcuts and
+Find are local typed actions; they never become model prompt text. Find uses the
+shared lazy `TranscriptSearch` only while open, and closing it restores the chat
+draft and releases the search index. Help opens at the first descriptor and
+scrolls separately from the transcript. Scrollbar seeks retain stable source
+identities. `harness-tui` owns the shared read/frame input boundary and sparse
+`SourceRows` identity map, independently of the storage provider.
+
 The whole-client migration is in progress: TaskVolume folds and old Swarm
 bindings still need replacement. The generic
 absent-stream follow, same-cut child-status projection, actor-native input
-composition/commands, terminal effects and historical backfill remain open. These source changes
+composition, project/skill catalog capture, remaining command dispatch,
+approvals, terminal effects and historical backfill remain open. These source changes
 do not claim that the complete migration, compilation or endpoint qualification
 is complete.
 
