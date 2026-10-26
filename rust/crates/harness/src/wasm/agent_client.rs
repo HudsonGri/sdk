@@ -13,6 +13,16 @@ use std::{
 };
 use wasm_bindgen::prelude::*;
 
+// The generic exact-integer serializer used by this client preserves even
+// descriptor lengths as BigInt; the older admitted-file projection normalizes
+// those lengths to Number. Reuse its shape without changing this wire value.
+#[wasm_bindgen(typescript_custom_section)]
+const AGENT_FILE_REFERENCE: &str = r#"
+export type WasmAgentFileRef = Omit<WasmFileRefWire, 'descriptor'> & {
+    descriptor: Omit<WasmFileDescriptorWire, 'byte_length'> & {byte_length: bigint};
+};
+"#;
+
 /// Bounded borrowed-view metadata; sequences and counters keep exact integers
 /// across the WASM boundary. No conversation payload is serialized here.
 #[derive(serde::Serialize, tsify::Tsify)]
@@ -142,7 +152,7 @@ impl WasmAgentClient {
     }
 
     /// Copy one displayed turn, never the complete selected history.
-    #[wasm_bindgen(js_name = agentRecord)]
+    #[wasm_bindgen(js_name = agentRecord, unchecked_return_type = "AgentEvent | null")]
     pub fn agent_record(&self, agent: JsString, index: usize) -> Result<JsValue, JsValue> {
         let agent = agent_path(agent)?;
         let record = self.with_client(|client| client.agent_entry(&agent, index))?.map_err(client_error)?;
@@ -150,7 +160,7 @@ impl WasmAgentClient {
     }
 
     /// Read one actual lifecycle state directly from the shared Rust fold.
-    #[wasm_bindgen(js_name = agentStatus)]
+    #[wasm_bindgen(js_name = agentStatus, unchecked_return_type = "StatusRecord | null")]
     pub fn agent_status(&self, agent: JsString) -> Result<JsValue, JsValue> {
         let agent = agent_path(agent)?;
         let status = self.with_client(|client| client.agent_status(&agent))?.map_err(client_error)?;
@@ -178,6 +188,7 @@ impl WasmAgentClient {
 
     /// One transition decoded and folded by the exact native Rust core. There
     /// can be one pending read; a slow browser never creates a second queue.
+    #[wasm_bindgen(unchecked_return_type = "AgentEvent")]
     pub async fn next(&self) -> Result<JsValue, JsValue> {
         if self.reading.replace(true) {
             return Err(error("client_read_busy", "an agent read is already pending"));
@@ -226,6 +237,7 @@ impl WasmAgentClient {
 
     /// Decode and copy one visible turn through the same native reader.
     /// An index beyond the retained window returns null.
+    #[wasm_bindgen(unchecked_return_type = "AgentEvent | null")]
     pub fn record(&self, index: usize) -> Result<JsValue, JsValue> {
         let entry = self.with_client(|client| client.conversation_entry(index))?
             .map_err(client_error)?;
@@ -234,7 +246,7 @@ impl WasmAgentClient {
 
     /// Read the latest status from the Rust fold, or null until one is actually
     /// delivered. The browser does not maintain a second status map.
-    #[wasm_bindgen(js_name = currentStatus)]
+    #[wasm_bindgen(js_name = currentStatus, unchecked_return_type = "StatusRecord | null")]
     pub fn current_status(&self) -> Result<JsValue, JsValue> {
         let status = self.with_client(AgentClient::current_status)?.map_err(client_error)?;
         to_js(&status)

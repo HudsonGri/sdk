@@ -62,6 +62,7 @@ impl From<IntentId> for String {
 
 /// Who wrote an inbox record.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Sender {
     /// A human or application principal.
@@ -72,6 +73,7 @@ pub enum Sender {
     /// Another agent.
     Agent {
         /// The sending agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         path: AgentPath,
     },
     /// A host plugin (Codex, Claude Code, Pi).
@@ -125,11 +127,13 @@ pub struct Message {
 
 /// Terminal result of an agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentOutcome {
     /// Completed, with an optional result file.
     Succeeded {
         /// Result file.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef | null"))]
         result: Option<Box<FileRef>>,
     },
     /// Failed with a bounded description.
@@ -143,9 +147,11 @@ pub enum AgentOutcome {
 
 /// A child reached a terminal status.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct ChildDone {
     /// The child.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub child: AgentPath,
     /// Its outcome.
     pub outcome: AgentOutcome,
@@ -215,6 +221,8 @@ pub enum InboxRecord {
 
 /// Current phase of an agent, appended to its status stream on change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Phase {
     /// No queued input.
@@ -224,6 +232,7 @@ pub enum Phase {
     /// Waiting for an approval response.
     WaitingApproval {
         /// Request identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
     /// Waiting for a deadline.
@@ -240,6 +249,8 @@ pub enum Phase {
 
 /// One status stream record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct StatusRecord {
     /// Phase after the transition that wrote it.
