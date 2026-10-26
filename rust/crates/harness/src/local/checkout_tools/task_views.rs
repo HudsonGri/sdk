@@ -4,28 +4,16 @@ use acyclic_fs::{
     CancellationToken, LazyWorkspaceStore as _, WorkBudget, kernel::KernelAccounting,
 };
 
-#[cfg(test)]
-pub(super) async fn with_mount_owner<T>(
-    owner: &Arc<dyn crate::runtime::OwnedTaskMailbox>,
-    mount: impl Future<Output = Result<T>>,
-) -> Result<T> {
-    owner.verify_owner(None)?.await?;
-    let mounted = mount.await?;
-    owner.verify_owner(None)?.await?;
-    Ok(mounted)
-}
-
 impl CheckoutTools {
     pub(super) async fn select(
         &self,
         context: &ToolContext,
     ) -> Result<Option<child_views::ChildLease<Self>>> {
+        // An agent turn has no task owner: it runs in the selected checkout.
+        let Some(owner) = context.task().owned_mailbox.as_ref() else {
+            return Ok(None);
+        };
         let (task, _) = context.task().owned_task_binding(None)?;
-        let owner = context
-            .task()
-            .owned_mailbox
-            .as_ref()
-            .ok_or_else(|| Error::Unauthorized("tool task owner missing".into()))?;
         owner.verify_owner(None)?.await?;
         let admission = owner.admission().0;
         let task = if admission.task.name == "acyclic.direct_tool" {
@@ -159,7 +147,7 @@ impl CheckoutTools {
             capture_options,
             capture_policy,
             clock: Arc::clone(&self.clock),
-            task_files: Arc::clone(&self.task_files),
+            expiry_unix_ms: self.expiry_unix_ms,
             state: StateArc::clone(&workspace.state),
             selected: true,
         })
