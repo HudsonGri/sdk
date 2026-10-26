@@ -215,10 +215,10 @@ exit 0
             (args.worktree / '.gate-test-baseline.sh').write_text(script, encoding='utf-8', newline='\n')
             # This producer has no external comparison inputs: its complete
             # source/base identity is the sole prerequisite of the focused run.
-            subprocess.run([sys.executable,str(lanes/'input_closure.py'),'capture','--base',args.base,
+            subprocess.run([sys.executable,'-B',str(lanes/'input_closure.py'),'capture','--base',args.base,
                             '--output',str(args.worktree/'.gate-inputs.json')],check=True,stdout=subprocess.DEVNULL)
             env = dict(os.environ, BUILD_SLOT_TIER='merge', WSLENV='BUILD_SLOT_TIER', BUILD_SLOT_INPUTS_FILE='.gate-inputs.json')
-            result = run_logged([shutil.which('pwsh'), '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_BUILDBOX_HOST=bb2', '--env', 'BUILD_SLOT_TIER=merge', '--env', 'BUILD_SLOT_LABEL=pr-gate-baseline', '--env', 'BUILD_SLOT_PHASE=pr-baseline', '--env', 'BUILD_SLOT_PR=' + os.environ.get('GATE_BASELINE_PRS', ''), '--env', 'BUILD_SLOT_GATE_LOG=' + log.as_posix(), 'bash', '.gate-test-baseline.sh'], log, cwd=args.worktree, env=env)
+            result = run_logged([shutil.which('pwsh'), '-NoProfile', '-File', 'Q:/lanes/bs.ps1', '--env', 'BUILD_SLOT_INPUTS_FILE=.gate-inputs.json', '--env', 'BUILD_SLOT_BUILDBOX_HOST=bb2', '--env', 'BUILD_SLOT_TIER=merge', '--env', 'BUILD_SLOT_LABEL=pr-gate-baseline', '--env', 'BUILD_SLOT_PHASE=pr-baseline', '--env', 'BUILD_SLOT_PR=' + os.environ.get('GATE_BASELINE_PRS', ''), '--env', 'BUILD_SLOT_GATE_LOG=' + log.as_posix(), 'bash', '.gate-test-baseline.sh'], log, cwd=args.worktree, env=env)
             with log.open('a', encoding='utf-8', newline='\n') as output:
                 output.write(f'GATE_TEST_BASELINE_EXECUTOR rc={result}\n')
     if not complete(log):

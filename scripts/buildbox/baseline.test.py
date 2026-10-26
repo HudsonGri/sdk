@@ -7,7 +7,7 @@ class BaselineTests(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory(dir='/mnt/bb/tmp',prefix='r19-baseline-');self.d=Path(self.temp.name)
  def tearDown(self):self.temp.cleanup()
- def qualify(self,negative=False,executor=None):
+ def qualify(self,negative=False,executor=None,declaration_negative=False):
   root=self.d;work=root/'work';work.mkdir();(root/'bin').mkdir()
   (root/'hangs').write_text('');(root/'gate-baseline.py').write_text('def coverage(text,packages):return set()\n')
   shutil.copyfile(HERE.parent/'gate-test-runner.sh',root/'gate-test-runner.sh')
@@ -40,12 +40,14 @@ esac
   (results/'interrupted.log').write_text('test result: ok. 1 passed\nGATE_TEST_BASELINE_COMPLETE rc=0\n')
   source=(HERE/'coordinator/gate-test-baseline.py').read_text().replace("Path('Q:/lanes/hangs.txt')",f'Path({str(root/"hangs")!r})')
   if negative:source=source.replace("else 'run_tests --all-targets; rc=$?'", "else 'run_tests; rc=$?'")
+  if declaration_negative:source=source.replace("'--env', 'BUILD_SLOT_INPUTS_FILE=.gate-inputs.json', ",'')
   module=types.ModuleType('fixture');module.__file__=str(root/'gate-test-baseline.py');exec(compile(source,module.__file__,'exec'),module.__dict__)
   def run(argv,**kw):
    if argv[0]=='git':return subprocess.CompletedProcess(argv,0)
-   if 'input_closure.py' in argv[1]:return subprocess.run(argv,**kw)
+   if any(str(a).endswith('input_closure.py') for a in argv):return subprocess.run(argv,**kw)
    raise AssertionError('native dispatch must use the single pipe writer')
   def popen(argv,**kw):
+   self.assertIn('BUILD_SLOT_INPUTS_FILE=.gate-inputs.json',argv,'declared input file must cross the bs.ps1 boundary explicitly')
    env={**kw['env'],'PATH':str(root/'bin')+':'+os.environ['PATH'],'GATE_MAIN_TARGET_DIR':str(root/'cache')}
    process=subprocess.Popen(['bash',str(work/'.gate-test-baseline.sh')],cwd=work,env=env,stdout=kw['stdout'],stderr=kw['stderr'])
    if executor is not None:
@@ -68,6 +70,9 @@ esac
   self.assertIn('GATE_TEST_BASELINE_COMPLETE rc=101',text);self.assertIn('runtime signing custody is closed',text)
   self.assertTrue(module.baseline_complete('error: test failed, to rerun pass `-p p --bench b`\nGATE_TEST_BASELINE_COMPLETE rc=101\nGATE_TEST_BASELINE_EXECUTOR rc=101\n'))
   self.assertFalse(module.baseline_complete('error: could not compile p\nGATE_TEST_BASELINE_COMPLETE rc=101\n'))
+ def test_focused_declaration_cannot_rely_on_windows_environment_inheritance(self):
+  with self.assertRaisesRegex(AssertionError,'declared input file must cross the bs.ps1 boundary explicitly'):
+   self.qualify(declaration_negative=True)
  def test_old_default_target_selection_misses_the_main_benchmark(self):
   text,calls,_=self.qualify(True);self.assertNotIn(' --all-targets ',calls)
   self.assertIn('GATE_TEST_BASELINE_COMPLETE rc=0',text);self.assertNotIn('runtime signing custody is closed',text)
