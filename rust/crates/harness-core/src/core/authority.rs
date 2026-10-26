@@ -418,6 +418,17 @@ impl AuthorityRoot {
         self.issue_bound(id, capabilities, agent, None, None, work)
     }
 
+    /// The same signing custody for another audience, such as one agent's
+    /// conversation. It shares this root's signer and trust.
+    #[must_use]
+    pub fn with_audience(&self, audience: Authority) -> Self {
+        Self {
+            id: self.id.clone(),
+            runtime: std::sync::Arc::clone(&self.runtime),
+            audience,
+        }
+    }
+
     /// Gives a workload a delegation handle containing no runtime signing key.
     pub fn issuer(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<AuthorityIssuer> {
         Ok(AuthorityIssuer {
