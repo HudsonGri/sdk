@@ -30,7 +30,6 @@ impl CoreLog {
             .map(|work| {
                 work.reserve_work(crate::WorkCounters {
                     backend_write_operations: 1,
-                    backend_read_operations: 1,
                     durability_operations: 1,
                     ..Default::default()
                 })
@@ -46,36 +45,27 @@ impl CoreLog {
             .transpose()?;
         root.reserve_barrier()?;
         crash_point("before frame", self.flushed);
-        let append = self.append_frame(&buffer.bytes, work, &mut flush, deferred);
+        let lease = self.lease(work)?;
+        let append = self.append_frame(&lease, &buffer.bytes, work, &mut flush, deferred);
         if let Err(error) = append {
-            let truncated = acyclic_native_runtime::truncate_file(&self.file, self.length);
+            let length = self.length;
+            let truncated = lease.write(|file| acyclic_native_runtime::truncate_file(file, length));
             drop(repair.as_mut().map(|repair| {
                 repair.record_completed(crate::WorkCounters {
                     backend_write_operations: 1,
                     ..Default::default()
                 })
             }));
-            let repaired = truncated
-                .and_then(|()| {
-                    let sought = (&*self.file).seek(SeekFrom::Start(self.length));
-                    drop(repair.as_mut().map(|repair| {
-                        repair.record_completed(crate::WorkCounters {
-                            backend_read_operations: 1,
-                            ..Default::default()
-                        })
-                    }));
-                    sought
-                })
-                .and_then(|_| {
-                    let synced = acyclic_native_runtime::flush_file_data(&self.file);
-                    drop(repair.as_mut().map(|repair| {
-                        repair.record_completed(crate::WorkCounters {
-                            durability_operations: 1,
-                            ..Default::default()
-                        })
-                    }));
-                    synced
-                });
+            let repaired = truncated.and_then(|()| {
+                let synced = lease.flush(acyclic_native_runtime::flush_file_data);
+                drop(repair.as_mut().map(|repair| {
+                    repair.record_completed(crate::WorkCounters {
+                        durability_operations: 1,
+                        ..Default::default()
+                    })
+                }));
+                synced
+            });
             self.broken = repaired.is_err();
             return Err(error);
         }
@@ -171,6 +161,7 @@ impl CoreLog {
 
     fn append_frame(
         &self,
+        lease: &acyclic_native_runtime::FileLease,
         buffer: &[u8],
         work: Option<&crate::NativeMaterializationWork>,
         flush: &mut Option<crate::NativeWorkReservation>,
@@ -189,7 +180,9 @@ impl CoreLog {
                 .transpose()?;
             let mut recorded = Ok(None);
             let result = acyclic_native_runtime::write_file_with(&buffer[position..], |bytes| {
-                let result = (&*self.file).write(bytes);
+                let result = lease.write(|file| {
+                    acyclic_native_runtime::WriteAt::new(file, self.length + position as u64).write(bytes)
+                });
                 let count = result.as_ref().copied().unwrap_or(0);
                 recorded = credit
                     .as_mut()
@@ -212,7 +205,7 @@ impl CoreLog {
         }
         crash_point("frame written", self.flushed);
         if !deferred {
-            let synced = acyclic_native_runtime::flush_file_data(&self.file);
+            let synced = lease.flush(acyclic_native_runtime::flush_file_data);
             let recorded = flush
                 .as_mut()
                 .map(|flush| {
@@ -252,7 +245,10 @@ impl CoreLog {
                     ..Default::default()
                 })?;
             }
-            if let Err(error) = acyclic_native_runtime::flush_file_data(&self.file) {
+            if let Err(error) = self
+                .lease(root._allocation.as_ref().map(|allocation| allocation.work()))
+                .and_then(|lease| lease.flush(acyclic_native_runtime::flush_file_data))
+            {
                 // Checkpoints cross this barrier directly, before the ordinary
                 // acknowledgement path. An uncertain flush must fence every
                 // later reader, including readers of resident after-images.

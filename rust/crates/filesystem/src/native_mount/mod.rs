@@ -164,45 +164,11 @@ fn create_metadata(clock: &clock::Clock, mode: u32, kind: u32, uid: u32, gid: u3
     }
 }
 
-#[cfg(target_os = "linux")]
-fn errno(error: &MountSourceError) -> i32 {
-    match error.semantic_error() {
-        MountSourceError::AccessDenied => libc::EACCES,
-        MountSourceError::ReadOnly => libc::EROFS,
-        MountSourceError::NotFound => libc::ENOENT,
-        MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::NotDirectory => libc::ENOTDIR,
-        MountSourceError::IsDirectory => libc::EISDIR,
-        MountSourceError::DirectoryNotEmpty => libc::ENOTEMPTY,
-        MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
-        MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
-        MountSourceError::NativeWork(error) => native_materialization_errno(error),
-        MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
-        MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
-        MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
-        MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
-        MountSourceError::Stale | MountSourceError::Cancelled => libc::ESTALE,
-        MountSourceError::Engine(_)
-        | MountSourceError::Work(_)
-        | MountSourceError::Filesystem(_)
-        | MountSourceError::ServicesNotInitialized
-        | MountSourceError::ServiceUnavailable(_)
-        | MountSourceError::MutationFinalization { .. }
-        | MountSourceError::OriginalSnapshotUnavailable
-        | MountSourceError::Indeterminate
-        | MountSourceError::PublicationRetryLimit
-        | MountSourceError::NativeRecordJson(_, _)
-        | MountSourceError::NativeRecordLockTimeout(_, _)
-        | MountSourceError::NativeRecordOwnershipConflict(_, _)
-        | MountSourceError::NativeRecordContextTransaction(_, _)
-        | MountSourceError::NativeRecordCorrupt(_, _) => libc::EIO,
-        MountSourceError::Metadata(_) => libc::EIO,
-        #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-        MountSourceError::NativeWatchOriginalIo(_)
-        | MountSourceError::NativeWatchOriginalBackend(_) => libc::EIO,
-    }
+mod outcome;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::native_mount) fn callback_errno(error: &NativeMountError) -> i32 {
+    outcome::callback_failure(error).errno()
 }
 
 #[cfg(target_os = "windows")]
@@ -284,6 +250,8 @@ mod error;
 pub use error::*;
 mod fence_io;
 mod recovery;
+#[cfg(any(target_os = "macos", test))]
+mod recovery_order;
 mod registry;
 pub use recovery::*;
 mod startup;
@@ -293,6 +261,7 @@ pub use session::*;
 #[cfg(target_os = "linux")]
 mod disconnected;
 mod lifecycle;
+mod retirement;
 #[cfg(target_os = "linux")]
 pub use disconnected::{
     recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,

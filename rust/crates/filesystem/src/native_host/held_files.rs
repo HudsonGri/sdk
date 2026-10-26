@@ -66,10 +66,7 @@ impl HostRoot {
             directory_path(&self.directory, relative, false, work)
         })?;
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     #[cfg(any(test, feature = "native-mount"))]
@@ -104,6 +101,8 @@ impl HostRoot {
         Ok(Self {
             directory: clone_directory(&self.directory, work)?,
             identity: self.identity,
+            #[cfg(target_os = "linux")]
+            origin: self.origin.clone(),
         })
     }
 
@@ -150,13 +149,8 @@ impl HostRoot {
         let Some(directory) = held else {
             return self.try_clone(work);
         };
-        // Only the returned root needs an identity. The native component
-        // opens already reject links and enforce each ancestor's access.
         let identity = directory_identity(&directory, work)?;
-        Ok(Self {
-            directory,
-            identity,
-        })
+        Ok(Self::from_parts(directory, identity))
     }
 
     /// The `N` bytes published at `leaf` in this directory, after publishing

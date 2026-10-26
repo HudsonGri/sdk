@@ -6,23 +6,7 @@ use crate::native_mount::{
 use crate::sync::{Mutex, atomic::AtomicBool};
 use crate::{NativeAllocation, NativeMaterializationWork as Work, WorkCounters};
 
-pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
-    match error {
-        NativeMountError::Source(error) => crate::native_mount::errno(error),
-        NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-            crate::native_mount::errno(error)
-        }
-        NativeMountError::Materialization(error) => {
-            crate::native_mount::native_materialization_errno(error)
-        }
-        NativeMountError::Io(error) => error.raw_os_error().unwrap_or(libc::EIO),
-        NativeMountError::Allocation(_) => libc::ENOMEM,
-        NativeMountError::CallbackDenied { .. } => libc::EACCES,
-        NativeMountError::Demand(crate::DemandError::Cancelled) => libc::ESTALE,
-        NativeMountError::FuseUnsupportedCapabilities(_) => libc::EOPNOTSUPP,
-        _ => libc::EIO,
-    }
-}
+pub(in crate::native_mount) use crate::native_mount::callback_errno;
 
 #[derive(Default)]
 pub(super) struct FuseHandlerReports {
@@ -386,42 +370,7 @@ impl ProjectionCore {
     ) -> Result<T, i32> {
         result.map_err(|failure| {
             let errno = callback_errno(&failure.0);
-            let reply_only = match &failure.0 {
-                NativeMountError::Io(_) => true,
-                NativeMountError::Source(_)
-                | NativeMountError::Demand(crate::DemandError::Mount(_)) => {
-                    let error = match &failure.0 {
-                        NativeMountError::Source(error) => error,
-                        NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-                            error.as_ref()
-                        }
-                        _ => unreachable!(),
-                    };
-                    match error.semantic_error() {
-                        MountSourceError::Io(_, _)
-                        | MountSourceError::Stale
-                        | MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => true,
-                        MountSourceError::NamespacePath(
-                            crate::kernel::NamespacePathError::Work(_)
-                            | crate::kernel::NamespacePathError::Cancelled
-                            | crate::kernel::NamespacePathError::AllocationFailed,
-                        ) => false,
-                        _ => !matches!(
-                            errno,
-                            libc::EIO
-                                | libc::ENOMEM
-                                | libc::ECANCELED
-                                | libc::ESTALE
-                                | libc::EACCES
-                        ),
-                    }
-                }
-                NativeMountError::Materialization(error) => {
-                    !crate::native_mount::native_materialization_failure_is_fatal(error)
-                }
-                _ => false,
-            };
-            if !reply_only {
+            if crate::native_mount::outcome::callback_is_terminal(&failure.0) {
                 self.retain_handler_failure(failure);
             }
             errno

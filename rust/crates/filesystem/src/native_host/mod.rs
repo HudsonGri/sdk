@@ -148,7 +148,7 @@ pub use metadata::NativeMetadataError;
 #[cfg(any(windows, test, feature = "native-watch"))]
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
-pub use root::HostRoot;
+pub use root::{CachedRoot, HostRoot};
 #[cfg(target_os = "macos")]
 pub use sparse::punch_hole;
 pub use stat::{HostDataRange, HostListedEntry, HostStat};

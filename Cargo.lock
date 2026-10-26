@@ -1035,6 +1035,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-differential",
  "proptest",
+ "tempfile",
 ]
 
 [[package]]
