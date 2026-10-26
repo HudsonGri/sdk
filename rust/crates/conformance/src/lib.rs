@@ -1,5 +1,8 @@
 #![doc = include_str!("../README.md")]
 
+/// Production actor-client cases shared by local and hosted session adapters.
+#[cfg(all(feature = "client-session", not(target_arch = "wasm32")))]
+pub mod client;
 /// Complete filesystem workload taxonomy, selectors, and portable vectors.
 pub mod filesystem;
 /// Machine-readable cross-language conformance reports and qualification receipts.
