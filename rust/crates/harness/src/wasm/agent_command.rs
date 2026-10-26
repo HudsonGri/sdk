@@ -140,7 +140,7 @@ impl WasmAgentInvocation {
             .execute(&self.invocation)
             .await
             .map_err(exchange_error)?;
-        super::json::to_js_admitted(&reply)
+        super::json::to_js_client_admitted(&reply)
     }
 }
 
@@ -190,7 +190,7 @@ impl WasmAgentCommand {
     #[wasm_bindgen(unchecked_return_type = "AgentCommand")]
     pub fn value(&self) -> Result<JsValue, JsValue> {
         let value = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
-        super::json::to_js_admitted(&value)
+        super::json::to_js_client_admitted(&value)
     }
 
     /// Decode the host result against this exact original command. An uncertain
@@ -206,7 +206,7 @@ impl WasmAgentCommand {
         })?;
         let command = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
         match decode_agent_reply(&bytes, &command).map_err(command_error)? {
-            Ok(reply) => super::json::to_js_admitted(&reply),
+            Ok(reply) => super::json::to_js_client_admitted(&reply),
             Err(AgentControlFailure::Unknown(request)) => Err(super::agent_client::actor_error(
                 crate::agent::Error::Unknown(request),
             )),

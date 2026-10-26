@@ -30,6 +30,7 @@ export interface ClientToolOutputFixture {
 
 function exactJson(value: unknown): string {
   return JSON.stringify(value, (_, item: unknown) => {
+    if (item instanceof Map) throw new Error("CLIENT_CONFORMANCE client projection contains a Map instead of object fields");
     if (typeof item === "bigint") return {$integer: item.toString()};
     if (typeof item === "number" && Number.isInteger(item)) {
       if (!Number.isSafeInteger(item)) throw new Error("CLIENT_INPUT rounded integer");
@@ -116,8 +117,7 @@ function failed(error: unknown): Outcome {
 }
 function same(left: Outcome, right: Outcome): boolean {
   if ("value" in left && "value" in right) {
-    const exact = (_: string, value: unknown): unknown => typeof value === "bigint" ? {$bigint: value.toString()} : value;
-    return JSON.stringify(left.value, exact) === JSON.stringify(right.value, exact);
+    return exactJson(left.value) === exactJson(right.value);
   }
   if (!("error" in left) || !("error" in right) || left.error.name !== right.error.name) return false;
   if (left.error.name === "agent_unknown") {

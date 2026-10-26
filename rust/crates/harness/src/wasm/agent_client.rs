@@ -1,6 +1,6 @@
 //! Thin browser ownership of the same AgentClient as the native agent adapter.
 
-use super::json::to_js;
+use super::json::to_js_client as to_js;
 use crate::{
     agent::AgentPath,
     client::{AgentClient, AgentClientError, AgentSelection},
