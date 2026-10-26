@@ -86,7 +86,7 @@ pub use agents::{AgentClient, AgentClientError, AgentEvent};
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod agent_local;
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use agent_local::{AgentTurn, LocalAgentClient, LocalAgentError};
+pub use agent_local::{AgentTurn, LocalAgentClient, LocalAgentError, MAXIMUM_AGENT_PROMPT_BYTES};
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod agent_stdio;
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
