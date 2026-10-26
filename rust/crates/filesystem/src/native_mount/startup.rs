@@ -133,6 +133,7 @@ pub(super) struct NativeMountRetirement {
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
     pub(super) destination_guard: Option<MountDestinationGuard>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
+    pub(super) terminal_source_failure: Option<NativeMountError>,
     #[cfg(windows)]
     pub(super) warm_namespace: Option<projfs::ProjFsNamespaceQualification>,
 }
@@ -150,7 +151,7 @@ impl NativeMountRetirement {
             None => NativeSessionStopWork::AcceptedDrop,
         };
         changed |= retirement::retire_destination(&mut self.destination_guard, &work)?;
-        Ok(changed)
+        retirement::finish_retirement(&mut self.terminal_source_failure, changed)
     }
 
     /// Drains producers after callback admission closes, before driver teardown.
@@ -166,6 +167,7 @@ impl NativeMountRetirement {
         retirement::retire_sources(
             &mut self.retained_source,
             &mut self.startup_source_watch,
+            &mut self.terminal_source_failure,
             &work,
             join,
         )

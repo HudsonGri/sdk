@@ -339,6 +339,7 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
         let mut packet = crate::native_mount::NativeMountRetirement {
             retained_source: None,
             startup_source_watch: None,
+            terminal_source_failure: None,
             destination_guard: None,
             #[cfg(windows)]
             warm_namespace: None,
@@ -468,6 +469,7 @@ fn physical_cleanup_worker(
         let mut packet = crate::native_mount::NativeMountRetirement {
             retained_source: Some(mounted),
             startup_source_watch: None,
+            terminal_source_failure: None,
             destination_guard: None,
             #[cfg(windows)]
             warm_namespace: None,

@@ -645,6 +645,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
             retained_source: Some(Arc::clone(&core.source)),
             destination_guard: None,
             startup_source_watch: None,
+            terminal_source_failure: None,
         }),
         failure: None,
         _allocation: control_allocation,

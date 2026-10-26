@@ -49,6 +49,7 @@ pub(in crate::native_mount) fn retire_source_in_physical_stop(
             retained_source: Some(source),
             destination_guard: None,
             startup_source_watch: None,
+            terminal_source_failure: None,
             warm_namespace: None,
         }),
         original_stop_work: original,

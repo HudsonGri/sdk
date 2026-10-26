@@ -50,6 +50,7 @@ fn retirement(control: Control, authored: usize) -> Result<bool, Box<dyn std::er
         destination_guard: guard,
         retained_source: None,
         startup_source_watch: None,
+        terminal_source_failure: None,
     };
     let before = work.receipt();
     let live = work.live_allocation_bytes();

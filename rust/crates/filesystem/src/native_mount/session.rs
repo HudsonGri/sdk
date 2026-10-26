@@ -6,6 +6,7 @@ pub struct NativeMountSession {
     pub(super) driver: Option<DriverSession>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
+    pub(super) terminal_source_failure: Option<NativeMountError>,
     pub(super) request: NativeMountRequest,
     pub(super) destination_guard: Option<MountDestinationGuard>,
     pub(super) measured_cleanup_failed: bool,
@@ -56,6 +57,7 @@ impl NativeMountSession {
             driver: None,
             destination_guard: None,
             retained_source,
+            terminal_source_failure: None,
             startup_source_watch: None,
             measured_cleanup_failed: false,
             namespace_detach_confirmed: false,
@@ -386,6 +388,7 @@ impl NativeMountSession {
             changed |= retirement::retire_sources(
                 &mut self.retained_source,
                 &mut self.startup_source_watch,
+                &mut self.terminal_source_failure,
                 work,
                 retirement::SourceRetirementWait::Caller,
             )?;
@@ -425,9 +428,12 @@ impl NativeMountSession {
         work: &NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
         if self.destination_guard.is_none() {
-            return Ok(false);
+            return retirement::finish_retirement(&mut self.terminal_source_failure, false);
         }
-        let result = retirement::retire_destination(&mut self.destination_guard, work);
+        let result =
+            retirement::retire_destination(&mut self.destination_guard, work).and_then(|changed| {
+                retirement::finish_retirement(&mut self.terminal_source_failure, changed)
+            });
         self.measured_cleanup_failed = result.is_err();
         result
     }

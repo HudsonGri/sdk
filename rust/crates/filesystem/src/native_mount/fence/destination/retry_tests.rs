@@ -69,6 +69,7 @@ impl Fixture {
                 destination_guard: guard,
                 retained_source: None,
                 startup_source_watch: None,
+                terminal_source_failure: None,
             },
             work,
             cancellation,

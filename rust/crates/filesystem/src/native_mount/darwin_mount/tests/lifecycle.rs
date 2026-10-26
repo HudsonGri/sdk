@@ -27,6 +27,7 @@ pub(in crate::native_mount) fn retire_source_in_physical_loop(
             retained_source: Some(source),
             destination_guard: None,
             startup_source_watch: None,
+            terminal_source_failure: None,
         });
     }
     resources.finish();
@@ -301,5 +302,46 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
         Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure(7)))
     ));
     assert!(session.thread.is_none());
+    Ok(())
+}
+
+#[test]
+fn physical_retirement_finishes_with_its_original_terminal_source_outcome() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let original = work(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )?;
+    let resources = sdk(temporary.path(), &original)?;
+    {
+        let mut state = resources.state();
+        resources.retire(
+            &mut state,
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Physical,
+        )?;
+        assert!(state.resources.is_none());
+        let error = std::fs::read(temporary.path().join("absent-source"))
+            .expect_err("fixture source is actually absent");
+        state.retirement = Some(crate::native_mount::NativeMountRetirement {
+            retained_source: None,
+            destination_guard: None,
+            startup_source_watch: None,
+            terminal_source_failure: Some(NativeMountError::Io(error)),
+        });
+    }
+    resources.finish();
+    let mut state = resources.state();
+    assert!(state.resources.is_none());
+    assert!(
+        state
+            .retirement
+            .as_ref()
+            .is_some_and(crate::native_mount::NativeMountRetirement::is_retired)
+    );
+    assert!(matches!(
+        state.failure.take(),
+        Some(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+    ));
     Ok(())
 }

@@ -77,6 +77,7 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
     let mut packet = NativeMountRetirement {
         retained_source: None,
         startup_source_watch: None,
+        terminal_source_failure: None,
         destination_guard: session.destination_guard.take(),
         #[cfg(windows)]
         warm_namespace: None,
@@ -129,6 +130,112 @@ fn detached_session_retirement_completes_fence_after_waiter_cancellation()
         let completed = work.receipt();
         assert!(!session.stop_with_context(&stop)?);
         assert_eq!(work.receipt(), completed);
+    }
+    Ok(())
+}
+
+#[test]
+fn terminal_source_outcome_is_reported_after_its_destination_retires()
+-> Result<(), Box<dyn std::error::Error>> {
+    for driver_owned in [false, true] {
+        let Fixture {
+            root,
+            mut session,
+            work,
+            fence,
+        } = Fixture::new()?;
+        // This is terminal outcome data from a real failed host operation,
+        // not a replacement watch or native completion fixture.
+        let error = std::fs::read(root.path().join("absent-source"))
+            .expect_err("fixture source is actually absent");
+        let actual_code = error.raw_os_error();
+        let before = work.receipt();
+        let result = if driver_owned {
+            let mut packet = NativeMountRetirement {
+                retained_source: None,
+                startup_source_watch: None,
+                terminal_source_failure: Some(NativeMountError::Io(error)),
+                destination_guard: session.destination_guard.take(),
+                #[cfg(windows)]
+                warm_namespace: None,
+            };
+            let result = packet.retire(None, retirement::SourceRetirementWait::Physical);
+            assert!(packet.is_retired());
+            assert!(packet.terminal_source_failure.is_none());
+            result
+        } else {
+            session.terminal_source_failure = Some(NativeMountError::Io(error));
+            let result = session.stop_with_context(&NativeSessionStopWork::AcceptedDrop);
+            assert!(session.cleanup_state().cleanup_complete());
+            assert!(session.terminal_source_failure.is_none());
+            result
+        };
+        let Err(NativeMountError::Io(error)) = result else {
+            panic!("terminal source outcome disappeared: {result:?}");
+        };
+        assert_eq!(error.raw_os_error(), actual_code);
+        retired(root.path(), &fence, before, &work)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stopped_watch_cancellation_releases_the_driver_and_session_fences()
+-> Result<(), Box<dyn std::error::Error>> {
+    for driver_owned in [false, true] {
+        let Fixture {
+            root,
+            mut session,
+            mut work,
+            fence,
+        } = Fixture::new()?;
+        let watched = root.path().join("source");
+        std::fs::create_dir(&watched)?;
+        let wait = CancellationToken::new();
+        let watch = crate::source_watch::terminal_cancellation_watch(&watched, &mut work, &wait)?;
+        session.startup_source_watch =
+            Some(lazy::NativeMountSourceWatchOwner::from_native_watch_fixture(watch));
+        let before = work.receipt();
+        let result = if driver_owned {
+            let mut packet = NativeMountRetirement {
+                retained_source: session.retained_source.take(),
+                startup_source_watch: session.startup_source_watch.take(),
+                terminal_source_failure: None,
+                destination_guard: session.destination_guard.take(),
+            };
+            let result = packet.retire(Some(&wait), retirement::SourceRetirementWait::Caller);
+            assert!(
+                packet.is_retired(),
+                "terminal watch outcome stranded its fence"
+            );
+            assert!(packet.terminal_source_failure.is_none());
+            result
+        } else {
+            let result = session.stop_with_context(&NativeSessionStopWork::AcceptedWait(&wait));
+            assert!(session.cleanup_state().cleanup_complete());
+            assert!(session.terminal_source_failure.is_none());
+            result
+        };
+        assert!(wait.is_cancelled(), "actual FSEvents terminal did not run");
+        assert!(
+            matches!(
+                result,
+                Err(NativeMountError::Source(MountSourceError::Cancelled))
+            ),
+            "original post-terminal cancellation was replaced: {result:?}"
+        );
+        assert!(!fence.exists(), "stopped producer kept its physical fence");
+        assert!(!root.path().join("retired-mount").exists());
+        assert_eq!(std::fs::read(root.path().join("authored"))?, b"keep");
+        assert_eq!(
+            work.receipt().allocation_operations,
+            before.allocation_operations
+        );
+        assert_eq!(
+            work.receipt().peak_allocation_bytes,
+            before.peak_allocation_bytes
+        );
     }
     Ok(())
 }

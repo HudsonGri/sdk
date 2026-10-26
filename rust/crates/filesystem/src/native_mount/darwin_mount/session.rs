@@ -39,7 +39,11 @@ impl DriverSessionResources {
             self.free(wait)?;
         }
         if let Some(packet) = retirement {
-            packet.retire(wait, join)?;
+            let result = packet.retire(wait, join);
+            if packet.is_retired() {
+                drop(resources.take());
+            }
+            result?;
             if !packet.is_retired() {
                 return Err(NativeMountError::ControlPending);
             }
@@ -52,23 +56,32 @@ impl DriverSessionResources {
         let mut state = self.state();
         self.requested.store(false, Ordering::Release);
         self.changed.notify_all();
-        if let Err(error) = self.retire(&mut state, None, SourceRetirementWait::Physical) {
-            state.failure = Some(error);
-        } else {
-            return;
-        }
-        self.credit.started_drop_io(READ_WORK);
+        let mut waiting = false;
         loop {
-            state = self
-                .changed
-                .wait_while(state, |_| !self.requested.swap(false, Ordering::AcqRel))
-                .unwrap_or_else(PoisonError::into_inner);
             match self.retire(&mut state, None, SourceRetirementWait::Physical) {
                 Ok(()) => return,
                 Err(error) => {
                     state.failure.get_or_insert(error);
                 }
             }
+            if state.resources.is_none()
+                && state
+                    .retirement
+                    .as_ref()
+                    .is_none_or(crate::native_mount::NativeMountRetirement::is_retired)
+            {
+                // The outcome is retained; no producer remains whose progress
+                // could justify waiting for another cleanup request.
+                return;
+            }
+            if !waiting {
+                self.credit.started_drop_io(READ_WORK);
+                waiting = true;
+            }
+            state = self
+                .changed
+                .wait_while(state, |_| !self.requested.swap(false, Ordering::AcqRel))
+                .unwrap_or_else(PoisonError::into_inner);
         }
     }
 }

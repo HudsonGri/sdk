@@ -91,6 +91,7 @@ pub(super) fn start_native_mount_prepared_with_meter(
         retained_source: Some(Arc::clone(&source)),
         destination_guard: None,
         startup_source_watch: None,
+        terminal_source_failure: None,
         #[cfg(windows)]
         warm_namespace: None,
     });

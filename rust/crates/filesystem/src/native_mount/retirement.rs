@@ -11,6 +11,7 @@ pub(super) enum SourceRetirementWait {
 pub(super) fn retire_sources(
     source: &mut Option<Arc<dyn MountFilesystem>>,
     watch: &mut Option<lazy::NativeMountSourceWatchOwner>,
+    terminal_failure: &mut Option<NativeMountError>,
     work: &NativeSessionStopWork<'_>,
     join: SourceRetirementWait,
 ) -> Result<bool, NativeMountError> {
@@ -45,10 +46,26 @@ pub(super) fn retire_sources(
             // permits terminal data transfer without fresh native admission.
             drop(watch.take());
             changed = true;
+            // A stopped producer cannot make further progress. Retain its
+            // actual outcome while the same owner releases the destination;
+            // reporting it here would strand that accepted cleanup plan.
+            *terminal_failure = result.err().map(NativeMountError::from);
+        } else {
+            result?;
         }
-        result?;
     }
     Ok(changed)
+}
+
+/// Reports a physically retired producer only after its dependent cleanup.
+pub(super) fn finish_retirement(
+    terminal_failure: &mut Option<NativeMountError>,
+    changed: bool,
+) -> Result<bool, NativeMountError> {
+    match terminal_failure.take() {
+        Some(error) => Err(error),
+        None => Ok(changed),
+    }
 }
 
 /// Called after physical namespace retirement and producer quiescence.
