@@ -2,7 +2,24 @@
   "schema_version": 1,
   "kind": "proof_plan_not_runtime_export",
   "canonical_five_case_pin": "df031ac762773611d634b97d331e924c3b75f1bb",
-  "runtime_api": "Only five Case variants and verify/verify_case are implemented at the canonical pin. This plan does not claim HST-06..12 Rust exports or a runtime Unqualified result exists yet.",
+  "adopted_source": {
+    "origin": "Q:\\lanes\\cloud\\rx-qualify\\hostability-response.md",
+    "repo_path": "docs/proofs/evidence/hosted-history-plan-source.md",
+    "sha256": "36b9c1a23b4b7af15c403c41c6e9d4362642f8339d7f626232a36419b0049c22"
+  },
+  "runtime_api": "Only five ordinary Case variants and verify/verify_case are implemented at the canonical pin. No complete HST row or runtime Unqualified result is exported yet; ordinary cases contribute partial observations, not full HST qualification.",
+  "ordinary_case_exports": [
+    "AppendRetry",
+    "CommitRetry",
+    "AbsentZeroTail",
+    "SubtreeFork",
+    "ComposedFork"
+  ],
+  "additional_shared_cases": [
+    "Tail(0) absence",
+    "definitive conflict/exact replay",
+    "A3 same-cut bounded authorized children-tail projection; separate from stable HST-12 counted-work history"
+  ],
   "planned_receipt_outcomes": {
     "Qualified": "immutable positive receipt plus matching negative control",
     "Failed": "semantic invariant witness at exact source",
@@ -11,28 +28,35 @@
   "cases": [
     {
       "id": "HST-01",
-      "name": "AppendRetry",
+      "name": "NamespaceCut",
+      "priority_review": "HST-01 P0 S1/V3",
       "obligations": [
-        "streams.keys.append"
+        "streams.fork.cut",
+        "fs.fork-many"
       ],
-      "history": "rejected append key remains unspent, exact retry/lost-ack replay and changed successful payload refusal",
-      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::AppendRetry",
+      "history": "Race fork with descendant creation, source/child appends and root publication; enumerate through children_page and read all selected records. Each observation must fit one serializable membership+heads cut, not a mix. Include composed Commit over >=2 domains in one cell and the spawn-shaped envelope (subtree, volume authorities, ForkAdopted), all-or-none.",
+      "production_boundary_and_control": "Pause after capture/before publication; real Command::Commit or coordinated participant publication. Observe domain/generation and applied commit identity. Control omits namespace version validation or splits one selected volume into a helper commit: require HST-01. No unsupported arbitrary sharding claim.",
+      "implemented_entrypoint": null,
+      "partial_ordinary_cases": [
+        "SubtreeFork",
+        "ComposedFork"
+      ],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "local": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "hosted": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "wasm_browser": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         }
       },
       "receipt_requirements": [
@@ -45,28 +69,34 @@
     },
     {
       "id": "HST-02",
-      "name": "CommitRetry",
+      "name": "PendingRecovery",
+      "priority_review": "HST-02 P0 S2/V1",
       "obligations": [
-        "streams.keys.commit"
+        "streams.keys.pending"
       ],
-      "history": "rejected composed key remains unspent, exact envelope replay and changed successful digest refusal",
-      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::CommitRetry",
+      "history": "Pause an accepted exact key K before terminal publication; inspect Unknown/None, cancel client, retry same digest; release original and lose its ack. Require one effect and original receipt. Changed digest cannot publish while unresolved; successful same digest replays despite conditions becoming false.",
+      "production_boundary_and_control": "Pause after durable Accept/Begin/AcceptFacts/ReserveRoute, before external retention or PublishReceipt; crash owner and replay retained intent. Control treats None as free/reserves a second identity: HST-02.",
+      "implemented_entrypoint": null,
+      "partial_ordinary_cases": [
+        "AppendRetry",
+        "CommitRetry"
+      ],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "local": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "hosted": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "wasm_browser": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         }
       },
       "receipt_requirements": [
@@ -79,28 +109,34 @@
     },
     {
       "id": "HST-03",
-      "name": "AbsentZeroTail",
+      "name": "NamespaceKeyLifetime",
+      "priority_review": "HST-03 P0 S3/V1",
       "obligations": [
-        "streams.keys.absent-zero-tail"
+        "streams.keys.lifetime"
       ],
-      "history": "Tail(0) accepts absence independently of missing-path Follow",
-      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::AbsentZeroTail",
+      "history": "Lost-ack success, drive replicated retention clock >120s (121s and >2 sweep intervals), reclaim, restart/restore/move owner, exact retry; require original digest/commit/receipt and one effect. Changed successful payload is IdempotencyMismatch. Retired logical namespace cannot reopen key as fresh.",
+      "production_boundary_and_control": "Committed fenced Command::Reclaim elapsed_micros, observed clock on all replicas; not OS sleep or client wall clock. Control restores current window-based successful-binding deletion: HST-03. Test late success at old owner after move as well.",
+      "implemented_entrypoint": null,
+      "partial_ordinary_cases": [
+        "AppendRetry",
+        "CommitRetry"
+      ],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "local": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "hosted": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "wasm_browser": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         }
       },
       "receipt_requirements": [
@@ -113,28 +149,34 @@
     },
     {
       "id": "HST-04",
-      "name": "SubtreeFork",
+      "name": "AttemptGenerationFence",
+      "priority_review": "HST-04 P0 S2/V1; P1 S5/V4",
       "obligations": [
-        "streams.fork.cut"
+        "streams.keys.pending"
       ],
-      "history": "descendant membership at one cut and private later writes",
-      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::SubtreeFork",
+      "history": "Definitive conflict leaves no successful binding/effect; revise same still-unspent key, succeed once, deliver old prepare/commit/abort/pin-release messages afterward. Inspect/retry still resolves the newer success; no unlocked stale write or released new hold.",
+      "production_boundary_and_control": "Actual Begin/Stage/Decide/Resolve, PublishReceipt, Coordinate actions and Objects release acceptance; carry attempt generation, authority incarnation/fence and term. Control removes old-attempt generation check: HST-04.",
+      "implemented_entrypoint": null,
+      "partial_ordinary_cases": [
+        "AppendRetry",
+        "CommitRetry"
+      ],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "local": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "hosted": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "wasm_browser": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         }
       },
       "receipt_requirements": [
@@ -147,29 +189,35 @@
     },
     {
       "id": "HST-05",
-      "name": "ComposedFork",
+      "name": "DurableDecisionPublication",
+      "priority_review": "HST-05 P1 S5/V4",
       "obligations": [
         "streams.fork.cut",
+        "streams.keys.pending",
         "fs.fork-many"
       ],
-      "history": "pre-commit forks plus companion append; extend with same-domain volume/ForkAdopted crash cuts",
-      "implemented_entrypoint": "acyclic_stream::conformance::wave1::Case::ComposedFork",
+      "history": "Crash before/after each durable prepare, decision, root and receipt publication; restart retained stores. All participants converge on one decision, and read_commit/inspect/root effects agree. Private fenced abort records are permitted; terminal conflict receipt is not.",
+      "production_boundary_and_control": "Command::Coordinate + coordinator::Action and participant Begin/Stage/Decide/Resolve/PublishReceipt; real retained Objects receipt. Control publishes receipt before root decision or drops durable coordinator decision: HST-05.",
+      "implemented_entrypoint": null,
+      "partial_ordinary_cases": [
+        "ComposedFork"
+      ],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "local": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "hosted": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         },
         "wasm_browser": {
           "outcome": "Unqualified",
-          "reason": "ReceiptNotAdmitted"
+          "reason": "CanonicalHistoryNotExported"
         }
       },
       "receipt_requirements": [
@@ -182,12 +230,15 @@
     },
     {
       "id": "HST-06",
-      "name": "PendingAttemptFence",
+      "name": "ForkClosureRetention",
+      "priority_review": "HST-06 P1 S4/V3",
       "obligations": [
-        "streams.keys.pending"
+        "streams.fork.retention"
       ],
-      "history": "accepted/Unknown exact-request recovery and late attempt-generation message fencing",
+      "history": "Fork sealed+unsealed source, fork-of-fork, append independent suffixes, retire source, compact/GC; crash and restore snapshots onto another host. Read exact bytes, original record/commit identities and replay bindings from every remaining fork. Keep read/recovery holds while deleting other roots.",
+      "production_boundary_and_control": "BeginSeal/FinishSeal, retained history/frames, Objects accepted retain/release and real collector; stop at durable hold publication/release/delete. Control drops transitive unsealed/shared hold or releases source's last hold unconditionally: HST-06. No local Arc/reference-count proxy for disk retention.",
       "implemented_entrypoint": null,
+      "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
@@ -216,12 +267,15 @@
     },
     {
       "id": "HST-07",
-      "name": "NamespaceKeyLifetime",
+      "name": "NestedExclusions",
+      "priority_review": "HST-07 P1 S6",
       "obligations": [
-        "streams.keys.lifetime"
+        "streams.fork.exclusions"
       ],
-      "history": "lost ack after >120s, retirement/GC/fork/restore never reexecutes old key",
+      "history": "Fork p -> p/children/c from pre-commit root with a companion append, existing grandchildren, exclusions children and normalized overlaps; children-suffix remains included. Child is finite, source/child diverge, no inherited destination contents. Invalid escape/empty exclusion and destination collisions yield canonical typed refusal. Retry canonical exclusions yields same identity.",
+      "production_boundary_and_control": "Same Command::Commit cut; SDK canonical path/exclusion/digest preparation. Control ignores exclusions: HST-07; a second control uses post-commit source root: HST-07.",
       "implemented_entrypoint": null,
+      "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
@@ -250,12 +304,16 @@
     },
     {
       "id": "HST-08",
-      "name": "ForkClosureRetention",
+      "name": "ForkAuthority",
+      "priority_review": "HST-08 P0 S9/V2",
       "obligations": [
-        "streams.fork.retention"
+        "streams.fork.authorization",
+        "auth.enforcement-fence"
       ],
-      "history": "shared sealed/unsealed transitive closure survives compaction, source retirement, restore and old-generation release",
+      "history": "Exact-root-only source grant + readable destination must be denied before descendant visibility. Covering source/destination grants succeed; exclude protected branches correctly; textual sibling prefixes do not grant authority. Inheritance never transfers capabilities.",
+      "production_boundary_and_control": "Trust capability/streams::authorize_request and production Edge authorizer/lease with canonical SDK grants; revision/expiry driven through real auth transitions. Control accepts today's exact-path fork check for subtree effects: HST-08.",
       "implemented_entrypoint": null,
+      "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
@@ -284,12 +342,15 @@
     },
     {
       "id": "HST-09",
-      "name": "NestedExclusions",
+      "name": "NamespaceFollowWake",
+      "priority_review": "HST-09 P1 S7/V5,V6",
       "obligations": [
-        "streams.fork.exclusions"
+        "streams.follow.namespace-wake"
       ],
-      "history": "pre-commit nested destination, segment-relative children exclusion, children-suffix retained and no self-inheritance",
+      "history": "Absent follow at cursor0 gives typed NotFound and no side effect. Create/fork then follow existing inherited path. Race first publication with subscribe: NotFound if first, otherwise valid subscription/replay. Race append/root-only update before/after register/read/park; require wake and gapless applied cursor without a materialized descendant row or timer.",
+      "production_boundary_and_control": "native::Reading::follow subscribe-before-bounds/replay, store row watches plus new namespace/prefix version watch owned by authority lane. Control keeps only exact roots-row wake or registers after read without replay fence: HST-09.",
       "implemented_entrypoint": null,
+      "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
@@ -318,13 +379,16 @@
     },
     {
       "id": "HST-10",
-      "name": "ForkAuthority",
+      "name": "SessionCreditAuthority",
+      "priority_review": "HST-10 P1 V5 (S8 P2 delivery detail)",
       "obligations": [
-        "streams.fork.authorization",
-        "auth.enforcement-fence"
+        "client.session-credit",
+        "client.authority-binding"
       ],
-      "history": "exact-source versus covering subtree grants, destination access, revocation and zero exposure on denial",
+      "history": "Two existing-path channels on one native or WebSocket session; exhaust A credit while B progresses under sufficient session credit; exhaust aggregate credit separately. Cancel A, revoke/revise its auth lease, attempt stale channel generation; no later unauthorized delivery or leaked interest.",
+      "production_boundary_and_control": "Follows::apply/replenish/acknowledge/pause/handoff, Session::install/revalidate/install_renewal, Access::Lease invalidation, real Edge WebSocket carrier. Control consumes wrong channel credit or ignores revocation: HST-10 (separate runs).",
       "implemented_entrypoint": null,
+      "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
@@ -353,14 +417,16 @@
     },
     {
       "id": "HST-11",
-      "name": "SessionFollowCredit",
+      "name": "LeaderResume",
+      "priority_review": "HST-11 P1 S7/V5",
       "obligations": [
-        "streams.follow.namespace-wake",
-        "client.session-credit",
-        "client.authority-binding"
+        "client.cursor-reducer",
+        "streams.follow.namespace-wake"
       ],
-      "history": "missing Follow is NotFound/no effect; existing inherited-path replay, independent credit/cancel/revoke/reconnect/native/WebSocket",
+      "history": "Move leader with buffered and lost-ack frames; resume using prior applied cursor on another member, duplicate unacked delivery allowed. Apply each sequence once, preserve commit IDs, no missing record, no post-cancel stale generation delivery.",
+      "production_boundary_and_control": "Actual Raft leader loss/heal plus session placement/handoff and channel preparation; retain subscriber/replay holds across reconnect. Control advances applied cursor before acknowledgment or resumes after next unseen record: HST-11.",
       "implemented_entrypoint": null,
+      "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
@@ -389,13 +455,17 @@
     },
     {
       "id": "HST-12",
-      "name": "ChildrenTailAtCut",
+      "name": "CountedWork",
+      "priority_review": "HST-12 P1 S1,S4/V3",
       "obligations": [
-        "streams.children.tail-at-cut",
+        "streams.fork.retention",
+        "fs.changefeed-cut",
         "client.demand-bounds"
       ],
-      "history": "tail projection at retained page cut, bounded full-record bytes, None missing/empty and Read beyond List",
+      "history": "Vary descendant count with fixed depth/payload shape; fork adds zero payload copy/seal and no descendant walk, holds shared bytes once. Separately record path/exclusion bytes, index spine work and composed participants O(S). Include sparse paged traversal and prefix/glob snapshot queries, selected/unselected concurrent writes.",
+      "production_boundary_and_control": "Production storage/SDK cost counters, not wall-clock scaling alone. Control enumerates/copies descendants or charges shared payload per fork: HST-12. Lazy pagination is not proof that lookup avoided an all-tree scan.",
       "implemented_entrypoint": null,
+      "partial_ordinary_cases": [],
       "coverage": {
         "memory": {
           "outcome": "Unqualified",
