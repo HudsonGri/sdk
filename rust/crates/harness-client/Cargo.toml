@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-harness-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Bounded client state shared by native and WASM harness adapters"
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

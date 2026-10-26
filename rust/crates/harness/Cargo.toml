@@ -90,6 +90,7 @@ notify = { workspace = true, optional = true }
 pulldown-cmark = { version = "0.13.4", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-harness-client = { version = "=0.2.0", path = "../harness-client" }
 acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
