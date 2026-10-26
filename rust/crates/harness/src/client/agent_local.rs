@@ -25,7 +25,7 @@ pub enum LocalAgentError {
     Agent(#[from] crate::agent::Error),
     /// An input's original commit is unresolved. Keep its caller identity and
     /// exact request together through library and process error boundaries.
-    #[error("agent intent {id} has an unknown commit outcome")]
+    #[error("agent intent {} has an unknown commit outcome", .id.as_str())]
     Unknown {
         /// Caller identity of the unresolved prompt or control.
         id: IntentId,
