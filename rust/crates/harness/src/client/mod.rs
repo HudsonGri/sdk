@@ -65,8 +65,14 @@ mod plan_panel;
 pub use plan_panel::PlanPanel;
 mod interests;
 pub use acyclic_harness_client::{
-    PageDirection, PageRequest, PageWindow, PageWindowError, PageWindowPolicy, WindowPage,
+    DemandError, DemandPolicy, PageDirection, PageRequest, PageWindow, PageWindowError,
+    PageWindowPolicy, ViewDemand, WindowPage,
 };
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use acyclic_harness_client::{WireSession, WireSessionError};
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;

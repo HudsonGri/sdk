@@ -114,6 +114,12 @@ impl ViewDemand {
         self.full.iter()
     }
 
+    /// Test explicit full-follow demand without walking the selected set.
+    #[must_use]
+    pub fn contains_full(&self, agent: &StreamPath) -> bool {
+        self.full.contains(agent)
+    }
+
     /// Borrow only nodes whose child pages are needed by the current tree view.
     pub fn expanded(&self) -> impl Iterator<Item = &StreamPath> {
         self.expanded.iter()
