@@ -26,8 +26,10 @@ async fn actor_prompt_replays_the_same_settled_turn_without_regeneration() {
     });
     let operation = OperationId::new();
     let mut first = None;
-    for _ in 0..2 {
-        let output = execute(&workspace, &catalog, &settings, operation, Mode::Prompt).await;
+    // Reopen through the other public input entry, retaining the same intent.
+    // Both must converge on the one actor receipt without a request-file shim.
+    for mode in [Mode::Prompt, Mode::Jsonl] {
+        let output = execute(&workspace, &catalog, &settings, operation, mode).await;
         let lines: Vec<_> = std::str::from_utf8(&output).unwrap().lines().collect();
         assert_eq!(lines.len(), 1, "one exact settlement, no legacy snapshot dialect");
         let reply: Value = serde_json::from_str(lines[0]).unwrap();

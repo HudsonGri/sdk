@@ -13,7 +13,8 @@ mod killed_tool_tree;
 mod web_outcomes;
 use acyclic_harness::{
     OperationId,
-    client::{jsonl, prepare_local_prompt},
+    agent::IntentId,
+    client::{AgentRequest, jsonl},
     task_volume::{Change, FileKey, TaskFile},
 };
 use axum::{Json, Router, routing::post};
@@ -95,7 +96,10 @@ async fn execute_with(
     let request = if jsonl {
         format!(
             "{}\n",
-            jsonl::request(&prepare_local_prompt(operation, prompt).unwrap()).unwrap()
+            serde_json::to_string(&AgentRequest {
+                id: IntentId::try_from(operation.to_string()).unwrap(),
+                prompt: prompt.into(),
+            }).unwrap()
         )
         .into_bytes()
     } else {
