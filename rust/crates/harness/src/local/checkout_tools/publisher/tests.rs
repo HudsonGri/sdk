@@ -1386,7 +1386,7 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
                 (&*tools.workspace, view),
                 &mut state.watcher,
                 PublicationPermit::Unrestricted,
-            )
+            )?
             .await
     })
     .await?;
@@ -1420,7 +1420,7 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
                 (&*tools.workspace, view),
                 &mut state.watcher,
                 PublicationPermit::Unrestricted,
-            )
+            )?
             .await
     })
     .await?;
