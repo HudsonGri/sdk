@@ -324,6 +324,21 @@ impl VerifiedCapability {
         authority::permits(&self.blocks, request, policy).map_err(VerifyError::Denied)
     }
 
+    /// Authorize an operation over the complete resource subtree without
+    /// enumerating descendants. Every parent grant set must contain a covering
+    /// prefix; exact-root grants and record-dependent filters or pins refuse.
+    /// The owner must also authorize protected paths and excluded effects.
+    /// This admission does not fence a later publication or transfer authority.
+    pub fn authorize_subtree(
+        &self,
+        trust: &(impl Trust + ?Sized),
+        request: &authority::Request<'_>,
+        policy: authority::PolicyDecision,
+    ) -> Result<(), VerifyError> {
+        self.check(trust, request.now_unix_seconds)?;
+        authority::permits_subtree(&self.blocks, request, policy).map_err(VerifyError::Denied)
+    }
+
     /// Admit only a Streams follow, deferring record filters and pins to the
     /// provider's mandatory predicate. All other caveats are checked now.
     pub fn authorize_follow(

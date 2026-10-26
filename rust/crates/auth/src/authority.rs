@@ -157,7 +157,7 @@ pub fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
         name == pattern.name
     }
 }
-fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
+fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool, descendants: bool) -> bool {
     set.grants.iter().any(|g| {
         let Target::Resource { action, resource } = r.target else {
             return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
@@ -179,6 +179,7 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
             _ => return false,
         };
         grant.actions.iter().any(|a| a == action)
+            && (!descendants || grant.resource.prefix)
             && (resource_matches(&grant.resource, resource)
                 || !record_facts && matches!(action, "streams/list" | "fs/list")
                     && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
@@ -257,6 +258,40 @@ fn filter_allows(f: &Filter, r: &Request<'_>, p: &Principal, blocks: &[Block], i
 /// All online ancestor certificates and all offline blocks restrict authority.
 pub fn permits(blocks: &[Block], r: &Request<'_>, policy: PolicyDecision) -> Result<(), Deny> {
     permits_operation(blocks, r, policy, true)
+}
+
+/// Require one covering prefix in every conjunctive grant set. Finite exact
+/// grants cannot cover an unbounded subtree. Record filters and pins cannot
+/// establish coverage for records whose facts have not been admitted.
+pub(crate) fn permits_subtree(
+    blocks: &[Block],
+    r: &Request<'_>,
+    policy: PolicyDecision,
+) -> Result<(), Deny> {
+    permits(blocks, r, policy)?;
+    if !matches!(r.target, Target::Resource { .. }) {
+        return Err(Deny::Capability);
+    }
+    let certificates = blocks
+        .first()
+        .and_then(|block| block.certificates.as_ref())
+        .ok_or(Deny::Capability)?;
+    if certificates
+        .keys
+        .iter()
+        .all(|certificate| grants_allow(&certificate.key.grants, r, true, true))
+        && blocks.iter().all(|block| {
+            block.caveats.iter().all(|caveat| match &caveat.kind {
+                CaveatKind::Grants(grants) => grants_allow(grants, r, true, true),
+                CaveatKind::Filter(_) | CaveatKind::Pin(_) => false,
+                _ => true,
+            })
+        })
+    {
+        Ok(())
+    } else {
+        Err(Deny::Capability)
+    }
 }
 
 /// Admits a Streams follow before any records exist. The owning provider must
@@ -349,13 +384,13 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>, record_facts: bool) -> b
         let key = &cert.key;
         r.now_unix_seconds >= key.validity.not_before_unix_seconds
             && r.now_unix_seconds < key.validity.expires_at_unix_seconds
-            && grants_allow(&key.grants, r, record_facts)
+            && grants_allow(&key.grants, r, record_facts, false)
     }) {
         return false;
     }
     blocks.iter().enumerate().all(|(i, block)| {
         block.caveats.iter().all(|c| match &c.kind {
-            CaveatKind::Grants(set) => grants_allow(set, r, record_facts),
+            CaveatKind::Grants(set) => grants_allow(set, r, record_facts, false),
             CaveatKind::ExpiresAtUnixSeconds(t) => r.now_unix_seconds < *t,
             CaveatKind::NotBeforeUnixSeconds(t) => r.now_unix_seconds >= *t,
             CaveatKind::Audience(a) => !a.prefix && resource_matches(a, r.audience),
