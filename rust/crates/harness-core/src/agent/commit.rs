@@ -17,7 +17,7 @@
 
 use super::{
     AgentId, AgentPath, AgentRecord, Closed, Control, Error, ForkAdopted, InboxRecord, IntentId,
-    Sender, layout,
+    Phase, Sender, StatusRecord, layout,
 };
 use acyclic_stream::{
     CommitCondition, CommitConflict, CommitMutation, CommitOutcome, CommitRequest,
@@ -192,19 +192,43 @@ pub fn spawn(
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
     Ok(Spawn {
         request: CommitRequest {
-            conditions: vec![CommitCondition::Absent {
-                path: child.inbox()?,
-            }],
-            mutations: vec![CommitMutation::Fork {
-                exclude: layout::not_inherited()?,
-                source: parent.inbox()?,
-                destination: child.inbox()?,
-                at_tail,
-                records: vec![record.into()],
-            }],
+            conditions: vec![
+                CommitCondition::Absent {
+                    path: child.inbox()?,
+                },
+                CommitCondition::Absent {
+                    path: child.status()?,
+                },
+            ],
+            mutations: vec![
+                CommitMutation::Fork {
+                    exclude: layout::not_inherited()?,
+                    source: parent.inbox()?,
+                    destination: child.inbox()?,
+                    at_tail,
+                    records: vec![record.into()],
+                },
+                first_status(&child, at_tail)?,
+            ],
             idempotency_key: intent_key("spawn", &[parent.as_str(), intent.as_str()])?,
         },
         child,
+    })
+}
+
+/// An agent's first status rides with its membership (its subtree's creation),
+/// so every listed agent has a status: `Idle` at its `ForkAdopted` sequence.
+fn first_status(agent: &AgentPath, forked_at: u64) -> Result<CommitMutation, Error> {
+    Ok(CommitMutation::Append {
+        path: agent.status()?,
+        records: vec![
+            StatusRecord {
+                phase: Phase::Idle,
+                cursor: forked_at,
+            }
+            .encode()?
+            .into(),
+        ],
     })
 }
 
@@ -217,13 +241,21 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
     let inbox = child.inbox()?;
     Ok(Spawn {
         request: CommitRequest {
-            conditions: vec![CommitCondition::Absent {
-                path: inbox.clone(),
-            }],
-            mutations: vec![CommitMutation::Append {
-                path: inbox,
-                records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
-            }],
+            conditions: vec![
+                CommitCondition::Absent {
+                    path: inbox.clone(),
+                },
+                CommitCondition::Absent {
+                    path: child.status()?,
+                },
+            ],
+            mutations: vec![
+                CommitMutation::Append {
+                    path: inbox,
+                    records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
+                },
+                first_status(&child, 0)?,
+            ],
             idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
         },
         child,
