@@ -33,12 +33,19 @@ try {
     },
   };
   const demand = new DemandLoader(source, scheduler, 4, 2, 4096);
-  const window = new PageWindow<{ id: string; content: FileRef }, number>(item => item.id,
-    async () => ({ generation: "pinned-1", items: refs.map((content, i) => ({ id: String(i), content })), hasMoreBefore: false, hasMoreAfter: false }), 4);
+  await initializeClientQueries();
+  const window = new PageWindow(2, 4, 8192);
   assert(reads === 0, "construction started IO");
-  await window.load("after");
-  assert(reads === 0 && window.items.length === 4, "reference pages loaded bodies");
-  const selected = window.items[1]!.content;
+  const pageRequest = window.begin("after")!;
+  window.finish(pageRequest, new TextEncoder().encode(JSON.stringify({
+    generation: "pinned-1", before: "start", after: "end",
+    items: refs.map((content, i) => ({ key: String(i), value: { id: String(i), content } })),
+    hasMoreBefore: false, hasMoreAfter: false,
+  })));
+  pageRequest.free();
+  assert(reads === 0 && window.items().length === 4, "reference pages loaded bodies");
+  const selected = harness.contracts.validate("file_ref", window.items()[1]!.content);
+  window.free();
   const coldStart = performance.now();
   const [first, duplicate] = await Promise.all([demand.read(selected), demand.read(selected)]);
   const coldMs = performance.now() - coldStart;

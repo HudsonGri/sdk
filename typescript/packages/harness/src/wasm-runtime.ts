@@ -66,9 +66,13 @@ export function assertHarnessWasmExports(value: unknown): void {
     "next", "close", "viewRevision", "firstSequence", "recordCount", "record", "currentStatus", "free",
   ], true);
   const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
+  const pages = hasClass(exports, "WasmPageWindow", "wasmpagewindow", [
+    "reset", "begin", "finish", "items", "hasMore", "retainedBytes", "pageCount", "revision", "free",
+  ], true);
+  const pageRequest = hasClass(exports, "WasmPageRequest", "wasmpagerequest", ["cursor", "free"]);
   const providers = typeof exports.WasmProviderRegistry === "function"
     || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !clientViews || !stream || !hypotheses || !session || !agents || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  if (!contentStore || !clientViews || !stream || !hypotheses || !session || !agents || !pages || !pageRequest || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }
