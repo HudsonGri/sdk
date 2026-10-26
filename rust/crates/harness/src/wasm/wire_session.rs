@@ -33,6 +33,17 @@ fn session_error(cause: WireSessionError) -> JsValue {
     coded_error(cause.code(), cause)
 }
 
+fn command_bytes(view: &Uint8Array, capacity_code: &str) -> Result<Vec<u8>, JsValue> {
+    let (bytes, ()) = super::bytes::snapshot(view, |count| {
+        if count > acyclic_stream::MAX_COMMAND_BYTES as u64 {
+            Err(error(capacity_code))
+        } else {
+            Ok(())
+        }
+    })?;
+    Ok(bytes)
+}
+
 fn path(value: JsString) -> Result<StreamPath, JsValue> {
     // Stream paths are ASCII, so UTF-16 length is a valid pre-copy cap.
     if value.length() as usize > acyclic_stream::MAX_PATH_BYTES {
@@ -125,23 +136,19 @@ impl WasmWireSession {
         if slot as usize >= acyclic_stream::session::Limits::default().channels {
             return Err(error("CLIENT_CREDENTIAL_CAPACITY"));
         }
-        if credential.length() as usize > acyclic_stream::MAX_COMMAND_BYTES {
-            return Err(error("CLIENT_CREDENTIAL_CAPACITY"));
-        }
+        let credential = command_bytes(&credential, "CLIENT_CREDENTIAL_CAPACITY")?;
         self.session
             .borrow()
-            .register_credential(slot, credential.to_vec().into())
+            .register_credential(slot, credential.into())
             .map_err(session_error)
     }
 
     /// Admit the canonical encoded subscription; network I/O starts in `next`.
     #[wasm_bindgen(js_name = openStream)]
     pub fn open_stream(&self, resource: JsString, subscription: Uint8Array) -> Result<(), JsValue> {
-        if subscription.length() as usize > acyclic_stream::MAX_COMMAND_BYTES {
-            return Err(error("CLIENT_SUBSCRIPTION_CAPACITY"));
-        }
+        let subscription = command_bytes(&subscription, "CLIENT_SUBSCRIPTION_CAPACITY")?;
         let path = path(resource)?;
-        let subscription = wire::SessionSubscription::decode(subscription.to_vec().as_slice())
+        let subscription = wire::SessionSubscription::decode(subscription.as_slice())
             .map_err(|cause| coded_error("invalid_subscription", cause))?;
         self.session
             .borrow_mut()
