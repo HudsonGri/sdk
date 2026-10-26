@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T01:16:29.108790+00:00",
+  "generated_at": "2026-10-26T01:24:36.244624+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -149,6 +149,13 @@
       "repo_log": "docs/proofs/evidence/tests-20261026T010305Z.log"
     }
   },
+  "source_reviews": {
+    "fs-append-initial": {
+      "repo_receipt": "docs/proofs/evidence/fs-append-review/review.json",
+      "sha256": "e074fa360fa34d1eee32b3ce4c1b29ed3c7015f864bd24c11bb5ef48ec6555f2",
+      "qualification": "source_review_and_rejected_run_only"
+    }
+  },
   "cleanliness": {
     "tool": "clippy",
     "command": "build-slot --remote cargo clippy -p acyclic-stream --no-deps --message-format=json --features http,local --test wave1_keys --example wave1-conformance",
@@ -265,6 +272,58 @@
         }
       },
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+    },
+    {
+      "id": "fs.append-segments",
+      "owner": "fs-concurrency",
+      "risk": "data_loss_or_corruption",
+      "invariant": "Appending staged immutable segments preserves the existing prefix and returns the exact EOF range in one authored batch; same-EOF aliases conflict; refusal and original-key recovery cannot publish partial or duplicate extents.",
+      "proof_specification": "Provider-generic serial-concatenation/reference histories, real persistent crash/reopen DST and production publication loom; independent EOF-range and terminal-dependency controls.",
+      "negative_controls": [
+        {
+          "mutation": "restore zero-offset writes",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "omit no-follow terminal FileRecord dependency",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "publish partial segment batch",
+          "status": "not_executed"
+        },
+        {
+          "mutation": "retry unknown outcome with fresh key",
+          "status": "not_executed"
+        }
+      ],
+      "required_hooks_or_decisions": [
+        "signed append_staged implementation and exact source receipts",
+        "public provider-generic suite and endpoint runner",
+        "crash/acknowledgement and mid-preparation cancellation hooks"
+      ],
+      "implementation_state": "unsigned_owner_source_review_positive_suite_rejected_before_mutation",
+      "source": [],
+      "modes": {
+        "memory": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "local": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "hosted": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        },
+        "wasm_browser": {
+          "status": "unqualified",
+          "reason": "no passing receipt at a production implementation pin"
+        }
+      },
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "source_review": "fs-append-initial"
     },
     {
       "id": "fs.changefeed-cut",
@@ -1099,7 +1158,7 @@
     "positive_proofs": 0,
     "negative_tests_detected": 10,
     "implemented_fixed_histories": 5,
-    "obligations": 18,
+    "obligations": 19,
     "remaining": "production positive, strongest concurrency/DST/Kani, all modes, remaining public APIs, unsafe/mapping CI enforcement"
   }
 }

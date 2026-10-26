@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "kind": "source_review_not_runtime_qualification",
+  "captured_at": "2026-10-26T01:23:48.966382+00:00",
+  "owner": "fs-concurrency",
+  "owner_worktree": "Q:\\wt\\fs-concurrency",
+  "owner_head_at_capture": "390e8f927252f432c0047d4f5b27cb8619e2e087",
+  "reviewed_sources": [
+    {
+      "owner_file": "rust/crates/filesystem/src/workspace/content.rs",
+      "repo_path": "docs/proofs/evidence/fs-append-review/content.rs",
+      "line": 108,
+      "sha256": "40db753dd030c39046c90e841b6cf6a0033bbe7c510a2f956bd8cf22cf765a3b",
+      "provenance": "byte-for-byte source read from owner worktree; unsigned working copy, not compiled-source identity"
+    },
+    {
+      "owner_file": "rust/crates/filesystem/src/tests/workspace/append_segments.rs",
+      "repo_path": "docs/proofs/evidence/fs-append-review/append_segments.rs",
+      "line": 89,
+      "sha256": "6022c26e81d37a6139ceebca0d2818961cc571bb860f515e549e2c898e7051bd",
+      "provenance": "byte-for-byte source read from owner worktree; unsigned working copy, not compiled-source identity"
+    },
+    {
+      "owner_file": "rust/crates/filesystem/src/facade/namespace.rs",
+      "repo_path": "docs/proofs/evidence/fs-append-review/namespace.rs",
+      "line": 177,
+      "sha256": "622148b03277f2743e47ec0bfa1e1cf27d5791535fc0858087f85bf2e60b4ddc",
+      "provenance": "byte-for-byte source read from owner worktree; unsigned working copy, not compiled-source identity"
+    },
+    {
+      "owner_file": "rust/crates/filesystem/src/facade/transactions.rs",
+      "repo_path": "docs/proofs/evidence/fs-append-review/transactions.rs",
+      "line": 260,
+      "sha256": "3578883286551cafb16ce7dd843eb8efa26c4f882bde7efb67bc525b5a78282e",
+      "provenance": "byte-for-byte source read from owner worktree; unsigned working copy, not compiled-source identity"
+    },
+    {
+      "owner_file": ".bb-fs-segments.py",
+      "repo_path": "docs/proofs/evidence/fs-append-review/segments-producer.py",
+      "line": 38,
+      "sha256": "97a65817bd0dd0e5a38b55c23ba8ce27ed268e175bc715beaf9800853e87ff25",
+      "provenance": "byte-for-byte source read from owner worktree; unsigned working copy, not compiled-source identity"
+    }
+  ],
+  "rejected_run": {
+    "origin": "Q:\\lanes\\live-pass\\20261025-fs-concurrency-1492\\segments-338-dispatch.log",
+    "repo_log": "docs/proofs/evidence/fs-append-review/segments-338-dispatch.log",
+    "log_sha256": "714ba3cca882fac34eb5c103fbe7955d17bf4fb5cfca622f02f3ffa4980c3449",
+    "base_commit": "390e8f927252f432c0047d4f5b27cb8619e2e087",
+    "base_tree": "0ed4266f08c758dc898df6c8753d793104a076c2",
+    "content_digest": "2782e83b706937b2db46c93db641bffd7421263d54e34baac7d36d00422ca084",
+    "appended_suite": {
+      "selected": 6,
+      "passed": 5,
+      "failed": 1,
+      "ignored": 0,
+      "runtime_seconds": 0.03,
+      "failing_test": "workspace::tests::append_segments::append_segments_preserve_prefix_and_share_one_publication",
+      "failure": "Filesystem(FileRead(InvalidRange))"
+    },
+    "mutation_executed": false,
+    "qualification": "rejected; reviewed working-copy hashes are not mapped to this compiled source"
+  },
+  "observations": [
+    "one apply_staged authored-batch path for replacement and append",
+    "no-follow lookup with capture_terminal=true records EOF/FileRecord observation",
+    "checked cumulative logical offset; no existing file body read in append path",
+    "all six new tests instantiate Fs::memory; native-work case adds custody coverage only",
+    "producer zero-offset mutation exists but was not reached by the rejected run"
+  ],
+  "open_proofs": [
+    "diagnose and repair exact InvalidRange failing step",
+    "remove terminal capture mutation detected by same-EOF alias oracle",
+    "empty parts/no-op/repeated append and mid-preparation cancellation boundaries",
+    "signed positive and mutant exact compiled-source admission",
+    "persistent crash/reopen/original-key lost-ack recovery",
+    "provider-generic public suite and endpoint runner; all execution modes"
+  ],
+  "positive_proofs": 0,
+  "negative_controls_detected": 0
+}

@@ -1,0 +1,7 @@
+{
+  "file": "scripts/check-wave1-inventory.py",
+  "before": "require(Counter(witnesses) == counts, \"captured semantic witnesses differ from exact expected multiset\")",
+  "after": "require(True, \"captured semantic witnesses differ from exact expected multiset\")",
+  "positive_sha256": "49c24c4472c165443b7bed158b9589420c05bf364ddc0e686a5d6d16dce55bb9",
+  "mutant_sha256": "804465e333228d6c3d1e4689b7eec77415cc577d97ec9c2fd5668b61afbb8797"
+}

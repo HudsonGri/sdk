@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,11 +60,35 @@ def check_evidence(receipt):
         raise ValueError("unknown captured log format")
     witnesses = re.findall(pattern, output)
     require(len(witnesses) == count, "missing semantic violation witnesses")
-    for witness in receipt["witnesses"]:
-        actual = witnesses.count((witness["case"], witness["step"], witness["invariant"]))
-        require(actual == witness["occurrences"], f"wrong invariant detected: {witness}")
+    expected = receipt["witnesses"]
+    require(expected and all(isinstance(witness["occurrences"], int) and witness["occurrences"] > 0 for witness in expected), "missing or invalid expected semantic witnesses")
+    require(len({(witness["case"], witness["step"], witness["invariant"]) for witness in expected}) == len(expected), "duplicate expected semantic witness")
+    counts = {(witness["case"], witness["step"], witness["invariant"]): witness["occurrences"] for witness in expected}
+    require(Counter(witnesses) == counts, "captured semantic witnesses differ from exact expected multiset")
     for reference in receipt["executed_oracle_sources"]:
         require(sha256(source_path(reference["repo_path"])) == reference["sha256"], "executed oracle capture changed")
+
+
+def check_source_review(reference):
+    path = source_path(reference["repo_receipt"])
+    require(sha256(path) == reference["sha256"], "source-review receipt changed")
+    review = json.loads(path.read_text(encoding="utf-8"))
+    require(review["schema_version"] == 1 and review["kind"] == "source_review_not_runtime_qualification", "unsupported source review")
+    require(review["positive_proofs"] == review["negative_controls_detected"] == 0, "source review cannot qualify runtime or mutation proof")
+    require(review["reviewed_sources"] and review["open_proofs"], "source review has no sources or open proof obligations")
+    for source in review["reviewed_sources"]:
+        check_reference({"file": source["repo_path"], "line": source["line"], "sha256": source["sha256"]})
+    run = review["rejected_run"]
+    log = source_path(run["repo_log"])
+    require(sha256(log) == run["log_sha256"], "rejected-run capture changed")
+    output = log.read_text(encoding="utf-8")
+    identity = f"BUILD_SLOT_TREE={run['base_commit']} {run['base_tree']} {run['content_digest']}"
+    require(identity in output, "rejected-run source identity absent")
+    suite = run["appended_suite"]
+    require(suite["selected"] == 6 and suite["passed"] == 5 and suite["failed"] == 1 and suite["ignored"] == 0, "unexpected rejected append outcomes")
+    require(f"test {suite['failing_test']} ... FAILED" in output and f"Error: {suite['failure']}" in output, "missing exact rejected-case witness")
+    require(f"test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 1504 filtered out; finished in {suite['runtime_seconds']:.2f}s" in output, "wrong rejected-case runtime or selection")
+    require(not run["mutation_executed"] and '"stage": "negative"' not in output, "rejected positive run cannot claim mutation execution")
 
 
 def check(require_qualified):
@@ -80,6 +105,8 @@ def check(require_qualified):
         require(entry["invariant"] and entry["proof_specification"] and entry["negative_controls"], f"missing contract or negative control: {entry['id']}")
         require(set(entry["modes"]) == {"memory", "local", "hosted", "wasm_browser"}, f"missing mode: {entry['id']}")
         references.extend(entry["source"])
+        if "source_review" in entry:
+            require(entry["source_review"] in inventory["source_reviews"], f"missing source review: {entry['id']}")
         for control in entry["negative_controls"]:
             if control["status"] == "detected":
                 require(control["receipt"] in inventory["evidence"], f"missing control receipt: {entry['id']}")
@@ -87,6 +114,8 @@ def check(require_qualified):
         check_reference(reference)
     for receipt in inventory["evidence"].values():
         check_evidence(receipt)
+    for reference in inventory.get("source_reviews", {}).values():
+        check_source_review(reference)
     cleanliness = inventory["cleanliness"]
     capture = source_path(cleanliness["repo_capture"])
     require(sha256(capture) == cleanliness["capture_sha256"], "captured Clippy diagnostics changed")

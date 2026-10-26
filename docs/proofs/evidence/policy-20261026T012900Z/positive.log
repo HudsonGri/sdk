@@ -1,0 +1,13 @@
+test_captured_old_source_controls_are_valid (__main__.EvidencePolicy.test_captured_old_source_controls_are_valid) ... ok
+test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused (__main__.EvidencePolicy.test_empty_incomplete_duplicate_and_wrong_witnesses_are_refused) ... ok
+test_mismatched_executed_oracle_is_refused (__main__.EvidencePolicy.test_mismatched_executed_oracle_is_refused) ... ok
+test_qualification_gate_refuses_the_real_open_inventory (__main__.EvidencePolicy.test_qualification_gate_refuses_the_real_open_inventory) ... ok
+test_real_rejected_append_run_is_source_review_only (__main__.EvidencePolicy.test_real_rejected_append_run_is_source_review_only) ... ok
+test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks (__main__.EvidencePolicy.test_rehashed_log_mutations_do_not_bypass_semantic_or_selection_checks) ... ok
+test_rehashed_source_review_cannot_claim_runtime_or_mutant_credit (__main__.EvidencePolicy.test_rehashed_source_review_cannot_claim_runtime_or_mutant_credit) ... ok
+test_rejected_append_run_cannot_be_relabelled_as_executed_mutant (__main__.EvidencePolicy.test_rejected_append_run_cannot_be_relabelled_as_executed_mutant) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.288s
+
+OK
