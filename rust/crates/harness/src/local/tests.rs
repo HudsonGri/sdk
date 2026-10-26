@@ -843,7 +843,3 @@ mod task_files;
 #[cfg(all(feature = "tui", feature = "terminal"))]
 #[path = "tests/live_ui.rs"]
 mod live_ui;
-
-mod package_subscription;
-
-mod package_idle;

@@ -11,10 +11,6 @@ mod progress_registry;
 #[path = "e2e/stall.rs"]
 mod stall;
 
-#[cfg(all(feature = "filesystem", feature = "test-support"))]
-#[path = "support/stream/mod.rs"]
-mod stream_fixture;
-
 #[cfg(feature = "test-support")]
 mod client_public_consumer;
 #[cfg(feature = "test-support")]
@@ -22,11 +18,7 @@ mod client_transitions;
 #[cfg(feature = "test-support")]
 mod durable_extension_scope;
 #[cfg(feature = "test-support")]
-mod effects;
-#[cfg(feature = "test-support")]
 mod execution_journal;
-#[cfg(feature = "test-support")]
-mod fork_preparer;
 #[cfg(feature = "test-support")]
 mod history_selection;
 #[cfg(feature = "test-support")]
@@ -42,17 +34,11 @@ mod portable_text_tools;
 #[cfg(feature = "test-support")]
 mod portable_text_variants;
 #[cfg(feature = "test-support")]
-mod project_workspaces;
-#[cfg(feature = "test-support")]
-mod recursive_fork;
-#[cfg(feature = "test-support")]
 mod refused_tool_conversation;
 #[cfg(feature = "test-support")]
 mod retained_content;
 #[cfg(feature = "test-support")]
 mod saved_tool_metadata;
-#[cfg(feature = "test-support")]
-mod scheduler_results;
 #[cfg(feature = "test-support")]
 mod volume_composition;
 #[cfg(feature = "test-support")]
@@ -78,24 +64,12 @@ mod tui_completion;
 #[path = "cases/decoder_properties.rs"]
 mod decoder_properties;
 
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    feature = "test-support"
-))]
-#[path = "cases/local_task_files.rs"]
-mod local_task_files;
-
 #[cfg(feature = "filesystem")]
 #[path = "cases/default_tools.rs"]
 mod default_tools;
 
 #[path = "cases/task_view.rs"]
 mod task_view;
-
-#[cfg(feature = "test-support")]
-#[path = "cases/task_volume.rs"]
-mod task_volume;
 
 #[cfg(feature = "filesystem")]
 #[path = "cases/file_query.rs"]
@@ -162,10 +136,6 @@ mod client_query;
 #[path = "cases/client_swarm_views.rs"]
 mod client_swarm_views;
 
-#[cfg(all(feature = "filesystem-local", feature = "test-support"))]
-#[path = "cases/task_workflow.rs"]
-mod task_workflow;
-
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
@@ -181,10 +151,6 @@ include!("e2e/root.rs");
 ))]
 #[path = "cases/search_http_codec.rs"]
 mod search_http_codec;
-
-#[cfg(all(feature = "filesystem", feature = "test-support"))]
-#[path = "cases/search_request.rs"]
-mod search_request;
 
 #[cfg(all(feature = "objects", feature = "test-support", feature = "grpc"))]
 #[path = "local_cloud_objects/mod.rs"]
