@@ -143,6 +143,43 @@ class ProofCoverage(unittest.TestCase):
             POLICY.git(root, 'commit', '-qm', 'source deletion')
             self.assertEqual(POLICY.check(root, base)['changed_rust_files'], 0)
 
+    def test_real_manifest_feature_change_cannot_pass_with_unchanged_rust(self):
+        capture = ROOT / 'scripts/tests/fixtures/proof-policy/canonical-exports-v1/source/rust/crates/demo'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.git_repo(root)
+            package = root / 'rust/crates/demo'
+            shutil.copytree(capture, package)
+            POLICY.git(root, 'add', '.')
+            POLICY.git(root, 'commit', '-qm', 'real captured feature-dependent API baseline')
+            base = POLICY.git(root, 'rev-parse', 'HEAD').decode().strip()
+            self.assertEqual(POLICY.check(root, base)['changed_rust_files'], 0)
+            manifest = package / 'Cargo.toml'
+            original = manifest.read_bytes()
+            self.assertEqual(original.count(b'default = ["base"]'), 1)
+            # This is an adversarial source change to the actual captured
+            # manifest, not invented Cargo/compiler output.
+            manifest.write_bytes(original.replace(b'default = ["base"]', b'default = ["base", "extra"]'))
+            POLICY.git(root, 'add', '.')
+            POLICY.git(root, 'commit', '-qm', 'enable captured extra API without changing Rust')
+            self.assertEqual(POLICY.git(root, 'diff', '--name-only', base, 'HEAD', '--', '*.rs'), b'')
+            with self.assertRaisesRegex(ValueError, 'export profile inputs require canonical generated-export proof: rust/crates/demo/Cargo.toml'):
+                POLICY.check(root, base)
+
+    def test_real_manifest_deletion_requires_export_evidence(self):
+        capture = ROOT / 'scripts/tests/fixtures/proof-policy/canonical-exports-v1/source/Cargo.toml'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.git_repo(root)
+            shutil.copyfile(capture, root / 'Cargo.toml')
+            POLICY.git(root, 'add', '.')
+            POLICY.git(root, 'commit', '-qm', 'actual captured workspace manifest')
+            base = POLICY.git(root, 'rev-parse', 'HEAD').decode().strip()
+            POLICY.git(root, 'rm', 'Cargo.toml')
+            POLICY.git(root, 'commit', '-qm', 'remove an effective export input')
+            with self.assertRaisesRegex(ValueError, 'export profile inputs require canonical generated-export proof: Cargo.toml'):
+                POLICY.check(root, base)
+
     def test_cli_missing_base_is_typed(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/check-proof-coverage.py')], capture_output=True, text=True)
         self.assertEqual(result.returncode, 1)

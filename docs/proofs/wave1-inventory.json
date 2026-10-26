@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T04:36:05.903249+00:00",
+  "generated_at": "2026-10-26T05:09:56.580013+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -134,8 +134,13 @@
     "source": [
       {
         "file": "scripts/check-proof-coverage.py",
-        "line": 100,
-        "sha256": "e3a797885356bea6d8c483bd509f1b520e7388671df355dbc940808a71010f44"
+        "line": 116,
+        "sha256": "2876c216b0e7ba9ffbb59a6ba5fb07177939b413eec5ca39c3114c3d2f8f3224"
+      },
+      {
+        "file": "scripts/check-proof-coverage.py",
+        "line": 61,
+        "sha256": "2876c216b0e7ba9ffbb59a6ba5fb07177939b413eec5ca39c3114c3d2f8f3224"
       },
       {
         "file": "scripts/proof_inventory_scan.py",
@@ -145,7 +150,17 @@
       {
         "file": "scripts/test-proof-coverage.py",
         "line": 22,
-        "sha256": "a50f4b3f136faa57e636ab820c82174681d2f9e2e29401f9e36439786bf263a4"
+        "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+      },
+      {
+        "file": "scripts/test-proof-coverage.py",
+        "line": 146,
+        "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+      },
+      {
+        "file": "scripts/test-proof-coverage.py",
+        "line": 169,
+        "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
       },
       {
         "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/auth/rust/crates/auth/src/verify.rs",
@@ -273,9 +288,31 @@
         "sha256": "8e2fcad73a70da72563c46bbed94d0ab54bd85214040f11a1f91f09214774882"
       }
     ],
-    "scope": "changed Rust file closure, exact public/unsafe/wildcard candidate multiset and receipt/source/invariant binding; effective rustdoc/generated/proto/TS exports and complete mode qualification remain pending",
+    "scope": "changed Rust file closure, exact public/unsafe/wildcard candidate multiset and receipt/source/invariant binding, conservative export-input refusal pending qualification; effective rustdoc/generated/proto/TS exports and complete mode qualification remain pending",
     "registered_source": "Rust HST reporting module only, eleven entries including the complete-file review fence",
-    "controls": "five actual candidate/proof-source/invariant/unsafe/wildcard implementation mutations fail unchanged semantic assertions; 13 tests, each suite under10s",
+    "controls": "historical source-registration receipt: five actual candidate/proof-source/invariant/unsafe/wildcard implementation mutations fail unchanged semantic assertions; 13 tests, each suite under10s; current changed export-input guard is unqualified",
+    "export_input_refusal": {
+      "status": "implemented_unqualified_pending_bb2",
+      "scope": "root Cargo/lock/build/toolchain/configuration inputs and scoped manifests/build scripts/toolchains/configurations/generated schemas; additions, changes, renames and deletions",
+      "canonical_join_available": false,
+      "complete_build_input_closure": false,
+      "tests": [
+        {
+          "file": "scripts/test-proof-coverage.py",
+          "line": 146,
+          "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+        },
+        {
+          "file": "scripts/test-proof-coverage.py",
+          "line": 169,
+          "sha256": "860dc3414adf5f60690cac354dcd13797c020edd31e14f3be18fdb1100fb1eca"
+        }
+      ],
+      "production_negative_control": "pending: remove only the profile-input refusal, then require both unchanged new real-git regression cases to fail because ValueError was not raised",
+      "new_tests_run": 0,
+      "negative_control_run": false,
+      "historical_receipts_qualify_current_revision": false
+    },
     "ci_policy_tests": {
       "status": "workflow_step_proposed_not_observed_hosted_ci",
       "path": ".github/workflows/static.yml",

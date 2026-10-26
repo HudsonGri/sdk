@@ -8,7 +8,7 @@ from collections import Counter
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shlex
 import subprocess
 import sys
@@ -20,6 +20,10 @@ MANIFEST = 'docs/proofs/entrypoint-inventory.json'
 HST_POLICY_SOURCE = 'rust/crates/stream/src/conformance/wave1/coverage.rs'
 HST_POLICY_INVARIANT = 'hst_reporting.availability_refusal'
 SCOPES = ('rust/crates/', 'rust/fuzz/', 'compatibility/', 'plugin/', 'examples/sdk-services/')
+ROOT_PROFILE_INPUTS = {'Cargo.toml', 'Cargo.lock', 'build.rs', 'rust-toolchain', 'rust-toolchain.toml',
+                       '.cargo/config', '.cargo/config.toml'}
+PROFILE_INPUT_NAMES = {'Cargo.toml', 'Cargo.lock', 'build.rs', 'rust-toolchain', 'rust-toolchain.toml'}
+GENERATED_SCHEMA_SUFFIXES = {'.proto', '.wit', '.fbs', '.capnp'}
 RECOVERY = 'python scripts/check-proof-coverage.py --help'
 
 
@@ -52,6 +56,18 @@ def candidates(root, name):
         if row['kind'] == 'catch_all_arm':
             rows.append(('catch_all_arm', row['line'], row.get('function') or ''))
     return sorted(rows)
+
+
+def changes_export_profile(name):
+    """Inputs can expose exports without changing a Rust definition's bytes.
+
+    Refuse these changes until canonical generated-export/profile receipts can
+    be joined. A source-only review cannot admit a feature or generator change.
+    """
+    path = PurePosixPath(name)
+    return name in ROOT_PROFILE_INPUTS or (name.startswith(SCOPES) and (
+        path.name in PROFILE_INPUT_NAMES or path.suffix in GENERATED_SCHEMA_SUFFIXES
+        or ('.cargo' in path.parts and path.name in {'config', 'config.toml'})))
 
 
 def validate_proofs(root, registry):
@@ -113,7 +129,13 @@ def check(root, base):
     for name in changed:
         require((root / name).is_file() and not (root / name).is_symlink(), 'Rust source must be a regular file: ' + name)
         require((root / name).read_bytes() == git(root, 'show', 'HEAD:' + name), 'Rust source differs from HEAD: ' + name)
-    return check_review(root, inventory, changed)
+    result = check_review(root, inventory, changed)
+    # Deletions matter here too: removing a manifest/configuration can change
+    # inherited defaults or the generator selected for an unchanged source.
+    all_paths = git(root, 'diff', '--name-only', '-z', base, 'HEAD', '--').decode('utf-8').split('\0')
+    profile_inputs = sorted(name for name in all_paths if changes_export_profile(name))
+    require(not profile_inputs, 'export profile inputs require canonical generated-export proof: ' + ', '.join(profile_inputs))
+    return result
 
 
 class Arguments(argparse.ArgumentParser):
