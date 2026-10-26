@@ -1378,7 +1378,7 @@ mod seeded_capture {
     /// Captures `script` in a seeded scope; `scheduled` forces the turns
     /// the scope would otherwise see as one physical submission.
     fn seeded(script: &str, scheduled: bool) -> io::Result<Observed> {
-        let mut command = crate::shell_command(script, Some("sh"));
+        let mut command = crate::shell_command(script, Some("sh"))?;
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

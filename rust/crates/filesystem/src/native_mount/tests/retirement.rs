@@ -100,7 +100,6 @@ impl Fixture {
                 volume_id: VolumeId::new(),
                 destination,
                 writable: false,
-                shared: false,
             },
             None,
             None,

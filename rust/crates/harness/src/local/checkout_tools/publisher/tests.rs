@@ -470,7 +470,7 @@ async fn a_clean_owed_capture_seals_its_completion_before_a_later_edit() -> Resu
                 1,
                 PublicationPermit::Unrestricted,
                 None,
-            )
+            )?
             .await?;
         assert!(
             view.workspace()
@@ -1536,7 +1536,7 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
                 (&*tools.workspace, view),
                 &mut state.watcher,
                 PublicationPermit::Unrestricted,
-            )
+            )?
             .await
     })
     .await?;
@@ -1570,7 +1570,7 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
                 (&*tools.workspace, view),
                 &mut state.watcher,
                 PublicationPermit::Unrestricted,
-            )
+            )?
             .await
     })
     .await?;

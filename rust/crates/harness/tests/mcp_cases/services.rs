@@ -4,7 +4,7 @@ use acyclic_harness::{
     Capabilities, Error, InteractionId, OperationId, Outcome, Result,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::Limits,
-    core::AuthorityRoot,
+    core::{AuthorityIssuer, AuthorityRoot},
     executor::{ExecutionJournal, StockExecutor},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{
