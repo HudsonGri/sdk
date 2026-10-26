@@ -71,7 +71,7 @@ async fn strict_projection_preserves_supported_calls_text_and_usage_under_every_
         assert!(events.iter().any(
             |event| matches!(event, ModelEvent::MessageCompleted { text } if text == "answer λ")
         ));
-        assert!(events.iter().any(|event| matches!(event, ModelEvent::Completed { metadata } if metadata["usage"]["input_tokens"] == 7)));
+        assert!(events.iter().any(|event| matches!(event, ModelEvent::Completed { metadata } if metadata.get("usage").and_then(|usage| usage.get("input_tokens")).and_then(serde_json::Value::as_u64) == Some(7))));
         assert!(
             !events
                 .iter()
