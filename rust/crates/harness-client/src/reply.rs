@@ -154,8 +154,18 @@ pub fn decode_agent_reply(
     }
     let envelope_len = bytes.len();
     let envelope = Envelope::decode(bytes).map_err(|_| CommandError::Invalid)?;
+    // The one Rust encoder is the protocol authority. Reject duplicate/unknown
+    // protobuf fields instead of projecting a different recovery request.
+    if envelope.encode_to_vec() != bytes {
+        return Err(CommandError::Invalid);
+    }
     match envelope.value.ok_or(CommandError::Invalid)? {
         envelope::Value::Unknown(request) => {
+            // AgentError owns a domain CommitRequest, which has no deadline.
+            // Silently discarding this wire-only field would change custody.
+            if request.deadline_unix_millis.is_some() {
+                return Err(CommandError::Invalid);
+            }
             if request.encoded_len() > acyclic_stream::MAX_COMMAND_BYTES
                 || request.conditions.len() > acyclic_stream::MAX_ITEMS
                 || request.mutations.is_empty()
@@ -310,6 +320,21 @@ mod tests {
             decode_agent_reply(&bytes, &AgentCommand::Root),
             Err(CommandError::Invalid)
         ));
+    }
+
+    #[test]
+    fn wire_only_recovery_facts_cannot_be_discarded() -> Result<(), Box<dyn std::error::Error>> {
+        let mut request = wire_codec::commit_to_wire(&request()?);
+        request.deadline_unix_millis = Some(42);
+        let bytes = Envelope {
+            value: Some(envelope::Value::Unknown(request)),
+        }
+        .encode_to_vec();
+        assert!(matches!(
+            decode_agent_reply(&bytes, &AgentCommand::Root),
+            Err(CommandError::Invalid)
+        ));
+        Ok(())
     }
 
     #[test]
