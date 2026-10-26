@@ -28,7 +28,6 @@ use crate::{
     task_volume::{Change, FileValue, HeadSnapshot, Query},
 };
 
-mod bytes;
 mod wire;
 
 /// Maximum serialized request line accepted before parsing.
