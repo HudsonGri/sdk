@@ -63,7 +63,7 @@ search-http = []
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls"]
 objects = ["dep:acyclic-objects"]
 machines = ["dep:acyclic-machines"]
-grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
+grpc = ["acyclic-stream/grpc"]
 
 [dependencies]
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
@@ -104,8 +104,6 @@ toml = { workspace = true, optional = true }
 sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
-tonic = { workspace = true, optional = true }
-tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
@@ -117,7 +115,6 @@ dirs.workspace = true
 blake3.workspace = true
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
-tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = { workspace = true, optional = true }

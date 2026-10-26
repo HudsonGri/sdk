@@ -82,7 +82,7 @@ search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls", "acyclic-harness-core/mcp-oauth"]
 objects = ["dep:acyclic-objects", "acyclic-harness-core/objects"]
 machines = ["dep:acyclic-machines", "acyclic-harness-core/machines"]
-grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "acyclic-harness-core/grpc"]
+grpc = ["acyclic-stream/grpc", "acyclic-harness-core/grpc"]
 
 [dependencies]
 once_cell = "1.21.3"
@@ -122,8 +122,6 @@ toml = { workspace = true, optional = true }
 sse-stream.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
-tonic = { workspace = true, optional = true }
-tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
