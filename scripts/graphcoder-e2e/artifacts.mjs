@@ -6,6 +6,7 @@ import { extname, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { verifyNativeImage } from "../verify-release-binary.mjs";
 
 // Cargo JSON is the only selector. Once selected, an open descriptor owns each
 // input while it is copied out of the disposable target cache. Consumers receive
@@ -42,7 +43,16 @@ export async function stageArtifacts(specifications, destination) {
         transform(bytes, encoding, callback) { digest.update(bytes); callback(null, bytes); },
       }), createWriteStream(path, { flags: "wx", mode: 0o500 }));
     } finally { await input.close(); }
-    artifacts[name] = { path, source, kind, sha256: digest.digest("hex") };
+    const sha256 = digest.digest("hex");
+    let nativeTarget;
+    try { nativeTarget = verifyNativeImage(await readFile(path)); }
+    catch (error) {
+      // Retain the staged bytes for diagnosis. No runnable manifest exists.
+      const verifier = fileURLToPath(new URL("../verify-release-binary.mjs", import.meta.url));
+      const recovery = [process.execPath, verifier, "--native", path];
+      throw new Error(`kind=ARTIFACT_IMAGE step=staged-native-image name=${name} source=${JSON.stringify(source)} retained=${JSON.stringify(path)} sha256=${sha256} detail=${JSON.stringify(error.message)} recovery=${JSON.stringify(recovery)}`, { cause: error });
+    }
+    artifacts[name] = { path, source, kind, sha256, nativeTarget };
   }
   const manifest = { artifacts };
   await writeFile(join(destination, "artifacts.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx" });

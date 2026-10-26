@@ -1,13 +1,19 @@
 """Caller rlimit parity across the real scope, daemon and namespace boundaries."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import resource
 import signal
+import select
 import subprocess
 import sys
 import tempfile
 import unittest
+# Every payload in this suite is inline code or a fixture it writes itself;
+# declare that empty closure explicitly instead of inheriting the enclosing job's.
+import input_closure
+input_closure.declare(os.environ)
 
 from admission_policy import capture_limits, parse_limits, LIMIT_ENV
 
@@ -16,9 +22,56 @@ PROBE = 'import json,resource;print(json.dumps({k:list(resource.getrlimit(v)) fo
 
 
 class LimitTests(unittest.TestCase):
+    def setUp(self):
+        from cpu_test_fixture import KernelFixture, stage_worker_bundle
+        self.fixture=KernelFixture()
+        self.stage_worker_bundle=stage_worker_bundle
+
+    def tearDown(self):self.fixture.close()
+    def test_generated_watcher_joins_exact_owner_exit_and_actual_old_sleep_retains_the_lease(self):
+        source=(HERE/'buildbox.mjs').read_text()
+        current=source[source.index('p_birth=$(python3'):source.index('# Last use for bb-target-prune')]
+        former=HERE/'fixtures/cpu-leases/former-watcher.txt'
+        info=json.loads(former.with_name('former-watcher.origin.json').read_text())
+        self.assertEqual(hashlib.sha256(former.read_bytes()).hexdigest(),info['sha256'])
+        for negative in [False,True]:
+            with self.subTest(negative=negative), tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+                root=Path(temporary);fifo=root/'release';os.mkfifo(fifo)
+                release=os.open(fifo,os.O_RDWR)
+                block=former.read_text() if negative else current
+                block=block.replace("${idleOk ? 'false' : 'true'}",'false').replace('${maxSec}','10800').replace('${Math.round(maxSec / 60)}','180').replace('\\${','${')
+                block=block.replace('/home/var/bin/admission_policy.py',str(HERE/'admission_policy.py'))
+                if negative:block=block.replace('do sleep 30','do echo WATCH_READY; sleep 30')
+                # Instrument only the sampling boundary. The production
+                # helper still receives its actual 30-second sample interval.
+                driver='''python3(){
+ if [ "${2:-}" = watch-wait ] && [ "${5:-}" = 30 ]; then echo WATCH_READY; fi
+ command python3 "$@"
+}
+'''+f'J={root}/job;touch "$J.hb"\n'+f'{sys.executable} -c '+__import__('shlex').quote('import sys;print("OWNER_READY",flush=True);sys.stdin.buffer.read(1)')+f' < {fifo} &\np=$!\n'+block+'\necho WATCHER_JOINED\nexit "$rc"\n'
+                process=subprocess.Popen(['bash','-c',driver],stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+                try:
+                    while True:
+                        self.assertTrue(select.select([process.stdout],[],[],3)[0],'watcher did not reach real sampling boundary')
+                        line=process.stdout.readline()
+                        self.assertTrue(line,'watcher exited before sampling')
+                        if line==b'WATCH_READY\n':break
+                    os.write(release,b'x')
+                    if negative:
+                        with self.assertRaises(subprocess.TimeoutExpired):process.communicate(timeout=.1)
+                        os.killpg(process.pid,signal.SIGKILL)
+                        process.communicate(timeout=3)
+                    else:
+                        output,error=process.communicate(timeout=3)
+                        self.assertEqual(process.returncode,0,error.decode())
+                        self.assertIn(b'WATCHER_JOINED',output)
+                finally:
+                    os.close(release)
+                    if process.poll() is None:os.killpg(process.pid,signal.SIGKILL);process.communicate(timeout=3)
     def test_public_entries_capture_before_nodes_libuv_and_nested_entry_recaptures(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root=Path(temporary);(root/'jobs').mkdir()
+            self.stage_worker_bundle(root)
             names=['build-slot','bb-admit','bb-admit.py','bb-job.py','admission_policy.py',
                    'bb_target_store.py','job_exports.py','buildbox-receipt.mjs']
             for name in names:
@@ -26,7 +79,8 @@ class LimitTests(unittest.TestCase):
                 if name=='bb-job.py':data=data.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(root/'jobs')!r})")
                 if name=='buildbox-receipt.mjs':data=data.replace('/mnt/bb/jobs',str(root/'jobs'))
                 (root/name).write_text(data);(root/name).chmod(0o755)
-            env={**os.environ,'BB_ADMIT_ROOT':str(root/'queue'),'BB_CACHE_DISABLED':'1','BUILD_SLOT_EXEC_IN_PAYLOAD':'1'}
+            self.fixture.copy_adapter(root/'cpu_leases.py')
+            env={**os.environ,'BB_ADMIT_ROOT':str(root/'queue'),'BB_CACHE_DISABLED':'1','BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BUILD_SLOT_TENANT':'cloud'}
             for key in [LIMIT_ENV,'BB_CALLER_RLIMITS_READY','BB_ADMITTED','BB_JOB_ACTIVE',
                         'BB_ADMIT_WRAPPED_COMMAND','BUILD_SLOT_RECEIPT_META','BUILD_SLOT_RECEIPT_WRAPPED']:
                 env.pop(key,None)
@@ -58,14 +112,17 @@ class LimitTests(unittest.TestCase):
                 if state.exists():os.kill(json.loads(state.read_text())['pid'],signal.SIGTERM)
 
     def scoped(self, limits, restore=True):
-        child = [sys.executable, str(HERE/'admission_policy.py'), 'exec-user', 'var', '--'] if restore else ['runuser', '-u', 'var', '--']
         # Print the exact requested shell control too, rather than comparing
         # only Python's view of the nofile limits.
         identity='import os,pwd;u=pwd.getpwuid(os.getuid());assert os.environ["USER"]==os.environ["LOGNAME"]==u.pw_name;'
         probe = 'ulimit -Sn; ulimit -Hn; exec '+sys.executable+' -c '+__import__('shlex').quote(identity+PROBE)
-        return subprocess.run(['sudo', '-n', '--preserve-env='+LIMIT_ENV, 'systemd-run', '--scope', '-q',
-                               '--slice=bbjobs.slice', '--', *child, 'bash', '-c', probe],
-                              env={**os.environ, LIMIT_ENV:json.dumps(limits)}, capture_output=True,
+        # CPU admission replaces the systemd scope; exercise that one kernel
+        # constructor. The actual former PAM transition is the negative.
+        child=['bash','-c',probe]
+        if not restore:child=['sudo','-n','/usr/sbin/runuser','-u','var','--',*child]
+        return subprocess.run(['sudo','-n','--preserve-env','/usr/bin/python3','-B',str(self.fixture.module),
+                               'exec','0',__import__('uuid').uuid4().hex,'graphcoder','--',*child],
+                              env=self.fixture.environment({LIMIT_ENV:json.dumps(limits)}), capture_output=True,
                               preexec_fn=lambda: [resource.setrlimit(getattr(resource,name), pair) for name,pair in limits.items()])
 
     def assert_parity(self, result, limits):
@@ -75,7 +132,7 @@ class LimitTests(unittest.TestCase):
         self.assertEqual([soft, hard], [shell(x) for x in limits['RLIMIT_NOFILE']])
         self.assertEqual(json.loads(rest), limits)
 
-    def test_real_systemd_scope_matches_caller_and_old_path_negative(self):
+    def test_real_kernel_scope_matches_caller_and_old_pam_negative(self):
         limits = capture_limits()
         self.assert_parity(self.scoped(limits), limits)
         # Scope+PAM used to replace caller limits, independent of our helper.
@@ -91,10 +148,12 @@ class LimitTests(unittest.TestCase):
     def test_native_ticket_captures_each_caller_not_daemon(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root = Path(temporary)
+            self.stage_worker_bundle(root)
             # Production entry/daemon/runtime, with only their fixture receipt
             # and namespace registry roots redirected outside shared JOBS.
             for name in ['admission_policy.py','bb_target_store.py','job_exports.py']:
                 (root/name).write_bytes((HERE/name).read_bytes())
+            self.fixture.copy_adapter(root/'cpu_leases.py')
             (root/'jobs').mkdir()
             source = (HERE/'bb-job.py').read_text().replace("JOBS=Path('/mnt/bb/jobs')", f"JOBS=Path({str(root/'jobs')!r})")
             (root/'bb-job.py').write_text(source)
@@ -129,8 +188,8 @@ class LimitTests(unittest.TestCase):
                     changed = payload.replace('RLIMIT_NOFILE,(4096,8192)', f'RLIMIT_NOFILE,({soft},8192)')
                     result = subprocess.run([sys.executable,'-c',changed], cwd=root,
                                             env={**negative_env,'BUILD_SLOT_RECEIPT_META':str(meta)},capture_output=True)
-                    self.assertEqual(result.returncode,0 if soft==2048 else 1,result.stderr.decode())
-                    if soft==4096:self.assertIn(b'AssertionError',result.stderr)
+                    self.assertNotEqual(result.returncode,0,result.stderr.decode())
+                    self.assertIn(b'caller-rlimits',result.stderr)
             finally:
                 for queue in ['queue','negative-queue']:
                     state = root/queue/'daemon.json'

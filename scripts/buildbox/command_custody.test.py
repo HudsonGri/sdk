@@ -12,6 +12,10 @@ import sys
 import tempfile
 import tarfile
 import unittest
+# Every payload in this suite is inline code or a fixture it writes itself;
+# declare that empty closure explicitly instead of inheriting the enclosing job's.
+import input_closure
+input_closure.declare(os.environ)
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
@@ -27,8 +31,8 @@ class CommandCustodyTests(unittest.TestCase):
         self.d = Path(self.temp.name)
         # The production worker imports sibling modules. Stage that complete
         # bundle once so new production imports cannot strand isolated workers.
-        for dependency in HERE.glob('*.py'):
-            shutil.copyfile(dependency, self.d / dependency.name)
+        from cpu_test_fixture import stage_worker_bundle
+        stage_worker_bundle(self.d,cpu_adapter=Path(job.cpu_leases.__file__))
 
     def tearDown(self):
         self.temp.cleanup()
@@ -46,7 +50,8 @@ class CommandCustodyTests(unittest.TestCase):
     def test_isolated_worker_owns_its_complete_module_bundle(self):
         worker = self.module()
         for dependency in HERE.glob('*.py'):
-            self.assertEqual((self.d / dependency.name).read_bytes(), dependency.read_bytes())
+            expected=Path(job.cpu_leases.__file__) if dependency.name=='cpu_leases.py' else dependency
+            self.assertEqual((self.d / dependency.name).read_bytes(), expected.read_bytes())
         code = '''import importlib.util,sys
 from pathlib import Path
 sys.path.insert(0,str(Path(sys.argv[1]).parent))
@@ -325,7 +330,14 @@ print('retired',flush=True)
         env.pop('BB_JOB_ACTIVE',None);env.pop('BB_ADMITTED',None)
         env.pop('BB_JOB_EXPORT_SPEC',None)
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure,export_negative=export_negative)),*argv],cwd=self.d,env=env,capture_output=True)
+        worker=self.worker(negative,cleanup_failure,export_negative=export_negative)
+        result=subprocess.run([sys.executable,str(worker),*argv],cwd=self.d,env=env,capture_output=True)
+        self.assertTrue(Path(str(meta)+'.runtime').is_file(),result.stderr.decode())
+        # Same boundary as buildbox-receipt.mjs finishLocked: storage cleanup is
+        # deferred to the receipt owner after the worker namespace has exited.
+        clean=subprocess.run([sys.executable,str(worker),'cleanup',str(meta)+'.runtime'],env=env,capture_output=True)
+        if clean.returncode:
+            result=subprocess.CompletedProcess(result.args,224,result.stdout,result.stderr+b'[buildbox] cleanup INFRA: '+clean.stderr)
         return result,json.loads(Path(str(meta)+'.runtime').read_text())
 
     def test_failed_export_is_infra_and_does_not_contaminate_stdout(self):
@@ -349,6 +361,10 @@ from pathlib import Path
 env=dict(os.environ,BB_JOB_ACTIVE='0',BUILD_SLOT_RECEIPT_META=sys.argv[2])
 result=subprocess.run([sys.executable,sys.argv[1],sys.executable,'-c','print("nested output")'],env=env,capture_output=True)
 sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr)
+# This parent is the nested receipt's owner: clean after the nested worker exits.
+clean=subprocess.run([sys.executable,sys.argv[1],'cleanup',sys.argv[2]+'.runtime'],env=env,capture_output=True)
+sys.stderr.buffer.write(clean.stderr)
+if clean.returncode:sys.exit(224)
 if result.returncode:sys.exit(result.returncode)
 Path(sys.argv[3]).write_text('parent output after nested cleanup')
 '''

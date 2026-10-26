@@ -26,19 +26,18 @@ def git(repo, *args):
     return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
 
 
-def record(repo, worktree, state, prs):
+def record(repo, worktree, state, prs, *, pin_path):
     heads = {str(p): git(repo, 'rev-parse', '--verify', f'refs/pr-gate/{p}^{{commit}}') for p in prs}
     for head in heads.values():
         subprocess.run(['git', '-C', str(worktree), 'merge-base', '--is-ancestor', head, 'HEAD'], check=True)
     pin = {'commit': git(worktree, 'rev-parse', 'HEAD'), 'heads': heads}
-    target = state / '.prepared-heads.json'
-    tmp = target.with_suffix('.new')
-    tmp.write_text(json.dumps(pin) + '\n', encoding='utf-8')
-    os.replace(tmp, target)
+    # Exclusive creation: another batch cannot replace this run's evidence.
+    with Path(pin_path).open('x', encoding='utf-8') as output:
+        output.write(json.dumps(pin) + '\n'); output.flush(); os.fsync(output.fileno())
 
 
-def merge(repo, worktree, state, prs, alerts):
-    pin = json.loads((state / '.prepared-heads.json').read_text(encoding='utf-8'))
+def merge(repo, worktree, state, prs, alerts, *, pin_path):
+    pin = json.loads(Path(pin_path).read_text(encoding='utf-8'))
     if pin['commit'] != git(worktree, 'rev-parse', 'HEAD') or set(pin['heads']) != set(map(str, prs)):
         raise ValueError('tested tree/group does not match prepared head pins')
     if not all(re.fullmatch(r'[0-9a-f]{40,64}', h) for h in pin['heads'].values()):
@@ -73,11 +72,12 @@ def main():
     parser.add_argument('--repo', type=Path, default=Path('Q:/sdk'))
     parser.add_argument('--worktree', type=Path, default=Path('Q:/wt/pr-gate'))
     parser.add_argument('--state', type=Path, default=Path('Q:/lanes/pr-gate'))
+    parser.add_argument('--pin', type=Path, required=True)
     parser.add_argument('--alerts', type=Path, default=Path.home()/'.codex-fleet/alerts.log')
     args = parser.parse_args()
     try:
-        if args.operation == 'record': record(args.repo, args.worktree, args.state, args.prs)
-        else: merge(args.repo, args.worktree, args.state, args.prs, args.alerts)
+        if args.operation == 'record': record(args.repo, args.worktree, args.state, args.prs, pin_path=args.pin)
+        else: merge(args.repo, args.worktree, args.state, args.prs, args.alerts, pin_path=args.pin)
         return 0
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.CalledProcessError) as error:
         print(f'GATE preparation-INFRA: exact-head merge fence: {error}', file=sys.stderr)

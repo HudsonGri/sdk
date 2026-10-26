@@ -10,6 +10,7 @@ gate_output=$PWD
 if [ -f scripts/gate-target-cache.py ]; then
   gate_output=$(python3 scripts/gate-target-cache.py output) || exit 2
 fi
+printf 'GATE_OUTPUT_DIRECTORY %s\n' "$gate_output"
 windows_required=0
 if [ "$(tr -d '\r' < .gate-scope-mode)" = full ] || grep -qx 'acyclic-native-runtime' .gate-clippy-packages .gate-tests-packages; then
   windows_required=1
@@ -34,16 +35,15 @@ fi
 bash scripts/gate-rust-format.sh || exit $?
 # Match main's target coverage, including test=false libFuzzer binaries.
 cargo metadata --locked --offline --no-deps --format-version 1 > "$gate_output/.gate-pr-metadata.json" || exit 2
-export GATE_FUZZ_EXECUTABLES="$gate_output/.gate-fuzz-executables"
-: > "$GATE_FUZZ_EXECUTABLES" || exit 2
-export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
+gate_fuzz_executables="$gate_output/.gate-fuzz-executables"
+: > "$gate_fuzz_executables" || exit 2
+gate_base_test_runner=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 test_runner="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
 if [ -f scripts/gate-target-cache.py ]; then
   test_runner=$(python3 scripts/gate-target-cache.py runner "$test_runner") || exit 2
 else
   chmod +x "$test_runner" || exit 2
 fi
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"
 # Keep registry dependencies warm, but never reuse workspace codegen from an
 # interrupted job or another boot. Cargo's incremental objects can survive an
 # aborted build with references to anonymous constants from another LLVM unit.
@@ -121,6 +121,10 @@ if [ -f scripts/check-feature-matrix.mjs ]; then
     echo "GATE_FEATURES_WALL seconds=$((SECONDS-feature_started)) rc=$feature_rc target=$feature_target" > "$gate_output/.gate-features.time" ) &
   features=$!
 fi
+# Preserve the caller's compiler environment; only test execution consumes
+# these invocation-owned runtime paths. Matrix requests keep stable cache keys.
+export GATE_FUZZ_EXECUTABLES="$gate_fuzz_executables" GATE_BASE_TEST_RUNNER="$gate_base_test_runner"
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"
 run_tests(){
   local phase=$1 phase_started=$SECONDS status=(0 0); shift
   if [ "$phase" = targets ]; then
@@ -159,16 +163,10 @@ echo "GATE_CLIPPY rc=$(cat "$gate_output/.gate-clippy.rc")"
 # Preserve every clippy diagnostic and its cause without confusing the test
 # compile verdict with the separate clippy ratchet.
 sed 's/^/GATE_CLIPPY_RAW /' "$gate_output/.gate-clippy.out"
-grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' "$gate_output/.gate-clippy.out" | sed -E 's/:[0-9]+:[0-9]+: (warning|error): /: /' \
-  | sort | uniq -c | sed -E 's/^ *([0-9]+) /GATE_CLIPPY_FINDING \1 /'
-grep -aE '^error(\[E[0-9]+\])?: ' "$gate_output/.gate-clippy.out" | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
-if [ "$(cat "$gate_output/.gate-clippy.rc")" != 0 ] && ! grep -aqE '^error(\[E[0-9]+\])?: |\.rs:[0-9]+:[0-9]+: error' "$gate_output/.gate-clippy.out"; then
-  echo 'GATE_CLIPPY_ERROR clippy exited without parsed diagnostics'
-  cat "$gate_output/.gate-clippy.out"
-fi
+python3 scripts/buildbox/coordinator/gate-clippy.py emit "$gate_output/.gate-clippy.out" "$(cat "$gate_output/.gate-clippy.rc")" || exit 224
 if [ -n "$features" ]; then
   wait "$features"
-  echo "GATE_FEATURES rc=$(cat "$gate_output/.gate-features.rc")"
+  printf '\nGATE_FEATURES rc=%s\n' "$(cat "$gate_output/.gate-features.rc")"
   [ "$rc" != 0 ] || rc=$(cat "$gate_output/.gate-features.rc")
   grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' "$gate_output/.gate-features.out" | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
   if [ "$(cat "$gate_output/.gate-features.rc")" != 0 ] && ! grep -aq '^FAILED cargo' "$gate_output/.gate-features.out"; then

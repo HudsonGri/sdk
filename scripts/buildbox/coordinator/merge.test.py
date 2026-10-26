@@ -14,6 +14,14 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 
+def record(repo, worktree, state, prs, *, pin_path=None):
+    return gate.record(repo, worktree, state, prs, pin_path=pin_path or state/'.test-pin.json')
+
+
+def merge(repo, worktree, state, prs, alerts, *, pin_path=None):
+    return gate.merge(repo, worktree, state, prs, alerts, pin_path=pin_path or state/'.test-pin.json')
+
+
 class MergeFence(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -38,7 +46,7 @@ class MergeFence(unittest.TestCase):
         return subprocess.check_output(['git', '-C', str(self.repo), *args], text=True).strip()
 
     def test_atomic_match_refuses_changed_head_and_preserves_peer(self):
-        gate.record(self.repo, self.repo, self.state, [1, 2])
+        record(self.repo, self.repo, self.state, [1, 2])
         calls = []
         real = subprocess.run
         def remote(args, **kwargs):
@@ -48,7 +56,7 @@ class MergeFence(unittest.TestCase):
             fenced = '--match-head-commit' in args and args[-1] == self.head
             return subprocess.CompletedProcess(args, 1 if args[3] == '1' and fenced else 0, '', '')
         with patch.object(gate.subprocess, 'run', side_effect=remote):
-            gate.merge(self.repo, self.repo, self.state, [1, 2], self.alerts)
+            merge(self.repo, self.repo, self.state, [1, 2], self.alerts)
         self.assertEqual([c[3] for c in calls], ['1', '2'])
         self.assertTrue(all(c[-2:] == ['--match-head-commit', self.head] for c in calls))
         text = self.alerts.read_text()
@@ -62,7 +70,7 @@ class MergeFence(unittest.TestCase):
         self.assertEqual(remote(['gh', 'pr', 'merge', '1']).returncode, 0)
 
     def test_refreshed_new_head_is_not_held_by_the_older_tested_merge_refusal(self):
-        gate.record(self.repo, self.repo, self.state, [1, 2])
+        record(self.repo, self.repo, self.state, [1, 2])
         self.git('update-ref', 'refs/remotes/origin/main', self.head)
         (self.repo/'file').write_text('new queued head')
         self.git('commit', '-qam', 'new queued head')
@@ -78,7 +86,7 @@ class MergeFence(unittest.TestCase):
             state = self.state if not negative else self.root/'negative-refreshed-head'
             if negative:
                 state.mkdir()
-                (state/'.prepared-heads.json').write_text((self.state/'.prepared-heads.json').read_text())
+                (state/'.test-pin.json').write_text((self.state/'.test-pin.json').read_text())
             namespace = {'__file__':str(HERE/'gate-merge.py'), '__name__':'merge_fresh_head'}
             source = (HERE/'gate-merge.py').read_text()
             if negative:
@@ -86,7 +94,7 @@ class MergeFence(unittest.TestCase):
                                         "g.park(pr, 'merge-failed', reason)")
             exec(compile(source, str(HERE/'gate-merge.py'), 'exec'), namespace)
             with patch.object(gate.subprocess, 'run', side_effect=remote):
-                namespace['merge'](self.repo, self.repo, state, [1, 2], self.alerts)
+                namespace['merge'](self.repo, self.repo, state, [1, 2], self.alerts, pin_path=state/'.test-pin.json')
             hold = json.loads((state/'head-holds.json').read_text())
             self.assertEqual(hold['1']['head'], newer if negative else self.head)
             self.assertNotIn('2', hold)
@@ -100,13 +108,13 @@ class MergeFence(unittest.TestCase):
         self.assertTrue(g.eligible(1))
 
     def test_api_failures_are_held_until_changed_head_or_explicit_recovery(self):
-        gate.record(self.repo, self.repo, self.state, [1, 2])
+        record(self.repo, self.repo, self.state, [1, 2])
         real = subprocess.run
         def refused(args, **kwargs):
             if args[0] != 'gh': return real(args, **kwargs)
             return subprocess.CompletedProcess(args, 1, '', 'authentication/API refused')
         with patch.object(gate.subprocess, 'run', side_effect=refused):
-            gate.merge(self.repo, self.repo, self.state, [1, 2], self.alerts)
+            merge(self.repo, self.repo, self.state, [1, 2], self.alerts)
         self.assertEqual((self.state/'held-pending.txt').read_text().split(), ['1', '2'])
         g = gate.preparation.Gate(self.repo, self.repo, self.state, self.alerts)
         self.assertFalse(g.eligible(1)); self.assertFalse(g.eligible(2))
@@ -121,18 +129,18 @@ class MergeFence(unittest.TestCase):
         # Negative control executes the previous shape: API refusals are logged
         # but no failed merge is retained as a queue member or held head.
         negative = self.root/'negative'; negative.mkdir()
-        (negative/'.prepared-heads.json').write_text(json.dumps({'commit':self.git('rev-parse','HEAD'),
+        (negative/'.test-pin.json').write_text(json.dumps({'commit':self.git('rev-parse','HEAD'),
             'heads':{'1':self.git('rev-parse','refs/pr-gate/1')}}))
         namespace = {'__file__':str(HERE/'gate-merge.py'), '__name__':'merge_negative'}
         source = (HERE/'gate-merge.py').read_text().replace('if result.returncode:\n            failed.append',
                                                            'if False:\n            failed.append')
         exec(compile(source, str(HERE/'gate-merge.py'), 'exec'), namespace)
         with patch.object(gate.subprocess, 'run', side_effect=refused):
-            namespace['merge'](self.repo,self.repo,negative,[1],self.alerts)
+            namespace['merge'](self.repo,self.repo,negative,[1],self.alerts,pin_path=negative/'.test-pin.json')
         self.assertFalse((negative/'held-pending.txt').exists())
 
     def test_missing_malformed_wrong_group_or_changed_tree_never_merges(self):
-        target = self.state/'.prepared-heads.json'
+        target = self.state/'.test-pin.json'
         for value in [None, '{', json.dumps({'commit':self.head, 'heads':{'2':self.head}}),
                       json.dumps({'commit':'a'*40, 'heads':{'1':self.head}}),
                       json.dumps({'commit':self.head, 'heads':{'1':'--admin'}})]:
@@ -140,7 +148,7 @@ class MergeFence(unittest.TestCase):
             else: target.write_text(value)
             with patch.object(gate, 'git', return_value=self.head), patch.object(gate.subprocess, 'run') as run:
                 with self.assertRaises((OSError, ValueError)):
-                    gate.merge(self.repo, self.repo, self.state, [1], self.alerts)
+                    merge(self.repo, self.repo, self.state, [1], self.alerts)
                 run.assert_not_called()
 
     def test_pin_cannot_claim_a_head_absent_from_prepared_tree(self):
@@ -150,10 +158,58 @@ class MergeFence(unittest.TestCase):
         self.git('update-ref', 'refs/pr-gate/1', newer)
         self.git('checkout', '-q', '--detach', self.head)
         with self.assertRaises(subprocess.CalledProcessError):
-            gate.record(self.repo, self.repo, self.state, [1])
-        self.assertFalse((self.state/'.prepared-heads.json').exists())
+            record(self.repo, self.repo, self.state, [1])
+        self.assertFalse((self.state/'.test-pin.json').exists())
 
-    def test_bad_pin_holds_once_without_reexecution_and_requires_recovery(self):
+    def test_run_owned_pin_survives_another_groups_record_and_rejects_overwrite(self):
+        first = self.state/'first.json'; second = self.state/'second.json'
+        record(self.repo, self.repo, self.state, [1, 2], pin_path=first)
+        record(self.repo, self.repo, self.state, [2], pin_path=second)
+        with self.assertRaises(FileExistsError):
+            record(self.repo, self.repo, self.state, [2], pin_path=first)
+        real = subprocess.run; calls = []
+        def remote(args, **kwargs):
+            if args[0] != 'gh': return real(args, **kwargs)
+            calls.append(args); return subprocess.CompletedProcess(args, 0, '', '')
+        with patch.object(gate.subprocess, 'run', side_effect=remote):
+            merge(self.repo, self.repo, self.state, [1, 2], self.alerts, pin_path=first)
+        self.assertEqual([c[3] for c in calls], ['1', '2'])
+        # Removing exclusive creation reproduces the old overwrite class.
+        namespace = {'__file__':str(HERE/'gate-merge.py'), '__name__':'mutable_pin_control'}
+        source = (HERE/'gate-merge.py').read_text().replace(".open('x',", ".open('w',")
+        exec(compile(source, 'mutable-pin-control', 'exec'), namespace)
+        namespace['record'](self.repo, self.repo, self.state, [2], pin_path=first)
+        with self.assertRaisesRegex(ValueError, 'tested tree/group'):
+            merge(self.repo, self.repo, self.state, [1, 2], self.alerts, pin_path=first)
+
+    def test_fence_repair_resets_validated_repository_and_does_not_hold_peers(self):
+        mirror = self.root/'origin.git'
+        subprocess.run(['git', 'clone', '-q', '--bare', str(self.repo), str(mirror)], check=True)
+        self.git('remote', 'add', 'origin', str(mirror))
+        subprocess.run(['git', '-C', str(mirror), 'update-ref', 'refs/pull/1/head', self.head], check=True)
+        self.git('update-ref', 'refs/remotes/origin/main', self.head)
+        # The bare fixture's initial branch is not necessarily called main.
+        subprocess.run(['git', '-C', str(mirror), 'update-ref', 'refs/heads/main', self.head], check=True)
+        (self.state/'preparation-hold.json').write_text('{"prs":{"1":"bad"}}')
+        (self.repo/'file').write_text('wrong checkout contents')
+        argv = [sys.executable, str(HERE/'gate-prepare.py'), 'repair', '1', '--repo', str(self.repo),
+                '--worktree', str(self.repo), '--state', str(self.state), '--alerts', str(self.alerts)]
+        result = subprocess.run(argv, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn('GATE_PREPARATION_RECOVERED', result.stdout)
+        self.assertEqual((self.repo/'file').read_text(), 'base')
+        self.assertFalse((self.state/'preparation-hold.json').exists())
+        # An old record for another PR must never refuse this healthy peer.
+        (self.state/'preparation-hold.json').write_text('{"prs":{"2":"other"}}')
+        eligible = [sys.executable, str(HERE/'gate-prepare.py'), 'eligible', '1', '--repo', str(self.repo),
+                    '--worktree', str(self.repo), '--state', str(self.state), '--alerts', str(self.alerts)]
+        self.assertEqual(subprocess.run(eligible, capture_output=True).returncode, 0)
+        source = (HERE/'gate-prepare.py').read_text().replace('    try:\n        if a.operation ==',
+            "    if a.operation != 'recover' and g.read('preparation-hold.json'):\n        return 6\n    try:\n        if a.operation ==", 1)
+        old = self.root/'old-prepare.py'; old.write_text(source)
+        self.assertEqual(subprocess.run([sys.executable, str(old), *eligible[2:]], capture_output=True).returncode, 6)
+
+    def test_bad_pin_diagnostic_is_deduplicated_without_global_admission_hold(self):
         argv = [sys.executable, str(HERE/'gate-prepare.py'), 'hold', '1', '2',
                 '--repo', str(self.repo), '--worktree', str(self.repo),
                 '--state', str(self.state), '--alerts', str(self.alerts),
@@ -183,7 +239,7 @@ class MergeFence(unittest.TestCase):
                 (tools/'gate-prepare.py').write_text('raise SystemExit(0)\n')
                 (tools/'gate-merge.py').symlink_to(HERE/'gate-merge.py')
                 (tools/'gate-queue.py').symlink_to(HERE/'gate-queue.py')
-                record = f'python "{HERE}/gate-merge.py" record "$@" --repo "{self.repo}" --worktree "{self.repo}" --state "$GATE_STATE"\n'
+                record = f'pin=$(mktemp "$GATE_STATE/pin.XXXXXXXX"); rm "$pin"; python "{HERE}/gate-merge.py" record "$@" --repo "{self.repo}" --worktree "{self.repo}" --state "$GATE_STATE" --pin "$pin"; echo "GATE_PASS_PIN $pin"\n'
                 (tools/'pr-gate.sh').write_text(('if [ "$#" -gt 1 ]; then exit 1; fi\n' if bisect else '')+record)
                 gh = bins/'gh'
                 gh.write_text('#!/bin/bash\nif [ "$2" = view ]; then echo READY; else printf "%s\\n" "$*" >> "$GATE_STATE/merges"; [ "$3" != 1 ]; fi\n')

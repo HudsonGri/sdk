@@ -9,7 +9,7 @@ test('failed shared maintenance cannot refuse either independently admitted work
   const original=process.stderr.write, diagnostics=[];
   try {
     const source=fs.readFileSync(new URL('./buildbox.mjs',import.meta.url),'utf8');
-    assert.ok(source.includes('await maintainSourceCopies(co.repo, notes);'));
+    assert.ok(source.includes('await maintainSourceCopies(co.repo, notes, async () => maint.result ?? { status: 255, stderr: Buffer.alloc(0) });'));
     fs.writeFileSync(path.join(root,'generator.mjs'),source+'\nexport {maintainSourceCopies};\n');
     fs.copyFileSync(new URL('./buildbox-receipt.mjs',import.meta.url),path.join(root,'buildbox-receipt.mjs'));
     const {maintainSourceCopies}=await import(path.join(root,'generator.mjs'));
@@ -21,7 +21,7 @@ test('failed shared maintenance cannot refuse either independently admitted work
       prepared.push(name);return notes;
     }));
     assert.deepEqual(prepared.sort(),['bad','good']);
-    assert.match(result[0][0],/BB_WT_PRUNE_FAILED rc=224: foreign-owned tomb/);
+    assert.match(result[0][0],/BB_WT_PRUNE_FAILED rc=224 .*step=source-retirement.*recovery=.*: foreign-owned tomb/);
     assert.deepEqual(result[1],[]);
     assert.match(diagnostics.join(''),/BB_WT_PRUNE_FAILED/);
     const summary='[buildbox] wt-sdk {"removed":["old"],"remaining":1,"held":[],"errors":[],"over_cap":false}';
@@ -50,6 +50,20 @@ test('failed shared maintenance cannot refuse either independently admitted work
     const oldWarning=[];
     await old.maintainSourceCopies('sdk',oldWarning,async()=>({status:0,stderr:Buffer.from(marker)}));
     assert.deepEqual(oldWarning,[]);
+    const empty=[];
+    await maintainSourceCopies('sdk',empty,async()=>({status:255,stderr:Buffer.alloc(0)}));
+    assert.match(empty[0],/kind=WORKTREE_MAINTENANCE step=source-retirement.*recovery=.*transport returned no diagnostic/);
+    const fixture=new URL('./fixtures/startup-readiness/former-maintenance.mjs.txt',import.meta.url);
+    const capture=JSON.parse(fs.readFileSync(new URL('./fixtures/startup-readiness/former-maintenance.origin.json',import.meta.url)));
+    assert.match(capture.observed_marker,/BB_WT_PRUNE_FAILED rc=255:/);
+    const formerFunction=fs.readFileSync(fixture,'utf8');
+    const first=source.indexOf('async function maintainSourceCopies('),last=source.indexOf('async function runIn(',first);
+    fs.writeFileSync(path.join(root,'captured.mjs'),source.slice(0,first)+formerFunction+source.slice(last)+'\nexport {maintainSourceCopies};\n');
+    const captured=await import(path.join(root,'captured.mjs'));
+    const formerEmpty=[];
+    await captured.maintainSourceCopies('sdk',formerEmpty,async()=>({status:255,stderr:Buffer.alloc(0)}));
+    assert.doesNotMatch(formerEmpty[0],/recovery=/,'captured production loses the recovery command');
+    assert.match(formerEmpty[0],/rc=255: $/,'captured production publishes the observed empty reason');
     await maintainSourceCopies('sdk',[],async()=>{throw new Error('maintenance transport interrupted');});
     assert.match(diagnostics.join(''),/maintenance transport interrupted/);
     await maintainSourceCopies('cloud',[],async()=>{throw new Error('must not prune another repo');});

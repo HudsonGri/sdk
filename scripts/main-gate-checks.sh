@@ -10,10 +10,13 @@ gate_output=$PWD
 if [ -f scripts/gate-target-cache.py ]; then
   gate_output=$(python3 scripts/gate-target-cache.py output) || exit 2
 fi
-each=(); harness=(); cargo_args=()
+printf 'GATE_OUTPUT_DIRECTORY %s\n' "$gate_output"
+harness=(); cargo_args=()
 while (($#)); do
   case "$1" in
-    --each-feature) each=(--each-feature); shift;;
+    # Older coordinators request each single feature; the gate checks each
+    # crate once with --all-features (2026-10-26 bb2 compute policy).
+    --each-feature) shift;;
     # Older coordinators supply the harness closure. It cannot narrow main.
     -p|--package) [ "$#" -ge 2 ] || { echo 'error: missing legacy package argument'; exit 2; }; shift 2;;
     --package=*|-p?*) shift;;
@@ -42,21 +45,25 @@ clippy_target="$cache/clippy"
 echo "GATE_MAIN_START target=$target clippy_target=$clippy_target"
 cargo metadata --locked --offline --no-deps --format-version 1 > "$gate_output/.gate-main-metadata.json" || exit 2
 members=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const ids=new Set(m.workspace_members); console.log(m.packages.filter(p=>ids.has(p.id)).map(p=>p.name).sort().join(","))' "$gate_output/.gate-main-metadata.json") || exit 2
-export GATE_FUZZ_EXECUTABLES="$gate_output/.gate-fuzz-executables"
-: > "$GATE_FUZZ_EXECUTABLES" || exit 2
-export GATE_BASE_TEST_RUNNER=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
+gate_fuzz_executables="$gate_output/.gate-fuzz-executables"
+: > "$gate_fuzz_executables" || exit 2
+gate_base_test_runner=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
 test_runner="$PWD/${GATE_TEST_RUNNER_SCRIPT:-scripts/gate-test-runner.sh}"
 if [ -f scripts/gate-target-cache.py ]; then
   test_runner=$(python3 scripts/gate-target-cache.py runner "$test_runner") || exit 2
 else
   chmod +x "$test_runner" || exit 2
 fi
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going --workspace --all-targets --all-features --message-format=short \
     -- --cap-lints warn > "$gate_output/.gate-clippy.out" 2>&1; echo $? > "$gate_output/.gate-clippy.rc" ) &
 clippy=$!
-( bash scripts/gate-feature-matrix.sh "${each[@]}" > "$gate_output/.gate-features.out" 2>&1; echo $? > "$gate_output/.gate-features.rc" ) &
+( bash scripts/gate-feature-matrix.sh > "$gate_output/.gate-features.out" 2>&1; echo $? > "$gate_output/.gate-features.rc" ) &
 features=$!
+# Invocation-owned runtime paths are not compiler inputs. Start compiler-only
+# phases with the original caller environment so exclusive output allocation
+# cannot turn an identical feature-matrix request into a different cache key.
+export GATE_FUZZ_EXECUTABLES="$gate_fuzz_executables" GATE_BASE_TEST_RUNNER="$gate_base_test_runner"
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"
 run_tests(){
   local phase=$1 status phase_started=$SECONDS; shift
   echo "GATE_TEST_START phase=$phase packages=$members"
@@ -106,11 +113,9 @@ echo "GATE_HARNESS_LOOM_WALL seconds=$((SECONDS-loom_started)) rc=$loom_rc"
 wait "$clippy"
 echo "GATE_CLIPPY rc=$(cat "$gate_output/.gate-clippy.rc")"
 if [ "$(cat "$gate_output/.gate-clippy.rc")" != 0 ]; then sed 's/^/GATE_CLIPPY_RAW /' "$gate_output/.gate-clippy.out"; fi
-grep -aE '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error): ' "$gate_output/.gate-clippy.out" | sed -E 's/:[0-9]+:[0-9]+: (warning|error): /: /' \
-  | sort | uniq -c | sed -E 's/^ *([0-9]+) /GATE_CLIPPY_FINDING \1 /'
-grep -aE '^error(\[E[0-9]+\])?: ' "$gate_output/.gate-clippy.out" | grep -v 'could not compile' | sort -u | sed 's/^/GATE_CLIPPY_ERROR /'
+python3 scripts/buildbox/coordinator/gate-clippy.py emit "$gate_output/.gate-clippy.out" "$(cat "$gate_output/.gate-clippy.rc")" || exit 224
 wait "$features"
-echo "GATE_FEATURES rc=$(cat "$gate_output/.gate-features.rc")"
+printf '\nGATE_FEATURES rc=%s\n' "$(cat "$gate_output/.gate-features.rc")"
 grep -aE '^(feature matrix:|consumer builds:|FAILED cargo)' "$gate_output/.gate-features.out" | sed -E 's|--manifest-path [^ ]*/([^/ ]+/Cargo\.toml)|--manifest-path \1|; s/^/GATE_FEATURES /'
 grep -a '^feature check: ' "$gate_output/.gate-features.out" | sed 's/^/GATE_FEATURE_CHECK /'
 grep -aE '^GATE_FEATURES_(CACHE|WALL) ' "$gate_output/.gate-features.out"

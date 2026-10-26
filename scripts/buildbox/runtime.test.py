@@ -1,5 +1,6 @@
 import contextlib
 import fcntl
+from functools import cached_property
 import importlib.util
 import io
 import json
@@ -15,6 +16,10 @@ import sys
 import tempfile
 import time
 import unittest
+# Every payload in this suite is inline code or a fixture it writes itself;
+# declare that empty closure explicitly instead of inheriting the enclosing job's.
+import input_closure
+input_closure.declare(os.environ)
 from unittest.mock import patch
 
 HERE=Path(__file__).resolve().parent
@@ -31,18 +36,31 @@ def retire_process(process):
     process.communicate(timeout=2)
 
 class RuntimeTests(unittest.TestCase):
+    @cached_property
+    def cpu_fixture(self):
+        from cpu_test_fixture import KernelFixture
+        return KernelFixture()
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='r19-runtime-',dir='/mnt/bb/tmp')
         self.d=Path(self.temp.name)
-        shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
+        from cpu_test_fixture import stage_worker_bundle
+        stage_worker_bundle(self.d,cpu_adapter=Path(job.cpu_leases.__file__))
         self.real_home=self.d/'home'
         self.real_home.mkdir()
     def tearDown(self):
+        if 'cpu_fixture' in self.__dict__:self.cpu_fixture.close()
         self.temp.cleanup()
+
+    def test_kernel_fixture_is_allocated_only_for_real_admission_controls(self):
+        # Former eager setup provisioned and retired a root/kernel fixture for
+        # every pure policy and HOME control. It fails this assertion.
+        self.assertNotIn('cpu_fixture',self.__dict__)
+        with patch('cpu_test_fixture.KernelFixture') as factory:
+            self.assertIs(self.cpu_fixture,factory.return_value)
+            self.assertIs(self.cpu_fixture,factory.return_value)
+            factory.assert_called_once_with()
     def worker(self,negative=False,cleanup_failure=False):
-        shutil.copyfile(HERE/'job_exports.py',self.d/'job_exports.py')
-        shutil.copyfile(HERE/'bb_target_store.py',self.d/'bb_target_store.py')
-        shutil.copyfile(HERE/'admission_policy.py',self.d/'admission_policy.py')
         source=(HERE/'bb-job.py').read_text()
         (self.d/'jobs').mkdir(exist_ok=True)
         source=source.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(self.d/'jobs')!r})")
@@ -64,6 +82,9 @@ class RuntimeTests(unittest.TestCase):
         p=self.d/('negative.py' if negative else 'worker.py');p.write_text(source);return p
     def worker_env(self,extra=None):
         env=dict(os.environ)
+        # Lifecycle/HOME fixtures do not consume a host cache. Its actual
+        # server/namespace/launcher controls live in cache_policy.test.py.
+        env['BB_CACHE_DISABLED']='1'
         # This worker owns a new receipt and target tree. An enclosing job's
         # export specification refers to that job's outputs, never this one's.
         for key in ['BB_JOB_ACTIVE','BB_ADMITTED','BB_JOB_EXPORT_SPEC','BB_JOB_PRIVATE_MOUNT','BB_JOB_GIT_SOURCE','BUILD_SLOT_RECEIPT_META','BUILD_SLOT_RECEIPT_WRAPPED','BUILD_SLOT_EXEC_IN_PAYLOAD','BUILD_SLOT_DEFER_EXEC']:
@@ -81,15 +102,82 @@ spec=importlib.util.spec_from_file_location('observed_admit',source)
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 events=socket.socket(fileno=int(sys.argv[2]))
 '''
-        process=subprocess.Popen([sys.executable,'-c',loader+observer,str(HERE/'bb-admit.py'),str(writer.fileno()),*args],env=env,pass_fds=[writer.fileno()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        process=subprocess.Popen([sys.executable,'-c',loader+observer,str(self.cpu_fixture.control/'bb-admit.py'),str(writer.fileno()),*args],env=env,pass_fds=[writer.fileno()],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         cleanup.callback(retire_process,process);writer.close()
         return process,events
-    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None):
+    def run_job(self,argv,negative=False,extra=None,cleanup_failure=False,gate=False,cwd=None,inner_cleanup=False,legacy_compiler=False):
         meta=self.d/'fixture.receipt-meta.v2.json';meta.write_text(json.dumps({'gate_log':'fixture.log'} if gate else {}))
         env=self.worker_env({'PATH':'/home/var/.cargo/bin:'+os.environ['PATH'], 'BUILD_SLOT_RECEIPT_META':str(meta),'BUILD_SLOT_EXEC_IN_PAYLOAD':'1','BB_CACHE_DISABLED':'1'})
         env.update(extra or {})
-        result=subprocess.run([sys.executable,str(self.worker(negative,cleanup_failure)),*argv],cwd=cwd or self.d,env=env,capture_output=True)
+        worker=self.worker(negative)
+        if legacy_compiler:
+            source=worker.read_text()
+            worker.write_text(source.replace('compiler_job=compiler_request(canonical_argv(argv,os.environ),os.environ)',
+                "compiler_job=Path(argv[0]).name=='cargo' or bool(json.loads(Path(meta).read_text()).get('gate_log'))"))
+        if inner_cleanup:
+            source=worker.read_text()
+            needle="        runtime['cleanup_mount_namespace']=os.readlink('/proc/self/ns/mnt')"
+            assert source.count(needle)==1
+            worker.write_text(source.replace(needle,'        remove_home(job)\n'+needle))
+        result=subprocess.run([sys.executable,str(worker),*argv],cwd=cwd or self.d,env=env,capture_output=True)
+        runtime_file=Path(str(meta)+'.runtime')
+        if runtime_file.exists():
+            # Same boundary as finishLocked: the worker and its private mount
+            # namespace have exited before the receipt owner walks storage.
+            try:
+                with patch.object(job,'JOBS',self.d/'jobs'):
+                    if cleanup_failure:
+                        with patch.object(job,'remove_home',side_effect=OSError('cleanup control')):job.cleanup_runtime(runtime_file)
+                    else:job.cleanup_runtime(runtime_file)
+            except OSError as error:
+                runtime=json.loads(runtime_file.read_text());runtime['cleanup_error']=str(error);job.atomic(runtime_file,runtime)
+                result=subprocess.CompletedProcess(result.args,224,result.stdout,result.stderr+b'[buildbox] cleanup INFRA: '+str(error).encode())
         return result,json.loads(Path(str(meta)+'.runtime').read_text()) if Path(str(meta)+'.runtime').exists() else {}
+
+    def test_same_mount_namespace_has_no_home_deletion_authority(self):
+        directory=self.d/'jobs'/'job-mount-owner';directory.mkdir(parents=True)
+        file=self.d/'mount-owner.json'
+        runtime={'hermetic_home':str(directory),'cleanup_mount_namespace':os.readlink('/proc/self/ns/mnt')}
+        file.write_text(json.dumps(runtime))
+        with patch.object(job,'JOBS',self.d/'jobs'):
+            with self.assertRaisesRegex(RuntimeError,'outer mount namespace'):job.cleanup_runtime(file)
+            self.assertTrue(directory.exists())
+            # Actual old boundary, with its missing namespace guard, deletes
+            # the same owned tree before the private mounts are retired.
+            with patch.object(job,'require_outer_cleanup'):job.cleanup_runtime(file)
+            self.assertFalse(directory.exists())
+
+    def test_fuse_mount_namespace_retires_before_home_traversal(self):
+        # Reuse the real fusermount protocol already exercised below. Closing
+        # its transferred fd without unmounting leaves an actual ENOTCONN
+        # mount. No synthetic filesystem error is injected into this control.
+        code='''import array,os,socket,subprocess,tempfile
+from pathlib import Path
+mount=Path(tempfile.mkdtemp(dir=os.environ['TMPDIR']))
+a,b=socket.socketpair()
+try:
+ env={**os.environ,'_FUSE_COMMFD':str(b.fileno())}
+ child=subprocess.Popen(['/usr/bin/fusermount3','-o','rw,nosuid,nodev,fsname=gate-cleanup-control','--',str(mount)],env=env,pass_fds=[b.fileno()],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ b.close()
+ data,ancillary,_,_=a.recvmsg(1,socket.CMSG_SPACE(4))
+ out,err=child.communicate()
+ assert child.returncode==0,(child.returncode,err)
+ descriptors=array.array('i')
+ for level,kind,value in ancillary:
+  if level==socket.SOL_SOCKET and kind==socket.SCM_RIGHTS:descriptors.frombytes(value)
+ assert descriptors,'fusermount did not transfer its mounted FUSE device'
+ for descriptor in descriptors:os.close(descriptor)
+ print('DISCONNECTED_FUSE_MOUNT')
+finally:a.close();b.close()
+'''
+        for broken in [False,True]:
+            result,runtime=self.run_job([sys.executable,'-c',code],inner_cleanup=broken)
+            if broken:
+                self.assertNotEqual(result.returncode,0)
+                self.assertIn(b'Transport endpoint is not connected',result.stderr)
+            else:self.assertEqual(result.returncode,0,result.stderr.decode())
+            self.assertTrue(runtime['home_removed'])
+            self.assertFalse(Path(runtime['hermetic_home']).exists())
     def test_cargo_metadata_stdout_through_build_slot_and_negative_control(self):
         (self.d/'Cargo.toml').write_text('[package]\nname="gate-stdout-fixture"\nversion="0.0.0"\nedition="2024"\n')
         (self.d/'src').mkdir();(self.d/'src/lib.rs').write_text('')
@@ -360,6 +448,22 @@ finally:a.close();b.close()
             self.assertEqual(json.loads(result.stdout)['rustc'],'/home/var/bin/bigstack/rustc' if gate else 'fixture-capture-tool')
             self.assertEqual(json.loads(result.stdout)['wrapper'],'') # explicit cold/disabled policy remains
 
+    def test_script_compiler_opt_in_selects_the_same_native_policy(self):
+        code='import os,json;print(json.dumps({"rustc":os.environ.get("RUSTC"),"wrapper":os.environ.get("RUSTC_WRAPPER")}))'
+        result,runtime=self.run_job([sys.executable,'-c',code],extra={'BUILD_SLOT_COMPILER':'1','RUSTC':'fixture-capture-tool'})
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertTrue(runtime['compiler_job'])
+        self.assertEqual(json.loads(result.stdout),{'rustc':'/home/var/bin/bigstack/rustc','wrapper':''})
+        # The old classifier sees only Python, so the explicit producer loses
+        # compiler policy. Run the actual same runtime with just that old edge.
+        old,_=self.run_job([sys.executable,'-c',code],extra={'BUILD_SLOT_COMPILER':'1','RUSTC':'fixture-capture-tool'},legacy_compiler=True)
+        self.assertEqual(old.returncode,0,old.stderr.decode())
+        self.assertEqual(json.loads(old.stdout)['rustc'],'fixture-capture-tool')
+        refused,_=self.run_job([sys.executable,'-c','print("must not execute")'],extra={'BUILD_SLOT_COMPILER':'guess'})
+        self.assertEqual(refused.returncode,224,refused.stderr.decode())
+        self.assertEqual(refused.stdout,b'')
+        self.assertIn(b'kind=COMPILER_POLICY step=compiler-declaration',refused.stderr)
+
     def test_exited_cache_cpu_is_incomplete_never_zero(self):
         server={'pid':123,'identity':'fixture'}
         with patch.object(job,'child_cpu',return_value=12),patch.object(job,'cache_cpu',return_value=None),patch.object(job.subprocess,'run') as stats:
@@ -372,6 +476,22 @@ finally:a.close();b.close()
             complete=job.cost_receipt({},server,2,3,time.monotonic())
         self.assertEqual(complete['attributed_cpu_seconds'],15)
         self.assertNotIn('cpu_incomplete_reason',complete)
+
+    def test_nested_worker_cannot_inherit_outer_exports(self):
+        # Retained from qualified-runtime.test.py supplied by main-green.
+        # An isolated receipt cannot adopt its enclosing producer's export.
+        code='''import os
+from pathlib import Path
+assert 'BB_JOB_PRIVATE_MOUNT' not in os.environ
+assert 'BB_JOB_GIT_SOURCE' not in os.environ
+assert Path(os.environ['CARGO_TARGET_DIR'])==Path(os.environ['HOME']).parent/'target'
+print("nested output",end="")'''
+        with patch.dict(os.environ,{'BB_JOB_EXPORT_SPEC':json.dumps({'prefix':'/invalid-outer-job','paths':[]}),
+                'BB_JOB_PRIVATE_MOUNT':'1','BB_JOB_GIT_SOURCE':'/invalid-outer-source'}):
+            result,runtime=self.run_job([sys.executable,'-c',code])
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        self.assertEqual(result.stdout,b'nested output')
+        self.assertNotIn('export_error',runtime)
 
     def test_unreadable_directories_cleanup_negative_control(self):
         p=self.d/'job';(p/'moved/deep').mkdir(parents=True);(p/'moved/deep/data').write_bytes(b'x')
@@ -508,8 +628,11 @@ finally:a.close();b.close()
             if p.exists():job.remove_home(p)
 
     def test_admission_disk_refusal_is_stderr_with_stdout_negative(self):
-        source=(HERE/'bb-admit.py').read_text().replace("if ROOT==Path('/mnt/bb/admit'):", 'if True:')
-        source=source.replace('space=os.statvfs(path)', 'space=type("Space",(),{"f_bavail":9,"f_blocks":100,"f_frsize":4096})()')
+        source=(self.cpu_fixture.control/'bb-admit.py').read_text().replace("if ROOT==Path('/mnt/bb/admit'):", 'if True:')
+        source='import sys;sys.path.insert(0,'+repr(str(self.cpu_fixture.control))+')\n'+source
+        # Read the actual shared policy result, then inject pressure into that
+        # observation; admission has no second statvfs implementation to patch.
+        source=source.replace('readings=disk_free()', "readings=disk_free();readings[0]['free_percent']=9")
         source=source.replace("Path('/mnt/bb/log/alerts.jsonl')",f'Path({str(self.d/"alerts.jsonl")!r})')
         for negative in [False,True]:
             worker=self.d/f'admit-{negative}.py';worker.write_text(source.replace("t['fds'][2]","t['fds'][1]") if negative else source)
@@ -539,7 +662,7 @@ finally:a.close();b.close()
             # A finite sleep can expire before the parent observes its lease.
             # Readiness proves admission; stdin owns the command's lifetime.
             command='import sys;print("RUNNING",flush=True);sys.stdin.buffer.read(1)'
-            first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            first=subprocess.Popen([sys.executable,str(self.cpu_fixture.control/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             cleanup.callback(retire_process,first)
             self.assertTrue(select.select([first.stdout],[],[],2)[0],'fixture command did not become ready')
             self.assertEqual(first.stdout.readline(),b'RUNNING\n')
@@ -562,14 +685,14 @@ raise SystemExit(module.client(sys.argv[3:]))
                 first.communicate(input=b'R',timeout=2);self.assertEqual(first.returncode,0)
                 self.assertFalse(marker.exists())
                 # Without the upgrade flock, a new ticket incorrectly enters.
-                negative=self.d/'no-barrier.py';negative.write_text((HERE/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
+                negative=self.d/'no-barrier.py';negative.write_text('import sys;sys.path.insert(0,'+repr(str(self.cpu_fixture.control))+')\n'+(self.cpu_fixture.control/'bb-admit.py').read_text().replace('fcntl.flock(upgrade,fcntl.LOCK_SH)','pass'))
                 bad=subprocess.run([sys.executable,str(negative),'lane','cloud','--','true'],env=env,capture_output=True,timeout=2)
                 self.assertEqual(bad.returncode,0)
             second.communicate(timeout=2);self.assertEqual(second.returncode,0);self.assertTrue(marker.exists())
             self.assertFalse((root/'lease-stale.json').exists())
             daemon=json.loads((root/'daemon.json').read_text())
             import hashlib
-            self.assertEqual(daemon['source_sha256'],hashlib.sha256((HERE/'bb-admit.py').read_bytes()).hexdigest())
+            self.assertEqual(daemon['source_sha256'],hashlib.sha256((self.cpu_fixture.control/'bb-admit.py').read_bytes()).hexdigest())
 
     def test_recovered_leases_need_identity_and_survive_pidfd_exit_race(self):
         with patch.object(admit.os,'pidfd_open') as opened:
@@ -615,6 +738,10 @@ raise SystemExit(module.client(sys.argv[3:]))
 
     def test_killed_generated_wrapper_cleans_outer_scratch_with_negative_control(self):
         worker=self.worker()
+        # This fixture owns its admission identity; it must not depend on the
+        # enclosing SDK/Cloud caller supplying (or choosing) its tenant.
+        fixture_env=self.worker_env({'BUILD_SLOT_TENANT':'graphcoder',
+                                    'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']})
         generator=self.d/'generator.mjs';generator.write_text((HERE/'buildbox.mjs').read_text()+'\nexport {launchScript};\n')
         receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(self.d/'jobs')+'/').replace('interval = 1000','interval = 20')
         (self.d/'buildbox-receipt.mjs').write_text(receipt_source)
@@ -635,14 +762,15 @@ fs.writeFileSync(prefix+'.wrap',body);
 const meta=script.match(/echo ([A-Za-z0-9+/=]+) \\| base64 -d > \\$J\\.receipt-meta\\.v2\\.json/);
 fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
 ''')
-            subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],check=True,capture_output=True)
+            generated=subprocess.run([job.NODE,str(probe),str(prefix),str(self.d),str(meta)],env=fixture_env,capture_output=True)
+            self.assertEqual(generated.returncode,0,generated.stdout+generated.stderr)
             source=receipt_source.replace("if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {",'if (false) {') if negative else receipt_source
             Path(str(prefix)+'.receipt-tool.mjs').write_text(source)
             code=f'from pathlib import Path;import time;Path({str(marker)!r}).touch();time.sleep(60)'
             import shlex
             with Path(str(prefix)+'.wrap').open('a') as wrapper:
                 wrapper.write(f'\nmkdir -p "$J.targets" "$J.tmp"\nprintf scratch > "$J.targets/object"\nprintf scratch > "$J.tmp/object"\nexport BUILD_SLOT_RECEIPT_META={shlex.quote(str(meta))}\nsetsid {shlex.join([sys.executable,str(worker),sys.executable,"-c",code])} &\npayload=$!\nnode "$J.receipt-tool.mjs" job {shlex.quote(str(meta))} "$payload"\nwait "$payload"\n')
-            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env=self.worker_env({'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']}),stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            process=subprocess.Popen(['bash',str(prefix)+'.wrap'],env=fixture_env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
             try:
                 until=time.monotonic()+4
                 while not marker.exists() and time.monotonic()<until:time.sleep(.01)
@@ -687,13 +815,14 @@ fs.writeFileSync(process.argv[4],Buffer.from(meta[1],'base64'));
         # A marker's absence cannot distinguish queued work from a slow child.
         observer='''take=module.Scheduler.take
 reported=False
-def observe(scheduler,cls):
+def observe(scheduler,cls=None):
     global reported
-    waiting=any(tenant=='cloud' and queue for (kind,_),tenants in scheduler.queues.items() if kind==cls for tenant,queue in tenants.items())
+    waiting=any(tenant=='cloud' and queue for (kind,_),tenants in scheduler.queues.items() if cls is None or kind==cls for tenant,queue in tenants.items())
     selected=take(scheduler,cls)
     if waiting and not reported:
         reported=True
-        events.send(json.dumps({'selected':selected['tenant'] if selected else None,'running':scheduler.running[cls]}).encode())
+        running=sum(scheduler.running.values()) if cls is None else scheduler.running[cls]
+        events.send(json.dumps({'selected':selected['tenant'] if selected else None,'running':running}).encode())
     return selected
 module.Scheduler.take=observe
 module.serve()
@@ -703,7 +832,7 @@ module.serve()
             self.assertTrue(select.select([daemon.stdout],[],[],5)[0],'admission daemon did not become ready')
             self.assertEqual(daemon.stdout.read(5),b'ready')
             command='import os,sys;print(os.getpid(),flush=True);sys.stdin.buffer.read(1)'
-            first=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            first=subprocess.Popen([sys.executable,str(self.cpu_fixture.control/'bb-admit.py'),'lane','graphcoder','--',sys.executable,'-c',command],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             cleanup.callback(retire_process,first)
             self.assertTrue(select.select([first.stdout],[],[],5)[0],'fixture command did not become ready')
             pid=int(first.stdout.readline());self.assertIsNotNone(admit.identity(pid))
@@ -715,7 +844,7 @@ module.serve()
                 self.assertTrue(select.select([command_fd],[],[],2)[0],'fixture command did not exit')
             cleanup.callback(stop_command)
             marker=self.d/'second'
-            second=subprocess.Popen([sys.executable,str(HERE/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).write_text("ran")'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            second=subprocess.Popen([sys.executable,str(self.cpu_fixture.control/'bb-admit.py'),'lane','cloud','--',sys.executable,'-c',f'from pathlib import Path;Path({str(marker)!r}).write_text("ran")'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             cleanup.callback(retire_process,second)
             self.assertTrue(select.select([events],[],[],5)[0],'second ticket did not reach the scheduler')
             self.assertEqual(json.loads(events.recv(4096)),{'selected':None,'running':1})
@@ -724,20 +853,16 @@ module.serve()
             out,err=second.communicate(timeout=5);self.assertEqual(second.returncode,0,err)
             self.assertTrue(marker.exists());self.assertIsNone(admit.identity(pid))
 
-    def test_two_sccache_servers_are_isolated(self):
-        a=self.d/'a';b=self.d/'b';a.mkdir();b.mkdir()
-        envA=dict(os.environ);envB=dict(os.environ)
-        first,status=job.start_cache(a,envA);second,status2=job.start_cache(b,envB)
-        try:
+    def test_job_entries_reuse_authority_and_never_own_its_server(self):
+        authority=job.cache_authority()
+        with patch.object(job,'cache_authority',return_value=authority),patch.object(authority,'admitted') as admit:
+            owner={'scope':'host-shared'};admit.return_value=owner
+            first,status=job.start_cache(self.d/'a',{})
+            second,status2=job.start_cache(self.d/'b',{})
             self.assertEqual((status,status2),('ready','ready'))
-            self.assertNotEqual(first['pid'],second['pid']);self.assertNotEqual(first['endpoint'],second['endpoint'])
-            job.stop_server(first)
-            r=subprocess.run([job.SCCACHE,'--show-stats'],env=envB,capture_output=True)
-            self.assertEqual(r.returncode,0);self.assertEqual(job.server_identity(b/'sccache.sock')['pid'],second['pid'])
-            stale={**second,'identity':'wrong birth'};job.stop_server(stale)
-            self.assertEqual(job.server_identity(b/'sccache.sock')['pid'],second['pid'])
-            self.assertEqual(envA['SCCACHE_DIR'],'/mnt/bb/sccache');self.assertEqual(envA['SCCACHE_IDLE_TIMEOUT'],'120')
-        finally:job.stop_server(first);job.stop_server(second)
+            self.assertIs(first,second);self.assertEqual(admit.call_count,2)
+            with patch.object(job.os,'pidfd_open') as opened:
+                job.stop_server(first);opened.assert_not_called()
 
     def test_cache_exit_during_pidfd_cleanup_is_already_stopped(self):
         server={'pid':123,'identity':'fixture','endpoint':'/mnt/bb/jobs/fixture.sock','pid_namespace':job.pid_namespace()}
@@ -818,11 +943,11 @@ module.serve()
             self.assertNotEqual(again.returncode,0) # both jobs collide on one server
         finally:subprocess.run([job.SCCACHE,'--stop-server'],env=env,capture_output=True)
 
-    def test_startup_failure_is_explicit_and_uncached(self):
+    def test_policy_failure_is_explicit_and_never_falls_back(self):
         d=self.d/'failed';d.mkdir();env=dict(os.environ)
-        with patch.object(job.subprocess,'run',return_value=subprocess.CompletedProcess([],2,'','forced bind failure')):
-            server,status=job.start_cache(d,env)
-        self.assertIsNone(server);self.assertEqual(status,'startup-failed:forced bind failure')
+        authority=job.cache_authority()
+        with patch.object(job,'cache_authority',return_value=authority),patch.object(authority,'admitted',side_effect=RuntimeError('CACHE_POLICY control')):
+            with self.assertRaisesRegex(RuntimeError,'CACHE_POLICY'):job.start_cache(d,env)
 
 if __name__=='__main__':
     # Keep the kernel-boundary and lifecycle suites independently measurable.

@@ -9,7 +9,10 @@ prs="$*"; n=$(echo $prs | tr ' ' '+'); W=Q:/wt/pr-gate; L=Q:/lanes/pr-gate; mkdi
 # Local preparation failures have a separate held state, never a bb2 retry.
 python Q:/lanes/gate-prepare.py prepare $prs; preparation_rc=$?
 [ "$preparation_rc" = 0 ] || exit "$preparation_rc"
-pin_reason=$(python Q:/lanes/gate-merge.py record $prs 2>&1); pin_rc=$?
+# Reserve a unique pathname, then let the sole recorder create it exclusively.
+pin=$(mktemp "$L/pin.XXXXXXXX.json") || exit 6
+rm -f "$pin"
+pin_reason=$(python Q:/lanes/gate-merge.py record $prs --pin "$pin" 2>&1); pin_rc=$?
 if [ "$pin_rc" != 0 ]; then
   printf '%s\n' "$pin_reason"
   python Q:/lanes/gate-prepare.py hold $prs --reason "$pin_reason"
@@ -45,6 +48,36 @@ if ! python Q:/lanes/gate-affected.py "$W" "$base" --output "$W/.gate-selection.
   exit 1
 fi
 cp "$W/.gate-selection.json" "$log.scope.json"
+# Admit baseline prerequisites before staging or dispatching a candidate.
+# Missing evidence uses the existing exit-5 parking and publication wake-up.
+# Prefer completed tests on the exact prepared base, even when another main
+# phase is red. Historical green coverage only anchors focused qualification
+# when the current workspace tests themselves did not complete successfully.
+if ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase tests --exact 2> "$log.baseline-error") &&
+   ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" 2>> "$log.baseline-error"); then
+  cat "$log.baseline-error" >> "$log"
+  echo "GATE BASELINE #$n: no complete main baseline; verdict deferred log=$log"
+  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE #$n: no complete main baseline; verdict deferred log=$log" >> ~/.codex-fleet/alerts.log
+  exit 5
+fi
+echo "GATE_BASELINE log=$base_log" >> "$log"
+clippy_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase clippy --exact 2>> "$log.baseline-error")
+features_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase features --exact 2>> "$log.baseline-error")
+if [ -z "$clippy_base" ] || [ -z "$features_base" ]; then
+  cat "$log.baseline-error" >> "$log"
+  v="BASELINE #$n: exact-base main check selection step unavailable for $base; recovery command: python Q:/lanes/gate-baseline.py '$W' '$base' --phase features --exact; diagnostics=$log.baseline-error"
+  echo "GATE $v"
+  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 5
+fi
+echo "GATE_CHECKS_BASELINE clippy=$clippy_base features=$features_base" >> "$log"
+# The selected qualified references are part of the candidate's declared input
+# closure. Snapshot them into its upload and compare those same immutable bytes.
+python Q:/lanes/input_closure.py capture --base "$base" --output "$W/.gate-inputs.json" \
+  --input tests "$base_log" '[]' --input clippy "$clippy_base" '[]' --input features "$features_base" '[]' > "$log.inputs.json" || exit 5
+base_log=$(python Q:/lanes/input_closure.py path --manifest "$W/.gate-inputs.json" --input tests) || exit 5
+clippy_base=$(python Q:/lanes/input_closure.py path --manifest "$W/.gate-inputs.json" --input clippy) || exit 5
+features_base=$(python Q:/lanes/input_closure.py path --manifest "$W/.gate-inputs.json" --input features) || exit 5
 # The payload belongs to the reviewed candidate. An independently installed
 # runner can silently omit newly required phases, even with a green footer.
 cp "$W/scripts/pr-gate-checks.sh" "$W/.gate-checks.sh" || {
@@ -55,6 +88,15 @@ cp Q:/lanes/gate-test-runner.sh "$W/.gate-test-runner.sh"
 # The coordinator helper also protects PRs based on an older source runner.
 printf '\nexport GATE_TEST_RUNNER_SCRIPT=.gate-test-runner.sh\n' > "$W/.gate-runner-env"
 sed -i '2r '"$W/.gate-runner-env" "$W/.gate-checks.sh"
+# Older reviewed source runners predate diagnostic-stream receipts. Attest
+# their emitted records against the private Cargo output before job cleanup;
+# never synthesize completion from the coordinator's potentially partial log.
+cp Q:/lanes/gate-clippy.py "$W/.gate-clippy.py" &&
+  mv "$W/.gate-checks.sh" "$W/.gate-pr-payload.sh" &&
+  printf '%s\n' '#!/bin/bash' 'exec python3 .gate-clippy.py run bash .gate-pr-payload.sh "$@"' > "$W/.gate-checks.sh" || {
+    echo "error: GATE_RUNNER_INFRA Clippy stream adapter preparation failed; recovery command: bash Q:/lanes/pr-gate.sh $prs" >> "$log"
+    exit 6
+  }
 if [ "$(tr -d '\r' < "$W/.gate-scope-mode")" = full ] || grep -qx 'acyclic-native-runtime' "$W/.gate-clippy-packages" "$W/.gate-tests-packages"; then
   echo 'GATE_WINDOWS_RUNTIME_REQUIRED target=x86_64-pc-windows-gnu package=acyclic-native-runtime features=all targets=all' >> "$log"
 fi
@@ -64,7 +106,7 @@ if [ ! -s "$W/.gate-tests-packages" ]; then
 else
   # Windows native stdout/stderr can reopen a redirected file at separate
   # positions. Give them a pipe; tee alone owns the append descriptor.
-  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) 2>&1 | tee -a "$log" >/dev/null
+  (cd "$W" && BUILD_SLOT_TIER=merge WSLENV=BUILD_SLOT_TIER pwsh -NoProfile -File Q:/lanes/bs.ps1 "${box_env[@]}" --env BUILD_SLOT_INPUTS_FILE=.gate-inputs.json --env BUILD_SLOT_TIER=merge --env BUILD_SLOT_PR="$n" --env BUILD_SLOT_PHASE=pr-gate --env BUILD_SLOT_GATE_PREPARATION_SECONDS="$preparation_seconds" --env BUILD_SLOT_LABEL=pr-gate --env BUILD_SLOT_GATE_LOG="$log" bash .gate-checks.sh $skips) 2>&1 | tee -a "$log" >/dev/null
   capture_status=("${PIPESTATUS[@]}"); rc=${capture_status[0]}
   if [ "${capture_status[1]}" != 0 ]; then
     echo 'error: GATE_RUNNER_INFRA coordinator log writer failed' >> "$log"
@@ -121,23 +163,6 @@ if [ "$phase_status" != 0 ]; then
   echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log
   exit "$code"
 fi
-# One selector owns the test and lint baseline. A failed wide discovery run
-# cannot displace the last green narrow run or claim unexecuted packages.
-if ! base_log=$(python Q:/lanes/gate-baseline.py "$W" "$base" 2> "$log.baseline-error"); then
-  cat "$log.baseline-error" >> "$log"
-  echo "GATE BASELINE #$n: no complete main baseline; verdict deferred log=$log"
-  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE #$n: no complete main baseline; verdict deferred log=$log" >> ~/.codex-fleet/alerts.log
-  exit 5
-fi
-echo "GATE_BASELINE log=$base_log" >> "$log"
-clippy_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase clippy 2>> "$log.baseline-error")
-features_base=$(python Q:/lanes/gate-baseline.py "$W" "$base" --phase features 2>> "$log.baseline-error")
-if [ -z "$clippy_base" ] || [ -z "$features_base" ]; then
-  echo "GATE BASELINE #$n: complete main check baseline unavailable; verdict deferred log=$log"
-  echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE #$n: complete main check baseline unavailable; verdict deferred log=$log" >> ~/.codex-fleet/alerts.log
-  exit 5
-fi
-echo "GATE_CHECKS_BASELINE clippy=$clippy_base features=$features_base" >> "$log"
 test_base_log=""
 if { [ "$rc" != 0 ] || grep -aqE '^GATE_CLIPPY rc=[1-9]' "$log"; } && [ "$rc" != 224 ] && grep -aq '^GATE_DONE rc=' "$log" && ! grep -aq 'No space left on device' "$log"; then
   if ! test_base_log=$(GATE_BASELINE_PRS="$n" python Q:/lanes/gate-test-baseline.py "$W" "$base" "$log" --scope "$W/.gate-selection.json" --baseline-log "$base_log" 2> "$log.baseline-error"); then
@@ -148,10 +173,33 @@ if { [ "$rc" != 0 ] || grep -aqE '^GATE_CLIPPY rc=[1-9]' "$log"; } && [ "$rc" !=
   fi
   [ -z "$test_base_log" ] || echo "GATE_TEST_BASELINE log=$test_base_log" >> "$log"
 fi
+# Cargo can finish with101 after killing one binary and running later targets.
+# Qualify main first: an incomplete focused baseline must defer the PR verdict.
+cutoff_reason=$(python Q:/lanes/gate-hang.py "$log" --executor-rc "$rc" --binary-cutoffs); cutoff_rc=$?
+if [ "$cutoff_rc" = 0 ]; then
+  v="FAIL #$n: $cutoff_reason log=$log"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_FAIL ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 1
+elif [ "$cutoff_rc" != 1 ]; then
+  v="INFRA #$n: binary-cutoff evidence step failed rc=$cutoff_rc; recovery command: python Q:/lanes/gate-hang.py '$log' --executor-rc '$rc' --binary-cutoffs"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_INFRA ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 4
+fi
 # Keep the prepared tree until gate-drain verifies its head pins and merges.
 # The next preparation owns resetting this checkout.
 pr_fails=$(bash Q:/lanes/failed-tests.sh $log)
-base_fails=$( { bash Q:/lanes/failed-tests.sh "$base_log" 2>/dev/null; [ -z "$test_base_log" ] || bash Q:/lanes/failed-tests.sh "$test_base_log"; cat Q:/lanes/flakes.txt; } | sort -u)  # known flakes (owned, being fixed) never block a PR
+# The historical green log is a coverage anchor, not evidence of failures on
+# this base. A complete focused result replaces it, never unions its failures.
+effective_test_base=""
+if [ -n "$test_base_log" ]; then effective_test_base=$test_base_log
+elif [ "$(basename "$base_log" .log)" = "$base" ]; then effective_test_base=$base_log
+elif [ -n "$pr_fails" ]; then
+  v="BASELINE #$n: exact-base test comparison step unavailable for $base; recovery command: python Q:/lanes/gate-test-baseline.py '$W' '$base' '$log' --scope '$W/.gate-selection.json' --baseline-log '$base_log'"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_BASELINE ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 5
+fi
+echo "GATE_COMPARISON_BASE base=$base tests=${effective_test_base:-none-no-failing-tests} clippy=$clippy_base features=$features_base" >> "$log"
+base_fails=$( { [ -z "$effective_test_base" ] || bash Q:/lanes/failed-tests.sh "$effective_test_base"; cat Q:/lanes/flakes.txt; } | sort -u)
 new=$(comm -23 <(printf '%s\n' "$pr_fails" | grep .) <(printf '%s\n' "$base_fails" | grep .))
 compile=$(grep -cE '^error(\[E[0-9]+\])?:' $log)
 results=$(grep -cE '^test result:' $log)
@@ -165,7 +213,7 @@ elif [ -n "$terminated" ]; then v="INFRA #$n: build process terminated ($termina
 # failure. The focused main check above has already qualified compiler roots.
 elif grep -aq '^error: could not compile ' "$log"; then v="FAIL #$n: build errors ($compile): $cargo_errors log=$log"
 elif [ "$compile" -gt 0 ] && [ -z "$pr_fails" ]; then v="FAIL #$n: build errors ($compile): $cargo_errors log=$log"
-elif [ -n "$new" ]; then v="FAIL #$n: new failures vs main ($(basename $base_log .log)): $(printf '%s ' $new | cut -c1-500) log=$log"
+elif [ -n "$new" ]; then v="FAIL #$n: new failures vs exact main (${base:0:10}): $(printf '%s ' $new | cut -c1-500) log=$log"
 # A run cut off mid-stream (ssh drop, box stop) can still exit 0 with partial "test result" lines: without gate-checks.sh's
 # GATE_DONE marker the run proves nothing (2026-10-22: #1334 passed on a log truncated mid-test, with no clippy step).
 elif ! grep -aq '^GATE_DONE rc=' $log; then v="INFRA #$n: run cut off before gate-checks finished (rc=$rc) log=$log"
@@ -173,9 +221,15 @@ elif [ $rc = 224 ] && grep -aq '^\[build-slot\] remote failed:' $log; then v="IN
 elif [ $rc != 0 ] && [ "$results" -eq 0 ]; then v="FAIL #$n: no test results (rc=$rc): ${cargo_errors:-no Cargo error diagnostics captured} log=$log"
 elif grep -aq '^GATE_EMPTY no changed Cargo inputs$' "$log"; then v="PASS #$n: no changed Cargo inputs log=$log"
 # Clippy and feature-set ratchet: no (file, lint) count above main's, no new compiler error, no newly failing feature set.
-elif ! checks=$(bash Q:/lanes/gate-checks-verdict.sh "$log" "$base_log" "$clippy_base" "$features_base"); then v="FAIL #$n: new clippy/feature findings vs qualified main checks: $(printf '%s' "$checks" | tr '\n' ';' | cut -c1-500) log=$log"
-else v="PASS #$n: no new failures ($(printf '%s\n' "$pr_fails" | grep -c .) pre-existing on main; $(printf '%s' "$checks" | tr '\n' ' ')) log=$log"; fi
+else
+  checks=$(bash Q:/lanes/gate-checks-verdict.sh "$log" "$base_log" "$clippy_base" "$features_base" 2>&1); checks_rc=$?
+  case "$checks_rc" in
+    0) v="PASS #$n: no new failures ($(printf '%s\n' "$pr_fails" | grep -c .) pre-existing on main; $(printf '%s' "$checks" | tr '\n' ' ')) log=$log";;
+    1) v="FAIL #$n: new clippy/feature findings vs qualified main checks: $(printf '%s' "$checks" | tr '\n' ';' | cut -c1-500) log=$log";;
+    *) v="INFRA #$n: clippy/feature interpretation step failed rc=$checks_rc: $(printf '%s' "$checks" | tr '\n' ';' | cut -c1-500); recovery command: bash Q:/lanes/gate-checks-verdict.sh '$log' '$base_log' '$clippy_base' '$features_base' log=$log";;
+  esac
+fi
 printf '%s\n' "$checks" > "$log.checks"
 echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_${v%% *} ${v#* }" >> ~/.codex-fleet/alerts.log
 # Exit 4 = the build box failed (spot stop, ssh loss): the drain re-queues the batch instead of bisecting it.
-case $v in PASS*) exit 0;; INFRA*) exit 4;; *) exit 1;; esac
+case $v in PASS*) printf 'GATE_PASS_PIN %s\n' "$pin"; exit 0;; INFRA*) exit 4;; *) exit 1;; esac

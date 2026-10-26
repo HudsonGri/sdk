@@ -85,6 +85,15 @@ export function processIdentity(pid) {
   } catch { return null; }
 }
 const read = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+function startWatcher(file) {
+  // A maintenance recovery may encounter the same orphan repeatedly. One
+  // kernel lease owns its watcher; a second recovery cannot multiply waiters.
+  const watcher = spawn('flock', ['--exclusive', '--nonblock', '--no-fork',
+    file + '.watch-lock', process.execPath, new URL(import.meta.url).pathname, 'watch', file],
+    {detached:true, stdio:'ignore'});
+  watcher.unref();
+  return watcher;
+}
 function requireMeta(file) {
   const result = recoveryRecord(file);
   if (result.kind !== 'valid') throw new Error(`receipt metadata INFRA: ${result.kind}:${result.reason}: ${file}`);
@@ -102,10 +111,7 @@ export function arm(file, meta, pid = process.pid) {
     namespace_custody: 'pidns-v1', namespace_scope: scope,
     owner: { pid: Number(pid), identity: processIdentity(pid), pid_namespace: pidNamespace() } });
   if (scope) fs.appendFileSync(scope.registration_file + '.children', JSON.stringify(file) + '\n', {mode:0o600});
-  const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], {
-    detached: true, stdio: 'ignore'
-  });
-  p.unref();
+  startWatcher(file);
 }
 export function execution(metaFile) {
   const meta = read(metaFile);
@@ -196,6 +202,10 @@ function finishLocked(metaFile, rc, category, extra = {}) {
     const exec = read(metaFile + '.exec');
     const out = { exec_start: null, toolchain: null, ...m, ...exec, end: new Date().toISOString(), exit_status: Number(rc), termination: category,
       ...runtime, ...extra };
+    const leaseTerminal = metaFile + '.cpu-lease.terminal';
+    const cpuLease = read(leaseTerminal) || read(metaFile + '.cpu-lease');
+    if (cpuLease) out.cpu_lease = {...cpuLease, terminal_file: leaseTerminal,
+      counters_pending: cpuLease.empty !== true};
     // Retain the original ledger's basic fields for existing cost readers.
     out.at = out.end; out.rc = out.exit_status; out.cwd = out.worktree;
     out.wall = (Date.parse(out.end) - Date.parse(out.admission_start)) / 1000;
@@ -300,8 +310,7 @@ export function recover(dir) {
         (canObserveOwner(m.owner) && processIdentity(m.owner.pid) !== m.owner.identity || endedNamespace(m))) {
       const job = read(file + '.job');
       if (canObserveOwner(job) && processIdentity(job.pid) === job.identity) {
-        const p = spawn(process.execPath, [new URL(import.meta.url).pathname, 'watch', file], { detached: true, stdio: 'ignore' });
-        p.unref(); outcomes.push({file, outcome:'watching'}); continue;
+        startWatcher(file); outcomes.push({file, outcome:'watching'}); continue;
       }
       const result = finish(file, 137, 'interrupted', { reason: 'receipt owner absent during recovery' });
       if (result && m.job_prefix) {
@@ -323,7 +332,9 @@ export function recover(dir) {
 // Native bb2 entry point, including scripts which invoke build-slot recursively.
 // Children retain a parent_log_id so cost readers never sum parent and child time.
 export async function runBb(script, args) {
-  const dir = '/mnt/bb/jobs'; fs.mkdirSync(dir, { recursive: true }); recover(dir);
+  // Each arm owns its watcher; admission must not traverse or finish unrelated
+  // records. Explicit recovery remains available to the maintenance owner.
+  const dir = '/mnt/bb/jobs'; fs.mkdirSync(dir, { recursive: true });
   const stamp = Date.now() + '-' + process.pid + '-' + crypto.randomUUID().slice(0, 8);
   const prefix = `${dir}/native-${stamp}`, file = prefix + '.receipt-meta.v2.json';
   const parentFile = process.env.BUILD_SLOT_RECEIPT_META || namespaceRecord()?.parent_receipt_meta;

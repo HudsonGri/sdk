@@ -1,5 +1,42 @@
 # Build-box runtime and gate dispatch
 
+Script-driven compiler producers explicitly opt in to the same policy as direct
+Cargo with `pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BUILD_SLOT_COMPILER=1
+--env BUILD_SLOT_PR=NUMBER --env BUILD_SLOT_PHASE=LABEL bash DRIVER.sh`. This is
+the source contract for the coordinated runtime cut-over, not permission to
+install a private compiler/cache. The single `admission_policy.compiler_request`
+decision admits the wrapper before execution; the generated transport preserves
+that admitted environment. Other tools retain their own compiler capture setup.
+Declare and validate all producer/reference inputs through `input_closure.py`
+before dispatch. Keep outputs under job TMPDIR until compilation finishes;
+changing uploaded source refuses target snapshot adoption/publication. Receipts
+report the exact source/argv/toolchain and sccache counters. Cargo `fresh=false`
+alone says nothing about sccache hits. Reserve transport/export time within the
+600-second total job budget; a remote ceiling of 510 seconds is an upper bound,
+not a prediction that an unmeasured graph fits it.
+
+The same prerequisite parser has a public `run` boundary for script-driven
+consumers. Set `BUILD_SLOT_INPUTS_FILE` to the complete captured manifest, then
+invoke `python3 -B scripts/buildbox/input_closure.py run --root "$PWD" --base
+FULL_BASE_SHA -- bash DRIVER.sh`. It admits the entire declared closure before
+executing the command, writes `BB_INPUTS_ADMITTED` only to stderr, and preserves
+the child's stdout and terminal status. Client `validate --stage client`
+remains the pre-transport check; on-box `run` checks again before any compiler
+side effect. This works with a byte-identical, source-pinned helper artifact
+before the new automatic host generation is installed; it does not imply that
+the older installed build-slot enforces a manifest automatically.
+
+A reference declaration binds qualified bytes, not a headline verdict. Include
+the exact producer source/command/features/target/toolchain proof alongside each
+comparison log. A workspace Clippy receipt cannot establish equivalence to a
+different named-package invocation. Missing producer custody is a prerequisite
+refusal, never a reason to rebuild an already-qualified candidate.
+
+The worker records its private mount namespace and releases custody without
+walking job HOME. The existing terminal receipt owner first reaps the worker,
+then performs cleanup from the outer namespace. Cleanup from the recorded
+private namespace is a typed refusal, including after disconnected FUSE tests.
+
 This directory is the maintained source for the coordinator's bb2 runtime.
 `bb-job.py`, `bb-admit.py`, `bb-admit`, `build-slot`, `sccache-rustc`,
 `buildbox-receipt.mjs`, `job_exports.py` and the SDK source-copy pruner install
@@ -128,3 +165,12 @@ checkout, clean and runner copy. HEAD and the copied runner are verified again
 before publishing results. The attempted commit is persisted before preparation
 or dispatch, so a coordinator restart cannot forget an infrastructure hold.
 Only a changed commit or explicit `.rerun` authorizes that held input again.
+
+Receipt admission arms only its own metadata and watcher. Historical recovery
+is an explicit maintenance operation (`node buildbox-receipt.mjs recover DIR`),
+not a prerequisite of client, remote-wrapper or native admission. It must not
+be invoked by each producer. SDK source retirement takes its nonblocking global
+maintenance lease before inspecting host processes; a concurrent caller reports
+`maintenance=owned-by-peer` with unknown capacity, rather than repeating that
+traversal or certifying the peer's result. Per-source leases and disk admission
+remain authoritative for the admitted job.

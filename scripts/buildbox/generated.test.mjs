@@ -1,10 +1,208 @@
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import test from 'node:test';
+import {gitPrepInvocation,maintenanceResult} from './buildbox.mjs';
 const here=path.dirname(new URL(import.meta.url).pathname);
+
+test('source preparation streams arbitrary launch and binary payload bytes through one bounded command',()=>{
+ const root=fs.mkdtempSync(path.join(tmpdir(),'streamed-launch-'));
+ const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+ try{
+  const prep=path.join(root,'prepare.mjs');
+  fs.writeFileSync(prep,`import fs from 'node:fs';
+const [root,...args]=process.argv.slice(2);
+fs.appendFileSync(root+'/preparations','prepared\\n');
+fs.writeFileSync(root+'/payload',fs.readFileSync(0));
+fs.writeFileSync(root+'/arguments',JSON.stringify(args));
+if(process.env.PREP_FAIL)process.exit(Number(process.env.PREP_FAIL));
+console.log('prepared');`);
+  const payload=Buffer.alloc(256*1024);
+  for(let i=0;i<payload.length;i++)payload[i]=i%256;
+  for(const repo of ['sdk','cloud']){
+   const directory=path.join(root,repo+' fixture');fs.mkdirSync(directory);
+   const job=path.join(directory,'job'),worktree=path.join(directory,'source');
+   const effect=path.join(directory,'effect');
+   const launch='#'+ 'x'.repeat(1024*1024)+'\n'+
+    `printf '%s' 'exact action' >> ${quote(effect)}\ntouch ${quote(job+'.wpid')}\necho launched\n`;
+   // sdk maintenance rides the same connection: a fixture maintainer that warns and fails proves its status and
+   // stderr come back framed on every exit path, launched or refused.
+   const maintainer=path.join(directory,'maintain.sh');
+   fs.writeFileSync(maintainer,"#!/bin/bash\necho >&2 'BB_WT_PRUNE_FAILED fixture'\nexit 3\n",{mode:0o755});
+   const invocation=gitPrepInvocation(repo,worktree,'a'.repeat(40),job,launch,payload,quote(maintainer));
+   const maintained=(stdout)=>{
+    const result=maintenanceResult(stdout);
+    if(repo!=='sdk'){assert.equal(result,null);return;}
+    assert.equal(result.status,3);assert.equal(result.stderr.toString(),'BB_WT_PRUNE_FAILED fixture\n');
+   };
+   assert.equal(invocation.command,'bash -s');
+   assert.equal(invocation.input.toString().split('/usr/local/bin/bb-git-prep').length,2);
+   const input=invocation.input.toString()
+    .replaceAll('/mnt/bb/locks/wt-sdk',path.join(root,'locks'))
+    .replace('/usr/local/bin/bb-git-prep',`${quote(process.execPath)} ${quote(prep)} ${quote(directory)}`);
+   const run=extra=>spawnSync('bash',['-s'],{input,env:{...process.env,...extra},encoding:'utf8'});
+   const current=run({});
+   assert.equal(current.status,0,current.stderr);
+   assert.match(current.stdout,repo==='sdk'?/prepared\nlaunched\nBB_MAINTAIN 3 \S+\n$/:/prepared\nlaunched\n$/);maintained(current.stdout);
+   assert.deepEqual(fs.readFileSync(path.join(directory,'payload')),payload);
+   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory,'arguments'))),
+    [worktree,'a'.repeat(40),...(repo==='sdk'?['sdk']:[])]);
+   assert.equal(fs.readFileSync(effect,'utf8'),'exact action');
+   assert.equal(run({}).status,0);
+   assert.equal(fs.readFileSync(path.join(directory,'preparations'),'utf8'),'prepared\n');
+   assert.equal(fs.readFileSync(effect,'utf8'),'exact action','acknowledged ownership cannot launch twice');
+   fs.unlinkSync(job+'.wpid');fs.unlinkSync(effect);
+   const refused=run({PREP_FAIL:'73'});
+   assert.equal(refused.status,73,refused.stderr);maintained(refused.stdout);
+   assert.equal(fs.existsSync(effect),false,'failed preparation must block launch');
+   // Restore the former production transport: its full generated launch is
+   // one SSH exec argument. The actual kernel refuses it before any effect.
+   const former=`echo ${Buffer.from(launch).toString('base64')} | base64 -d | bash`;
+   const negative=spawnSync('bash',['-c',former],{input:payload});
+   assert.equal(negative.error?.code,'E2BIG');
+   assert.equal(fs.existsSync(effect),false);
+  }
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+
+test('new admission never traverses unrelated receipt records',()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'receipt-admission-'));
+ try{
+  const directory=path.join(here,'fixtures/startup-readiness');
+  const former=fs.readFileSync(path.join(directory,'former-begin-receipt.mjs.txt'),'utf8');
+  const origin=JSON.parse(fs.readFileSync(path.join(directory,'former-begin-receipt.origin.json')));
+  assert.equal(spawnSync('sha256sum',[path.join(directory,'former-begin-receipt.mjs.txt')],{encoding:'utf8'}).stdout.split(' ')[0],origin.fixture_sha256);
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  for(const negative of [false,true]){
+   const root=path.join(cwd,negative?'former':'current');fs.mkdirSync(root);
+   const file=path.join(root,'buildbox.mjs');
+   let selected=source.replace("const LOGDIR = '/home/var/log/buildbox';",'const LOGDIR = '+JSON.stringify(root)+';');
+   if(negative){
+    const first=selected.indexOf('export function beginReceipt(argv) {');
+    const last=selected.indexOf('export function endReceipt(',first);
+    selected=selected.slice(0,first)+former+selected.slice(last);
+    selected=selected.replace('import { arm, atomic, finish }','import { arm, atomic, finish, recover }');
+   }
+   fs.writeFileSync(file,selected);
+   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(root,'buildbox-receipt.mjs'));
+   const result=spawnSync(process.execPath,['--input-type=module','-e',`
+    import fs from 'node:fs';
+    const original=fs.readdirSync;
+    fs.readdirSync=function(dir,...args){
+      if(dir===${JSON.stringify(root)}) throw new Error('unrelated receipt storage unavailable');
+      return original.call(this,dir,...args);
+    };
+    const m=await import(${JSON.stringify(file)});
+    const ctx=m.beginReceipt(['true']);
+    m.endReceipt(ctx,0);
+    console.log('OWN_RECEIPT_COMPLETED');
+   `],{cwd:root,encoding:'utf8'});
+   if(negative){assert.notEqual(result.status,0);assert.match(result.stderr,/unrelated receipt storage unavailable/);}
+   else {assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/OWN_RECEIPT_COMPLETED/);}
+  }
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+test('launch acknowledgement follows observable wrapper readiness, including slow recovery and early death',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'wrapper-readiness-'));
+ try{
+  fs.writeFileSync(path.join(cwd,'generator.mjs'),fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport {launchScript};\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {launchScript}=await import(path.join(cwd,'generator.mjs'));
+  const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
+  const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{});
+  const encoded=script.match(/echo ([A-Za-z0-9+/=]+) \| base64 -d > \$J\.wrap\b/);
+  const wrapper=Buffer.from(encoded[1],'base64').toString();
+  assert.doesNotMatch(wrapper,/receipt-tool\.mjs recover /u,'remote admission only arms its own receipt');
+  const start=wrapper.indexOf('echo $$ > $J.wpid');
+  const close=wrapper.indexOf('exec 3>&-',start);
+  assert.ok(start>=0&&close>start);
+  const acknowledgement=wrapper.slice(start,close+'exec 3>&-'.length);
+  assert.doesNotMatch(acknowledgement,/bb-admit|receipt-meta/u,'fixture executes only the generated acknowledgement');
+  assert.ok(start>wrapper.indexOf('node $J.receipt-tool.mjs arm'),'receipt custody precedes acknowledgement');
+  const current=script.slice(script.lastIndexOf('ready=$(setsid'));
+  const directory=path.join(here,'fixtures/startup-readiness');
+  const origin=JSON.parse(fs.readFileSync(path.join(directory,'origin.json')));
+  const former=fs.readFileSync(path.join(directory,'former-launch.sh.txt'),'utf8');
+  const {createHash}=await import('node:crypto');
+  assert.equal(createHash('sha256').update(former).digest('hex'),origin.sha256);
+  function waitPath(file){
+   return new Promise((resolve,reject)=>{
+    const watcher=fs.watch(cwd,()=>{if(fs.existsSync(file)){watcher.close();resolve();}});
+    watcher.on('error',reject);
+    if(fs.existsSync(file)){watcher.close();resolve();}
+   });
+  }
+  function launch(prefix,body){
+   const child=spawn('bash',['-c',`set -eu\nJ='${prefix}'\n${body}`],{stdio:['ignore','pipe','pipe']});
+   let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);
+   const completed=new Promise((resolve,reject)=>child.on('error',reject).on('close',status=>resolve({status,stdout,stderr})));
+   return {child,completed};
+  }
+  for(const negative of [true,false]){
+   const prefix=path.join(cwd,negative?'former':'current');
+   assert.equal(spawnSync('mkfifo',[prefix+'.release']).status,0);
+   // An OS FIFO is a deterministic barrier for the wrapper's pre-readiness
+   // recovery, not fabricated provider output or a raised production budget.
+   fs.writeFileSync(prefix+'.wrap',`J='${prefix}'\ntouch "$J.blocked"\nread -r release < "$J.release"\n${negative?'echo $$ > $J.wpid':acknowledgement}\ntouch "$J.ran"\n`);
+   const blocked=waitPath(prefix+'.blocked'),ran=waitPath(prefix+'.ran');
+   const job=launch(prefix,negative?former:current);
+   await blocked;
+   if(negative){
+    const result=await job.completed;
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.trim(),'launched');
+    assert.equal(fs.existsSync(prefix+'.wpid'),false,'actual former launch reports readiness before the wrapper is observable');
+    assert.equal(fs.existsSync(prefix+'.ran'),false);
+   }else{
+    assert.equal(job.child.exitCode,null,'acknowledgement remains blocked by actual wrapper readiness');
+   }
+   fs.writeFileSync(prefix+'.release','release\n');
+   await ran;
+   if(!negative){
+    const result=await job.completed;
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.trim(),'launched');
+    assert.ok(fs.existsSync(prefix+'.wpid'));
+   }
+  }
+  const prefix=path.join(cwd,'early-death');
+  fs.writeFileSync(prefix+'.wrap','exit 73\n');
+  const refused=await launch(prefix,current).completed;
+  assert.equal(refused.status,224,refused.stdout+refused.stderr);
+  assert.equal(refused.stdout,'');
+  assert.match(refused.stderr,/kind=LAUNCH_INFRA step=wrapper-readiness owner=gate-speed recovery=build-slot --remote/u);
+ }finally{fs.rmSync(cwd,{recursive:true,force:true});}
+});
+// Test callers name their tenant explicitly, exactly as production callers
+// must at cut-over; the launcher has no repository/name inference fallback.
+process.env.BUILD_SLOT_TENANT='graphcoder';
+
+test('both services require an explicit tenant and generated phases inherit one kernel lease',async()=>{
+ const cwd=fs.mkdtempSync(path.join(tmpdir(),'cpu-lease-dispatch-'));
+ const saved=process.env.BUILD_SLOT_TENANT;
+ try{
+  const file=path.join(cwd,'generator.mjs');
+  const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
+  fs.writeFileSync(file,source+'\nexport {tenantOf};\n');
+  fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  const {tenantOf}=await import(file);
+  for(const tenant of ['graphcoder','cloud']){
+   process.env.BUILD_SLOT_TENANT=tenant;
+   assert.equal(tenantOf('unrelated-label','/other/worktree','sdk',['printf','a b']),tenant);
+  }
+  delete process.env.BUILD_SLOT_TENANT;
+  assert.throws(()=>tenantOf('gate-speed','/sdk','sdk',['printf','a b']),/CPU_LEASE.*tenant-label.*recovery=.*printf/u);
+  // Actual former inference/default shape admits an unlabelled SDK caller.
+  assert.equal((()=>process.env.BUILD_SLOT_TENANT||'graphcoder')(),'graphcoder');
+  assert.ok(source.includes('cpu_leases.py work'));
+  assert.doesNotMatch(source,/systemd-run --scope -q --slice=bbjobs\.slice/u);
+ }finally{
+  process.env.BUILD_SLOT_TENANT=saved;fs.rmSync(cwd,{recursive:true,force:true});
+ }
+});
 
 test('gate execution never replays a historical PASS verdict',async()=>{
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'gate-no-verdict-replay-'));
@@ -156,7 +354,7 @@ const requestHash=crypto.createHash('sha256').update(inner.slice(first+1).split(
 if(inner.slice(0,first)!=='export BB_TARGET_REQUEST_SHA256='+requestHash)throw Error('generated Cargo provenance digest lost or incomplete');
 if(!inner.includes('PATH=/home/var/bin/bb-cargo:'))throw Error('nested Cargo bypasses target proxy');
 if(input[0]==='cargo' && !inner.includes('/home/var/bin/bb-cargo/cargo'))throw Error('explicit Cargo bypasses target proxy');
-if(inner.includes('unset RUSTC RUSTC_WRAPPER')===(gate||input[0]==='cargo'))throw Error('gate dropped compiler cache or generic toolchain was overridden');
+if(/(?:unset RUSTC|export RUSTC=|export RUSTC_WRAPPER=)/u.test(inner))throw Error('transport replaced the canonical admitted compiler policy');
 if(inner.includes('ulimit -n'))throw Error('job overrides caller nofile limit');
 if(!bodies[2].includes('admission_policy.py exec-user var --'))throw Error('scope loses caller limits');
 if(!bodies[2].includes('--preserve-env=BB_CALLER_RLIMITS_JSON'))throw Error('sudo drops caller limits');
@@ -178,9 +376,9 @@ if(script.includes('/mnt/bb/targets/sdk/fixture'))throw Error('persistent target
   }
   const generator=path.join(cwd,'generator.mjs');
   const original=fs.readFileSync(generator,'utf8');
-  fs.writeFileSync(generator,original.replace('cargoJob || Boolean(receipt?.gate_log)','cargoJob'));
+  fs.writeFileSync(generator,original.replace('${testRunner()}','${testRunner()}unset RUSTC RUSTC_WRAPPER'));
   const negative=spawnSync(process.execPath,[file],{encoding:'utf8'});
-  assert.notEqual(negative.status,0);assert.match(negative.stderr,/gate dropped compiler cache/);
+  assert.notEqual(negative.status,0);assert.match(negative.stderr,/transport replaced the canonical admitted compiler policy/);
   fs.writeFileSync(generator,original.replaceAll('BB_CACHE_DISABLED=1 BB_TARGET_STORE_DISABLED=1','BB_COLD_DISABLED_CONTROL=1'));
   const coldNegative=spawnSync(process.execPath,[file],{encoding:'utf8',env:{...process.env,BUILD_SLOT_REMOTE_COLD:'1'}});
   assert.notEqual(coldNegative.status,0);assert.match(coldNegative.stderr,/cold jobs can restore or publish snapshots/);

@@ -115,8 +115,8 @@ class ReapingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='bb-reaping-', dir='/mnt/bb/tmp')
         self.directory = Path(self.temp.name)
-        for name in ['bb-job.py', 'bb_target_store.py', 'admission_policy.py']:
-            shutil.copyfile(HERE/name, self.directory/name)
+        from cpu_test_fixture import stage_worker_bundle
+        stage_worker_bundle(self.directory)
         original = (self.directory/'bb-job.py').read_text()
         old = original.replace('        with adopted_child_reaper(self.child.pid):\n'
                                '            line = self.status.readline()',

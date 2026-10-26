@@ -12,6 +12,25 @@ queue = importlib.util.module_from_spec(spec); spec.loader.exec_module(queue)
 
 
 class QueueTests(unittest.TestCase):
+    def test_withdraw_waits_for_terminal_boundary_and_preserves_peers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state=Path(temporary)
+            for name in queue.QUEUES:queue.add(state,name,[1495,1504,1508,1512])
+            (state/'.lock').mkdir()
+            before={name:queue.members(queue.queue_path(state,name)) for name in queue.QUEUES}
+            with self.assertRaisesRegex(ValueError,'QUEUE_BUSY.*withdraw-frozen-request.*recovery command'):
+                queue.withdraw(state,[1495,1504])
+            self.assertEqual(before,{name:queue.members(queue.queue_path(state,name)) for name in queue.QUEUES})
+            # Without the idle boundary, the old direct acknowledgement can
+            # discard an active claim while its payload is still executing.
+            with queue.locked(state):queue.acknowledge(state,[1495])
+            self.assertNotIn(1495,queue.members(state/'active.txt'))
+            (state/'.lock').rmdir()
+            receipt=queue.withdraw(state,[1495,1504])
+            for name in queue.QUEUES:self.assertEqual(receipt['after'][name],[1508,1512])
+            self.assertFalse((state/'.lock').exists())
+            self.assertEqual(queue.withdraw(state,[1495,1504])['after'],receipt['after'])
+
     def test_concurrent_producers_are_a_set_without_lost_peers(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp)
@@ -122,6 +141,59 @@ raise SystemExit(namespace['main']())
             with queue.locked(state):
                 queue.acknowledge(state, [1])
             self.assertEqual(queue.members(state/'active.txt'), [2])
+
+    def test_dispatch_lease_excludes_a_second_drain_without_blocking_producers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            script = state/'reader.sh'
+            script.write_text('echo READY; read -r line; echo DONE\n')
+            args = [sys.executable, str(HERE/'gate-queue.py'), str(state), 'dispatch', str(script)]
+            first = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(first.stdout.readline().strip(), 'READY')
+                second = subprocess.run(args, input='release\n', capture_output=True, text=True)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertNotIn('READY', second.stdout)
+                self.assertIn('GATE_DRAIN_BUSY', second.stderr)
+                queue.add(state, 'pending', [7])
+                self.assertEqual(queue.members(state/'pending.txt'), [7])
+                # Actual former direct entry ignores the live SQLite owner.
+                old = subprocess.run(['bash', str(script)], input='release\n', capture_output=True, text=True)
+                self.assertEqual(old.stdout.splitlines(), ['READY', 'DONE'])
+            finally:
+                first.communicate('release\n')
+            again = subprocess.run(args, input='release\n', capture_output=True, text=True)
+            self.assertEqual(again.stdout.splitlines(), ['READY', 'DONE'])
+
+    def test_arrival_after_childs_final_check_is_durably_handed_off(self):
+        source = (HERE/'gate-queue.py').read_text()
+        for negative in [False, True]:
+            with self.subTest(negative=negative), tempfile.TemporaryDirectory() as tmp:
+                state = Path(tmp)
+                selected = state/'queue.py'
+                # Actual former busy-return shape retained no wake-up.
+                selected.write_text(source.replace('UPDATE dispatch_wake SET requested=1',
+                    'UPDATE dispatch_wake SET requested=0') if negative else source)
+                script = state/'reader.sh'
+                script.write_text('echo RUN >> "$1/runs"\n')
+                # Child has already performed its last queue check when READY
+                # is observed. Parent still owns the dispatch lease until exit.
+                script.write_text(f'echo RUN >> "{state}/runs"\n'
+                    f'if [ ! -f "{state}/checked" ]; then touch "{state}/checked"; echo READY; read -r release; fi\n')
+                args = [sys.executable, '-B', str(selected), tmp, 'dispatch', str(script)]
+                first = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, text=True)
+                try:
+                    self.assertEqual(first.stdout.readline().strip(), 'READY')
+                    queue.add(state, 'pending', [9])
+                    arriving = subprocess.run(args, capture_output=True, text=True)
+                    self.assertEqual(arriving.returncode, 0, arriving.stderr)
+                    self.assertIn('GATE_DRAIN_BUSY', arriving.stderr)
+                finally:
+                    output, errors = first.communicate('finish\n')
+                self.assertEqual(first.returncode, 0, output+errors)
+                self.assertEqual((state/'runs').read_text().split(), ['RUN'] if negative else ['RUN', 'RUN'])
+                self.assertEqual(queue.members(state/'pending.txt'), [9])
 
     def test_bad_queue_is_infra_and_does_not_erase_other_members(self):
         with tempfile.TemporaryDirectory() as tmp:

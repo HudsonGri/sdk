@@ -9,6 +9,10 @@ import test from 'node:test';
 const scripts=dirname(fileURLToPath(import.meta.url));
 test('affected PR checks every target and docs, including test=false fuzz binaries', {skip:process.platform==='win32'},()=>{
   const cwd=mkdtempSync(join(tmpdir(),'pr-gate-targets-'));
+  // Dispatch controls own their cache roots, regardless of the enclosing gate.
+  // Never contend with a real gate's feature lock or inherit its worker count.
+  const fixtureEnv={...process.env,CARGO_TARGET_DIR:join(cwd,'target'),
+    GATE_FEATURE_TARGET_DIR:join(cwd,'features'),GATE_FEATURE_WORKERS:'1'};
   try{
     mkdirSync(join(cwd,'bin'));mkdirSync(join(cwd,'scripts'));
     mkdirSync(join(cwd,'scripts/buildbox/coordinator'),{recursive:true});
@@ -19,9 +23,11 @@ test('affected PR checks every target and docs, including test=false fuzz binari
     writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),readFileSync(join(scripts,'gate-test-runner.sh')));
     writeFileSync(join(cwd,'scripts/gate-windows-features.sh'),'#!/bin/bash\necho "windows-features $*" >> calls\nexit "${WINDOWS_FEATURE_RC:-0}"\n');
     writeFileSync(join(cwd,'scripts/check-harness-models.sh'),'#!/bin/bash\necho "models $*" >> calls\nexit "${MODELS_RC:-0}"\n');
+    writeFileSync(join(cwd,'scripts/buildbox/coordinator/gate-clippy.py'),readFileSync(join(scripts,'buildbox/coordinator/gate-clippy.py')));
     const cargo=join(cwd,'bin/cargo');
     writeFileSync(cargo,`#!/bin/bash
 echo "$*" >> calls
+echo "$1|$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER|$GATE_FUZZ_EXECUTABLES" >> phase-env
 echo "$1|$CARGO_TARGET_DIR" >> targets
 case "$1" in
 metadata) [ "$BROKEN_METADATA" != 1 ] || { echo 'error: metadata control' >&2; exit 101; }; echo '{"workspace_members":["fuzz"],"packages":[{"id":"fuzz","name":"fuzz","metadata":{"cargo-fuzz":true},"targets":[{"name":"recorded_invocation","kind":["bin"]}]}]}' ;;
@@ -44,7 +50,7 @@ esac
       const runner=join(cwd,'runner.sh');writeFileSync(runner,negative?source.replace('run_tests targets --all-targets','run_tests targets'):source);
       writeFileSync(join(cwd,'calls'),'');
       writeFileSync(join(cwd,'targets'),'');
-      const result=spawnSync('bash',[runner,'--skip','known-flake'],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:broken?'1':'0',WINDOWS_FEATURE_RC:String(windows)}});
+      const result=spawnSync('bash',[runner,'--skip','known-flake'],{cwd,encoding:'utf8',env:{...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:broken?'1':'0',WINDOWS_FEATURE_RC:String(windows)}});
       assert.equal(result.status,expected,result.stdout+result.stderr);
       assert.equal(readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(line=>line==='windows-features affected').length,1);
       const calls=readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(c=>c.startsWith('test '));
@@ -65,13 +71,13 @@ esac
     }
     const oldLayout=source.replace('test_target="$target_root/.gate-pr-tests"','test_target="$target_root"').replace('clippy_target="$target_root/.gate-pr-clippy"','clippy_target="$test_target/gate-clippy"');
     writeFileSync(join(cwd,'runner.sh'),oldLayout);writeFileSync(join(cwd,'targets'),'');
-    const old=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
+    const old=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
     assert.equal(old.status,0,old.stdout+old.stderr);
     const oldTargets=readFileSync(join(cwd,'targets'),'utf8').trim().split('\n').map(line=>line.split('|'));
     assert.throws(()=>assert.equal(dirname(oldTargets.find(([command])=>command==='test')[1]),dirname(oldTargets.find(([command])=>command==='clippy')[1])),assert.AssertionError);
     // A preparation error must not launch unobserved background Cargo jobs.
     writeFileSync(join(cwd,'calls'),'');
-    const failed=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,BROKEN_METADATA:'1'}});
+    const failed=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,BROKEN_METADATA:'1'}});
     assert.equal(failed.status,2);assert.match(failed.stdout+failed.stderr,/metadata control/);
     const preparationCalls=readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(Boolean);
     assert.equal(preparationCalls.shift(),'format scripts/qualify-rustfmt.mjs');
@@ -86,7 +92,7 @@ esac
     for(const negative of [false,true]){
       writeFileSync(join(cwd,'runner.sh'),negative?source.replace(propagation,':'):source);
       const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{
-        ...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,
+        ...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,
         CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),
         BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0',
       }});
@@ -102,7 +108,7 @@ esac
       writeFileSync(join(cwd,'runner.sh'),negative?source.replace(formatHook,':'):source);
       writeFileSync(join(cwd,'calls'),'');
       const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{
-        ...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,
+        ...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,
         CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),
         FORMAT_RC:'101',BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0',
       }});
@@ -122,24 +128,29 @@ esac
     writeFileSync(join(cwd,'scripts/check-consumer-builds.mjs'),'process.exit(0);\n');
     writeFileSync(join(cwd,'runner.sh'),source);
     for(const file of ['.gate-pr-metadata.json','.gate-fuzz-executables','.gate-fuzz-executables.artifacts','.gate-clippy.out','.gate-clippy.rc','.gate-tests.out','.gate-harness-loom.out'])rmSync(join(cwd,file),{force:true});
-    const privateRun=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
+    const privateRun=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
     assert.equal(privateRun.status,0,privateRun.stdout+privateRun.stderr);
     assert.throws(()=>readFileSync(join(cwd,'.gate-pr-metadata.json')),/ENOENT/);
-    const output=spawnSync('python3',[join(cwd,'scripts/gate-target-cache.py'),'output'],{cwd,encoding:'utf8'});
-    assert.equal(output.status,0,output.stderr);
-    assert.ok(JSON.parse(readFileSync(join(output.stdout.trim(),'.gate-pr-metadata.json'),'utf8')).packages.length);
+    const output=/^GATE_OUTPUT_DIRECTORY (.+)$/mu.exec(privateRun.stdout);
+    assert.ok(output,'private invocation retains its actual output identity');
+    assert.match(readFileSync(join(output[1],'.gate-features.out'),'utf8'),
+      new RegExp('GATE_FEATURES_CACHE target='+join(cwd,'features')+' workers=1 '));
+    assert.ok(JSON.parse(readFileSync(join(output[1],'.gate-pr-metadata.json'),'utf8')).packages.length);
     assert.throws(()=>readFileSync(join(cwd,'.gate-harness-loom.out')),/ENOENT/);
-    assert.equal(readFileSync(join(output.stdout.trim(),'.gate-harness-loom.out'),'utf8'),'');
+    assert.equal(readFileSync(join(output[1],'.gate-harness-loom.out'),'utf8'),'');
     writeFileSync(join(cwd,'scripts/check-feature-matrix.mjs'),"console.log('FAILED cargo check --manifest-path fixture/Cargo.toml');console.error('error[E0000]: retained feature diagnostic');console.log('feature matrix: 0/1 sets ok');process.exitCode=101;\n");
     for(const negative of [false,true]){
       const retaining='if [ "$(cat "$gate_output/.gate-features.rc")" != 0 ]; then cat "$gate_output/.gate-features.out"; fi';
       writeFileSync(join(cwd,'runner.sh'),negative?source.replace(retaining,''):source);
-      const failedFeatures=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
+      const failedFeatures=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),BROKEN_FUZZ:'0'}});
       assert.equal(failedFeatures.status,101,failedFeatures.stdout+failedFeatures.stderr);
       assert.match(failedFeatures.stdout,/GATE_FEATURES rc=101/);
       if(negative)assert.doesNotMatch(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
       else assert.match(failedFeatures.stdout,/error\[E0000\]: retained feature diagnostic/);
     }
+    // Cache/output custody was exercised above. The remaining controls test
+    // model dispatch and compiler environments; do not repeat cache setup.
+    rmSync(join(cwd,'scripts/gate-target-cache.py'));
     writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),'#!/bin/bash\nexit 0\n');
     // All ordinary tests can pass while a cfg-only Loom composition fails.
     // Exercise the actual final PR verdict, then delete its model phase as the
@@ -152,7 +163,7 @@ esac
       writeFileSync(join(cwd,'runner.sh'),negative?source.replace(modelPhase,''):source);
       writeFileSync(join(cwd,'calls'),'');
       const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{
-        ...process.env,PATH:join(cwd,'bin')+':'+process.env.PATH,
+        ...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,
         CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),
         FORMAT_RC:'0',BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0',MODELS_RC:'101',
       }});
@@ -160,6 +171,19 @@ esac
       const modelCalls=readFileSync(join(cwd,'calls'),'utf8').split('\n').filter(c=>c.startsWith('models '));
       assert.deepEqual(modelCalls,negative?[]:['models --packages-file .gate-tests-packages']);
       assert.match(result.stdout,new RegExp('GATE_DONE rc='+(negative?0:101)));
+    }
+    const exports='export GATE_FUZZ_EXECUTABLES="$gate_fuzz_executables" GATE_BASE_TEST_RUNNER="$gate_base_test_runner"\nexport CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="$test_runner"\n';
+    assert.ok(source.includes(exports));
+    writeFileSync(join(cwd,'scripts/gate-feature-matrix.sh'),'#!/bin/bash\necho "features|$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER|$GATE_FUZZ_EXECUTABLES" >> phase-env\nexit 0\n');
+    for(const negative of [false,true]){
+      writeFileSync(join(cwd,'runner.sh'),negative?source.replace(exports,'').replace('( CARGO_TARGET_DIR="$clippy_target"',exports+'( CARGO_TARGET_DIR="$clippy_target"'):source);
+      writeFileSync(join(cwd,'phase-env'),'');
+      const result=spawnSync('bash',[join(cwd,'runner.sh')],{cwd,encoding:'utf8',env:{...fixtureEnv,PATH:join(cwd,'bin')+':'+process.env.PATH,CARGO_TARGET_DIR:join(cwd,'target'),GATE_FEATURE_TARGET_DIR:join(cwd,'features'),CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:'',GATE_FUZZ_EXECUTABLES:'',FORMAT_RC:'0',BROKEN_FUZZ:'0',WINDOWS_FEATURE_RC:'0',BROKEN_METADATA:'0'}});
+      assert.equal(result.status,0,result.stdout+result.stderr);
+      const phases=readFileSync(join(cwd,'phase-env'),'utf8').trim().split('\n').map(line=>line.split('|'));
+      const compilerInputs=()=>{for(const phase of ['clippy','features'])assert.deepEqual(phases.find(([name])=>name===phase),[phase,'','']);};
+      if(negative)assert.throws(compilerInputs,assert.AssertionError);else compilerInputs();
+      for(const [,runner,manifest] of phases.filter(([name])=>name==='test')){assert.ok(runner.endsWith('gate-test-runner.sh'));assert.ok(manifest.endsWith('.gate-fuzz-executables'));}
     }
   }finally{rmSync(cwd,{recursive:true,force:true});}
 });
