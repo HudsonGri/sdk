@@ -274,10 +274,11 @@ fn changed_allocation(
         }],
         &IdempotencyKey::new("change-allocation-owner")?,
     ))?;
-    assert!(matches!(
-        runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(io))),
-        Err(Error::Unauthorized(_))
-    ));
+    let refused = runtime
+        .block_on(bound.authenticate(&fixture.filesystem, owner, Some(io)))
+        .err()
+        .ok_or_else(|| Error::Invalid("step=changed allocation generation accepted; recovery: cargo test --locked -p acyclic-harness-core --all-features --lib filesystem::fork_preparer::created_access::tests".into()))?;
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
     // A fresh cut must reject the changed allocation owner too, independently
     // of the retained binding's generation fence.
     let changed = runtime.block_on(CreationRequest::new(
@@ -286,10 +287,11 @@ fn changed_allocation(
         proof,
         io,
     ))?;
-    assert!(matches!(
-        runtime.block_on(changed.authenticate(&fixture.filesystem, owner, Some(io))),
-        Err(Error::Unauthorized(_))
-    ));
+    let refused = runtime
+        .block_on(changed.authenticate(&fixture.filesystem, owner, Some(io)))
+        .err()
+        .ok_or_else(|| Error::Invalid("step=changed allocation owner accepted; recovery: cargo test --locked -p acyclic-harness-core --all-features --lib filesystem::fork_preparer::created_access::tests".into()))?;
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
     runtime.block_on(fixture.filesystem.apply(
         &journal,
         None,
@@ -299,10 +301,11 @@ fn changed_allocation(
         }],
         &IdempotencyKey::new("restore-allocation-owner")?,
     ))?;
-    assert!(matches!(
-        runtime.block_on(bound.authenticate(&fixture.filesystem, owner, Some(io))),
-        Err(Error::Unauthorized(_))
-    ));
+    let refused = runtime
+        .block_on(bound.authenticate(&fixture.filesystem, owner, Some(io)))
+        .err()
+        .ok_or_else(|| Error::Invalid("step=stale allocation generation accepted; recovery: cargo test --locked -p acyclic-harness-core --all-features --lib filesystem::fork_preparer::created_access::tests".into()))?;
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Unauthorized);
     let restored = runtime.block_on(CreationRequest::new(
         &fixture.filesystem,
         request,

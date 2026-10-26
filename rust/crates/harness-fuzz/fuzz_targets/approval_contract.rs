@@ -50,7 +50,6 @@ fn request(bytes: &[u8]) -> acyclic_harness::Result<Interaction> {
             maximum_items: bytes.len() as u64,
             maximum_depth: 256,
         },
-        bytes.len() as u64,
         Some(acyclic_harness::wire::ErrorCode::Invalid),
         Some(JsonValueSchema::Interaction),
         &mut |_| Ok(()),

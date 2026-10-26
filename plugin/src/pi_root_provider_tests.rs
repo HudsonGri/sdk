@@ -522,7 +522,6 @@ async fn pi_writeback_adapter_uses_shared_publication_and_preserves_acknowledged
     let request = guarded_pi_decode::<PiRootRequest>(
         &request_bytes.0,
         1_048_576,
-        1_048_576,
         ErrorCode::Invalid,
         JsonValueSchema::None,
         0,

@@ -183,7 +183,7 @@ fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Re
         let Some(custody) = decoded.2.as_ref() else {
             panic!("native request custody");
         };
-        assert_eq!(custody.bytes(), request.owned_bytes()?);
+        assert_eq!(custody.bytes(), decoded.0.owned_bytes()?);
         assert!(native.shares_ledger(custody.work()));
         drop(decoded);
         assert_eq!(io.into_custody()?.bytes(), 0);
