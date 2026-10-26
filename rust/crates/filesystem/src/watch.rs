@@ -3232,7 +3232,9 @@ impl NativeWatch {
         }
     }
 
-    /// Waits until every host change completed before this call is queued.
+    /// Fences changes completed before this call: they are queued, or the next
+    /// poll requires a rescan because their precise delivery cannot be proved.
+    /// A successful fence does not promise a `WatchBatch::Changes` result.
     pub fn fence(&mut self, timeout: Duration) -> Result<(), NativeWatchError> {
         if let Some(work) = self.original_work.clone() {
             return self.fence_with_native_work(timeout, &work);
