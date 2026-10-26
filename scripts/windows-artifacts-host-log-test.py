@@ -4,6 +4,7 @@ import hashlib, io, json, os, sys, tarfile, tempfile, time, types
 from pathlib import Path
 
 def main():
+    started=time.monotonic()
     archive=Path(sys.argv[1]); expected=sys.argv[2]
     api_path=Path(sys.argv[3]) if len(sys.argv)>3 else Path(__file__).with_name("windows-artifacts.py")
     api=types.ModuleType("admission"); api.__file__=str(api_path.resolve())
@@ -16,7 +17,7 @@ def main():
             if label!="complete":
                 selected=root/(label+".tar.gz")
                 before=time.monotonic()
-                with tarfile.open(archive,"r|gz") as source, tarfile.open(selected,"w:gz") as target:
+                with tarfile.open(archive,"r|gz") as source, tarfile.open(selected,"w:gz",compresslevel=1) as target:
                     for member in source:
                         data=source.extractfile(member) if member.isfile() else None
                         if member.name=="logs/cargo.jsonl":
@@ -38,7 +39,9 @@ def main():
             seconds=time.monotonic()-before
             assert seconds<10, (label,seconds)
             rows.append(dict(case=label,seconds=seconds,outcome=outcome))
-        print(json.dumps(dict(archive_sha256=expected,api_sha256=api.digest(api_path),rows=rows)),flush=True)
+        seconds=time.monotonic()-started
+        print(json.dumps(dict(archive_sha256=expected,api_sha256=api.digest(api_path),seconds=seconds,rows=rows)),flush=True)
+        assert seconds<10, ("complete captured-export controls including fixture preparation",seconds)
 
 if __name__=="__main__":
     try: main()
