@@ -485,3 +485,127 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
     }
     Ok(())
 }
+
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn parent_merge_reuses_admitted_authority_and_rechecks_live_trust() -> Result<()> {
+    for native in [false, true] {
+        let fixture = fixture().await?;
+        let cancel = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = if native {
+            crate::filesystem::PreparationIo::from_native_work(&work)?
+        } else {
+            crate::filesystem::PreparationIo::from_budget(budget, &cancel)?
+        };
+        let controller = ParentProjectController::new(
+            &fixture.host, fixture.parent.reducer(), &fixture.issuer.verifier(&mut None)?,
+            &fixture.scope, &fixture.project, Some(&io),
+        )?;
+        let (result, signatures): (_, Vec<acyclic_auth::crypto::SignatureVerification>) =
+            acyclic_test_support::differential::observe_async(async {
+                controller.content_grant(&fixture.private, VolumeOperation::Write, Some(&io))?;
+                controller.inspect_project_import(&fixture.source, &fixture.source_generation).await?;
+                let plan = controller.prepare_project_import(
+                    &fixture.source, &fixture.source_generation, None,
+                ).await?;
+                controller.apply_project_merge(
+                    &plan, OperationId::from_bytes([209; 16]), BTreeMap::new(),
+                ).await?;
+                Ok::<_, Error>(plan)
+            }).await;
+        let plan = result?;
+        assert!(signatures.is_empty(), "parent merge repeated signatures: native={native} count={}", signatures.len());
+        fixture.issuer.revoke_workload(&fixture.scope)?;
+        assert!(controller.inspect_project_import(&fixture.source, &fixture.source_generation).await.is_err());
+        assert!(controller.content_grant(&fixture.private, VolumeOperation::Write, Some(&io)).is_err());
+        assert!(controller.apply_project_merge(&plan, OperationId::from_bytes([210; 16]), BTreeMap::new()).await.is_err());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn parent_publication_storage_owns_all_buffers_and_releases_partial_copies() -> Result<()> {
+    let fixture = fixture().await?;
+    let verifier = fixture.issuer.verifier(&mut None)?;
+    let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+    let cancel = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    io.retain_owned(17)?;
+    let controller = ParentProjectController::new(
+        &fixture.host, fixture.parent.reducer(), &verifier, &fixture.scope, &fixture.project, Some(&io),
+    )?;
+    let before = io.remaining()?;
+    let unrelated = io.owned_bytes()?;
+    let owner = controller.publication_authority(&io)?;
+    let after = io.remaining()?;
+    let cuts = before.allocation_operations - after.allocation_operations;
+    let funded = before.peak_allocation_bytes - after.peak_allocation_bytes;
+    let expected = owner.0.0.logical_owned_bytes()?
+        + owner.0.1.logical_owned_bytes()?
+        + acyclic_native_runtime::arc_allocation_bytes::<(
+            (crate::core::VerifiedScope, VolumeRef), acyclic_fs::NativeAllocation,
+        )>() as u64;
+    assert_eq!(funded, expected, "parent publication storage charge omitted the Arc header");
+    let freed = acyclic_test_support::measure(|| drop(owner)).bytes_current.unsigned_abs();
+    assert!(freed > 0 && funded >= freed, "parent publication underfunded: funded={funded} physical={freed}");
+    assert_eq!(io.owned_bytes()?, unrelated, "parent publication consumed unrelated custody");
+    for cut in 0..cuts {
+        let mut limited = budget;
+        limited.allocation_operations = budget.allocation_operations - before.allocation_operations + cut;
+        let cancel = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(limited, &cancel)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let limited_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        limited_io.retain_owned(17)?;
+        let controller = ParentProjectController::new(
+            &fixture.host, fixture.parent.reducer(), &verifier, &fixture.scope, &fixture.project, Some(&limited_io),
+        )?;
+        let owned = limited_io.owned_bytes()?;
+        let result = controller.publication_authority(&limited_io);
+        assert!(result.is_err(), "parent publication bypassed allocation cut {cut}");
+        drop(result);
+        assert_eq!(limited_io.owned_bytes()?, owned, "parent publication leaked partial copy {cut}");
+        drop(controller);
+        assert_eq!(limited_io.owned_bytes()?, 17);
+    }
+    let foreign_work = acyclic_fs::NativeMaterializationWork::new(budget, &cancel)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let foreign_io = crate::filesystem::PreparationIo::from_native_work(&foreign_work)?;
+    assert!(controller.publication_authority(&foreign_io).is_err());
+    assert!(controller.content_grant(&fixture.private, VolumeOperation::Write, Some(&foreign_io)).is_err());
+    let owner = controller.publication_authority(&io)?;
+    fixture.issuer.revoke_workload(&fixture.scope)?;
+    assert!(owner.0.0.recheck(&mut Some(&mut io.history_io())).is_err());
+    assert!(controller.publication_authority(&io).is_err());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn project_workspace_adapter_keeps_the_authenticated_parent_and_live_revocation() -> Result<()> {
+    use crate::merge::ProjectWorkspaceProvider;
+    let fixture = fixture().await?;
+    let adapter = crate::filesystem::FilesystemProjectWorkspaces::new(
+        &fixture.host, fixture.parent.reducer(), &fixture.issuer.verifier(&mut None)?,
+        &fixture.scope, fixture.project.clone(),
+    )?;
+    let source = Authority { kind: AggregateKind::Conversation, id: "adapter-child".into() };
+    let (result, signatures): (_, Vec<acyclic_auth::crypto::SignatureVerification>) =
+        acyclic_test_support::differential::observe_async(adapter.prepare_project_import(
+            &fixture.scope, fixture.parent.reducer(), &source, &fixture.source, &fixture.source_generation,
+        )).await;
+    result?;
+    assert!(signatures.is_empty(), "project workspace adapter repeated signatures: {}", signatures.len());
+    fixture.issuer.revoke_workload(&fixture.scope)?;
+    assert!(adapter.prepare_project_import(
+        &fixture.scope, fixture.parent.reducer(), &source, &fixture.source, &fixture.source_generation,
+    ).await.is_err());
+    Ok(())
+}

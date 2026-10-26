@@ -10,8 +10,7 @@ pub(in crate::filesystem) type MergeAllocation = ();
 pub struct ParentProjectController<'a, A, O> {
     pub(in crate::filesystem) host: &'a FilesystemHost<A, O>,
     pub(in crate::filesystem) project: VolumeRef,
-    pub(in crate::filesystem) verifier: AuthorityVerifier,
-    pub(in crate::filesystem) scope: Scope,
+    pub(in crate::filesystem) authority: crate::core::VerifiedScope,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -71,7 +70,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         }
         crate::executor::with_history_io(io, |work| {
             verifier.verify_audience(parent.authority(), work)?;
-            verifier.verify(scope, work)?;
+
             if scope.agent().is_none()
                 || parent.conversation().and_then(|state| state.agent) != scope.agent()
             {
@@ -88,15 +87,14 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
                 ));
             }
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let verifier = verifier.copy_in_quota(&mut quota)?;
-            let scope = scope.copy_in_quota(&mut quota)?;
+            let authority = verifier.authenticate_scope(scope, quota.work())?;
+            quota.adopt(authority.logical_owned_bytes()?)?;
             let project = project.copy_in_quota(&mut quota)?;
             let _native_custody = quota.into_custody()?;
             Ok(Self {
                 host,
                 project,
-                verifier,
-                scope,
+                authority,
                 #[cfg(not(target_arch = "wasm32"))]
                 native_custody: _native_custody,
             })
@@ -109,6 +107,29 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         operation: VolumeOperation,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        self.require_work(io)?;
+        crate::executor::with_history_io(io, |work| {
+            ContentGrant::authorize_authenticated_volume(
+                &self.authority,
+                &self.project,
+                operation,
+                u64::MAX,
+                work,
+            )
+        })?;
+        if !self.authority.scope().capabilities().contains(capability) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "parent project operation is not granted",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_work(&self, io: Option<&PreparationIo>) -> Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        let _ = io;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && !self
@@ -122,27 +143,43 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
                 "parent project controller belongs to another original resource",
             ));
         }
-        crate::executor::with_history_io(io, |work| {
-            self.verifier
-                .verify_audience(self.verifier.audience(), work)?;
-            ContentGrant::authorize_volume(
-                &self.verifier,
-                &self.scope,
-                &self.project,
-                operation,
-                u64::MAX,
-                work,
-            )
-        })?;
-        if !self.scope.capabilities().contains(capability) {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "parent project operation is not granted",
-            ));
-        }
         Ok(())
     }
+
+    pub(in crate::filesystem) fn content_grant(
+        &self,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        io: Option<&PreparationIo>,
+    ) -> Result<ContentGrant> {
+        self.require_work(io)?;
+        crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let grant = ContentGrant::from_authenticated_in_quota(
+                &self.authority, volume, operation, u64::MAX, &mut quota,
+            )?;
+            quota.transfer();
+            Ok(grant)
+        })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::filesystem) fn publication_authority(
+        &self,
+        io: &PreparationIo,
+    ) -> Result<Arc<((crate::core::VerifiedScope, VolumeRef), acyclic_fs::NativeAllocation)>> {
+        if io.original_native_work().is_none() {
+            return Err(io.invalid("merge publication requires its original native work"));
+        }
+        self.require(capability::PROJECT_MERGE, VolumeOperation::Write, Some(io))?;
+        crate::executor::with_history_io(Some(io), |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let authority = self.authority.copy_in_quota(&mut quota)?;
+            let project = self.project.copy_in_quota(&mut quota)?;
+            quota.native_arc((authority, project))
+        })
+    }
+
 }
 mod inherited;
 mod project;

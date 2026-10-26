@@ -47,16 +47,7 @@ fn native_publication_authority(
     crate::executor::with_history_io(Some(io), |work| {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let authority = grant.authority.copy_in_quota(&mut quota)?;
-        let slot = acyclic_native_runtime::arc_allocation_bytes::<(
-            crate::core::VerifiedScope,
-            acyclic_fs::NativeAllocation,
-        )>() as u64;
-        quota.retain(slot)?;
-        quota.observer()?.allocation_attempt(slot)?;
-        let custody = quota
-            .into_custody()?
-            .ok_or_else(|| io.invalid("native publication lost its original work"))?;
-        Ok(Arc::new((authority, custody)))
+        quota.native_arc(authority)
     })
 }
 
@@ -1036,6 +1027,11 @@ mod workload_tests {
             budget.allocation_operations - setup - probe.remaining()?.allocation_operations;
         assert!(required > 3);
         let retained = before - probe.remaining()?.peak_allocation_bytes;
+        let expected = evidence.0.logical_owned_bytes()?
+            + acyclic_native_runtime::arc_allocation_bytes::<(
+                crate::core::VerifiedScope, acyclic_fs::NativeAllocation,
+            )>() as u64;
+        assert_eq!(retained, expected, "publication storage charge omitted the Arc header");
         let physical = acyclic_test_support::measure(|| drop(evidence))
             .bytes_current
             .unsigned_abs();

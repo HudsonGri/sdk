@@ -226,6 +226,26 @@ impl<'a, 'b> Quota<'a, 'b> {
         }
         Ok(Box::new(value))
     }
+    /// Funds one complete Arc and transfers this construction's original native custody.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn native_arc<T>(
+        mut self,
+        value: T,
+    ) -> Result<std::sync::Arc<(T, acyclic_fs::NativeAllocation)>> {
+        if !self.work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+            return Err(boundary(self.work, Invalid, "native Arc requires its original work"));
+        }
+        let slot = acyclic_native_runtime::arc_allocation_bytes::<(
+            T, acyclic_fs::NativeAllocation,
+        )>() as u64;
+        self.retain(slot)?;
+        self.observer()?.allocation_attempt(slot)?;
+        let custody = self.into_custody()?.ok_or_else(|| {
+            Error::Invalid("native Arc lost its original custody".into())
+        })?;
+        Ok(std::sync::Arc::new((value, custody)))
+    }
+
     pub(crate) fn relinquish(&mut self, bytes: u64) -> Result<()> {
         let remaining = self
             .bytes

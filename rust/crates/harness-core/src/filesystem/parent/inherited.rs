@@ -33,7 +33,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || private.class() != VolumeClass::AgentPrivate
             || private.owner()
                 != &VolumeOwner::Agent(
-                    self.scope.agent().ok_or_else(|| {
+                    self.authority.scope().agent().ok_or_else(|| {
                         Error::Unauthorized("model prefix parent is unbound".into())
                     })?,
                 )
@@ -42,14 +42,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 "model prefix is not parent owned".into(),
             ));
         }
-        let grant = ContentGrant::verify(
-            &self.verifier,
-            &self.scope,
-            private,
-            VolumeOperation::Write,
-            u64::MAX,
-            &mut None,
-        )?;
+        let grant = self.content_grant(private, VolumeOperation::Write, None)?;
         let bytes = prefix.canonical_bytes(None)?;
         let digest = blake3::hash(&bytes).to_hex();
         self.host
@@ -92,7 +85,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         self.require(capability::FORK_PUBLISH, VolumeOperation::Read, io.as_ref())?;
         if let Some(archive) = archive {
             crate::executor::with_history_io(io.as_ref(), |work| {
-                archive.verify(&self.verifier, work)
+                archive.verify(self.authority.verifier(), work)
             })?;
             if archive.parent() != parent.authority()
                 || archive.parent_revision() != parent.revision()
@@ -141,8 +134,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io: Option<&PreparationIo>,
     ) -> Result<&'p crate::conversation::ConversationState> {
         let reject = |code, reason| stock_boundary(io, code, reason);
-        if parent.authority() != self.verifier.audience()
-            || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
+        if parent.authority() != self.authority.verifier().audience()
+            || parent.conversation().and_then(|state| state.agent) != self.authority.scope().agent()
         {
             return Err(reject(
                 crate::wire::ErrorCode::Unauthorized,
@@ -357,8 +350,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             preparation.verify(false, io)?.await?;
         }
         self.require(capability::FORK_PUBLISH, VolumeOperation::Read, io)?;
-        if parent.authority() != self.verifier.audience()
-            || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
+        if parent.authority() != self.authority.verifier().audience()
+            || parent.conversation().and_then(|state| state.agent) != self.authority.scope().agent()
             || child_private.provider() != &self.host.provider
             || child_private.class() != VolumeClass::AgentPrivate
             || child_private.owner() != &VolumeOwner::Agent(child_agent)
@@ -405,8 +398,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let prefix = InheritedConversationPrefix {
             format_version: 3,
             parent: Authority {
-                kind: self.verifier.audience().kind,
-                id: stock_string_copy(&self.verifier.audience().id, io)?,
+                kind: self.authority.verifier().audience().kind,
+                id: stock_string_copy(&self.authority.verifier().audience().id, io)?,
             },
             parent_revision: parent.revision(),
             parent_agent: history.agent.ok_or_else(|| {
