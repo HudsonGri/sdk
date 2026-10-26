@@ -3,6 +3,7 @@
 import os
 import importlib.util
 import json
+import shlex
 from hashlib import sha256
 from pathlib import Path
 import shutil
@@ -10,6 +11,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import contextlib
+import io
 
 HERE = Path(__file__).resolve().parent
 FIXTURES = HERE / 'fixtures'
@@ -269,6 +273,80 @@ class ClippyDiagnostics(unittest.TestCase):
                                sys.executable, str(driver), str(stream)], capture_output=True, text=True)
         self.assertIn('GATE_PAYLOAD_RETAINED GATE_DONE rc=0\n', done.stdout)
         self.assertEqual(done.stdout.count('\nGATE_DONE rc='), 1)
+        stream.write_bytes(captured.rstrip(b'\n'))
+        unterminated = subprocess.run([sys.executable, str(HERE / 'gate-clippy.py'), 'run',
+                                       sys.executable, str(driver), str(stream)], capture_output=True, text=True)
+        marker = next(line.removeprefix('GATE_PAYLOAD_OBSERVED ') for line in unterminated.stdout.splitlines()
+                      if line.startswith('GATE_PAYLOAD_OBSERVED '))
+        self.assertEqual(json.loads(marker)['child_status'], -9)
+
+    def test_actual_bun_formatter_cannot_change_the_following_writers_flags(self):
+        # Exercise the reviewed formatter and actual Bun/rustfmt on a tracked
+        # Rust source. No Cargo compiler or handwritten tool output is used.
+        scripts = self.root / 'scripts'
+        scripts.mkdir()
+        for name in ['gate-rust-format.sh', 'qualify-rustfmt.mjs']:
+            shutil.copyfile(HERE.parents[1] / name, scripts / name)
+        (self.root / 'Cargo.toml').write_text('[package]\nname="stdio-ownership"\nversion="0.0.0"\nedition="2024"\n')
+        (self.root / 'src').mkdir()
+        (self.root / 'src/main.rs').write_text('fn main() {}\n')
+        env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+        subprocess.run(['git', 'init', '-q'], cwd=self.root, env=env, check=True)
+        subprocess.run(['git', 'add', '.'], cwd=self.root, env=env, check=True)
+        driver = self.root / 'formatter.sh'
+        driver.write_text('bash scripts/gate-rust-format.sh\nrc=$?\n' + shlex.join([
+            sys.executable, '-c', 'import os;print("FOLLOWING_WRITER_BLOCKING",os.get_blocking(1),flush=True)',
+        ]) + '\nprintf "GATE_DONE rc=%s\\n" "$rc"\nexit "$rc"\n')
+        for adapter, blocking in [(HERE / 'gate-clippy.py', True),
+                                  (FIXTURES / 'gate1509-footer/former-adapter.py.txt', False)]:
+            result = subprocess.run([sys.executable, str(adapter), 'run', 'bash', str(driver)],
+                                    cwd=self.root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('GATE_RUSTFMT rc=0', result.stdout)
+            self.assertIn('FOLLOWING_WRITER_BLOCKING ' + str(blocking), result.stdout)
+
+    def test_bun_boundary_preserves_a_captured_large_clippy_stream(self):
+        captured = (FIXTURES / 'main-32b799-complete-clippy.txt').read_text()
+        projected = ''.join(line + '\n' for line in captured.splitlines()
+                            if line.startswith(('GATE_CLIPPY ', 'GATE_CLIPPY_FINDING ',
+                                                'GATE_CLIPPY_ERROR ', 'GATE_CLIPPY_COMPLETE ')))
+        self.assertGreater(len(projected), 65536)
+        stream = self.root / 'captured-clippy.txt'
+        stream.write_text(projected)
+        driver = self.root / 'large-stream.sh'
+        driver.write_text(shlex.join(['bun', '-e', 'process.stdout.write("actual Bun output\\n")']) + '\n' +
+                          shlex.join([sys.executable, '-c',
+                                      'from pathlib import Path;import sys;sys.stdout.buffer.write(Path(sys.argv[1]).read_bytes())',
+                                      str(stream)]) + '\nrc=$?\nprintf "GATE_DONE rc=%s\\n" "$rc"\nexit "$rc"\n')
+        result = subprocess.run([sys.executable, str(HERE / 'gate-clippy.py'), 'run', 'bash', str(driver)],
+                                cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(clippy.complete(result.stdout))
+        self.assertEqual(clippy.findings(result.stdout), clippy.findings(captured))
+
+    def test_bun_status_and_real_relay_write_failure_are_preserved(self):
+        with clippy.payload_environment() as env:
+            result = subprocess.run(['bun', '-e', 'process.stderr.write("actual Bun failure\\n");process.exit(17)'],
+                                    env=env, capture_output=True)
+            self.assertEqual(result.returncode, 17, result.stderr)
+            self.assertEqual(result.stdout, b'')
+            self.assertEqual(result.stderr, b'actual Bun failure\n')
+            with open('/dev/full', 'wb', buffering=0) as full:
+                failed = subprocess.run(['bun', '-e', 'process.stdout.write("unretainable output\\n")'],
+                                        env=env, stdout=full, stderr=subprocess.PIPE)
+            self.assertEqual(failed.returncode, 224, failed.stderr)
+            self.assertIn(b'GATE_RUNNER_INFRA Bun stdio relay step failed:', failed.stderr)
+            self.assertIn(b'recovery command:', failed.stderr)
+
+    def test_bun_transport_setup_refuses_before_start_with_a_recovery_command(self):
+        output = io.StringIO()
+        with patch.object(clippy.tempfile, 'TemporaryDirectory', side_effect=PermissionError('private job tmp refused')):
+            with patch.object(clippy.subprocess, 'Popen') as spawn, contextlib.redirect_stdout(output):
+                self.assertEqual(clippy.run_payload(['bash', 'candidate with spaces.sh']), 224)
+                spawn.assert_not_called()
+        self.assertIn('Bun stdio isolation step failed: private job tmp refused', output.getvalue())
+        self.assertIn("'candidate with spaces.sh'", output.getvalue())
+        self.assertIn('recovery command:', output.getvalue())
 
 
 if __name__ == '__main__':

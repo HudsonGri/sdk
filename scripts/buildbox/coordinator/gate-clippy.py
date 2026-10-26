@@ -6,11 +6,14 @@ from hashlib import sha256
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import sys
 import subprocess
+import tempfile
 
 SHORT = re.compile(r'^(.+?):[0-9]+:[0-9]+: (warning|error)(\[[^\]]+\])?: (.+)$')
 ERROR = re.compile(r'^error(?:\[[^\]]+\])?: .+')
@@ -73,14 +76,66 @@ def payload_output(text):
     return Path.cwd()
 
 
+@contextlib.contextmanager
+def payload_environment():
+    """Give Bun private pipe descriptions, never the shell's inherited ones.
+
+    Bun leaves O_NONBLOCK on inherited pipes when it exits. Ordinary shell,
+    sed and Python writers that follow it cannot safely use that description.
+    Two blocking relays isolate its stdout/stderr without changing reviewed
+    payload code, output bytes, compiler flags or formatter policy. Node
+    restores its flags; no unrelated tool is substituted here.
+    """
+    env = dict(os.environ)
+    bun = shutil.which('bun', path=env.get('PATH'))
+    if bun is None:
+        yield env
+        return
+    with tempfile.TemporaryDirectory(prefix='gate-bun-stdio.') as directory:
+        shim = Path(directory) / 'bun'
+        shim.write_text('''#!/bin/bash
+exec {gate_out}> >(cat)
+gate_out_pid=$!
+exec {gate_err}> >(cat >&2)
+gate_err_pid=$!
+''' + shlex.quote(bun) + ''' "$@" >&"$gate_out" 2>&"$gate_err"
+gate_rc=$?
+exec {gate_out}>&-
+exec {gate_err}>&-
+wait "$gate_out_pid"; gate_out_rc=$?
+wait "$gate_err_pid"; gate_err_rc=$?
+if [ "$gate_out_rc" != 0 ] || [ "$gate_err_rc" != 0 ]; then
+  printf 'error: GATE_RUNNER_INFRA Bun stdio relay step failed: stdout_rc=%s stderr_rc=%s; recovery command: ' "$gate_out_rc" "$gate_err_rc" >&2
+  printf '%q ' ''' + shlex.quote(bun) + ''' "$@" >&2
+  printf '\\n' >&2
+  exit 224
+fi
+exit "$gate_rc"
+''')
+        shim.chmod(0o700)
+        env['PATH'] = directory + os.pathsep + env.get('PATH', '')
+        yield env
+
+
 def run_payload(command):
+    try:
+        with payload_environment() as env:
+            return run_owned_payload(command, env)
+    except OSError as error:
+        print(f'error: GATE_RUNNER_INFRA Bun stdio isolation step failed: {error}; recovery command: '
+              + shlex.join([sys.executable, str(Path(__file__)), 'run', *command]))
+        print('GATE_DONE rc=224', flush=True)
+        return 224
+
+
+def run_owned_payload(command, env):
     """Bridge reviewed older payloads without trusting their partial summaries.
 
     Read their retained Cargo diagnostics before the private job retires. This
     is the same decoder as both new producers, never a second lint policy.
     """
     try:
-        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     except OSError as error:
         print(f'error: GATE_RUNNER_INFRA payload start step failed: {error}; recovery command: '
               + shlex.join([sys.executable, str(Path(__file__)), 'run', *command]))
@@ -122,13 +177,15 @@ def run_payload(command):
         # Preserve the process result and quarantined protocol bytes before
         # replacing an unqualified outcome. Private diagnostics retire with
         # the job, so a generic mismatch would destroy the causal evidence.
-        print('GATE_PAYLOAD_OBSERVED ' + json.dumps({
+        print('\nGATE_PAYLOAD_OBSERVED ' + json.dumps({
             'child_status': child_status, 'exit_status': status, 'footers': footers,
             'bytes': sum(map(len, lines)), 'sha256': sha256(b''.join(lines)).hexdigest(),
         }, sort_keys=True), flush=True)
         for line in lines:
             if line.startswith((b'GATE_DONE rc=', b'GATE_CLIPPY_FINDING ', b'GATE_CLIPPY_ERROR ', b'GATE_CLIPPY_COMPLETE ')):
                 sys.stdout.buffer.write(b'GATE_PAYLOAD_RETAINED ' + line)
+                if not line.endswith(b'\n'):
+                    sys.stdout.buffer.write(b'\n')
         sys.stdout.buffer.flush()
         print(f'error: GATE_RUNNER_INFRA Clippy stream attestation step failed: {error}; '
               'recovery command: ' + shlex.join([sys.executable, str(Path(__file__)), 'run', *command]))
