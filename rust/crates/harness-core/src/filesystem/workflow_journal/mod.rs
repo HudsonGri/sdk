@@ -53,6 +53,74 @@ struct WorkflowIdentities<'a> {
 }
 
 impl WorkflowIdentities<'_> {
+    fn validate_next(
+        &self,
+        admission: &WorkflowAdmission,
+        previous: Option<&WorkflowRecord>,
+        record: &WorkflowRecord,
+        io: Option<&PreparationIo>,
+        stored: bool,
+    ) -> Result<()> {
+        let checkpoint = previous
+            .map(WorkflowRecord::checkpoint)
+            .transpose()?
+            .unwrap_or((
+                &admission.initial.machine,
+                admission.initial.revision,
+                &admission.initial.state,
+            ));
+        let terminal = previous
+            .is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
+        validate_workflow_next(checkpoint, terminal, &self.reserved, &self.keys, record, io)
+            .map_err(|error| {
+                if stored && !error.is_native_failure() {
+                    Error::Storage(
+                        "workflow history diverges from admission or reuses an identity".into(),
+                    )
+                } else {
+                    error
+                }
+            })
+    }
+
+    fn candidate_revision(
+        &self,
+        admission: &WorkflowAdmission,
+        candidate: &WorkflowRecord,
+        require_next: bool,
+        previous: Option<&WorkflowRecord>,
+        matched: Option<&WorkflowRecord>,
+        io: Option<&PreparationIo>,
+    ) -> Result<u64> {
+        let revision = previous
+            .map(WorkflowRecord::checkpoint)
+            .transpose()?
+            .map_or(0, |(_, revision, _)| revision);
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
+        for identity in candidate.operation_ids() {
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
+            }
+            if self.reserved.contains(&identity)
+                && matched.is_none()
+                && previous.is_none_or(|prior| prior.operation_id != candidate.operation_id)
+            {
+                return Err(Error::Conflict(
+                    "workflow command identity is already bound".into(),
+                ));
+            }
+        }
+        if require_next && revision == candidate.prior.revision {
+            self.validate_next(admission, previous, candidate, io, false)?;
+        }
+        Ok(revision)
+    }
+
     fn advance(&mut self, record: &WorkflowRecord) -> Result<()> {
         let Some(hold) = &mut self.hold else {
             self.reserved.extend(record.operation_ids());
@@ -331,7 +399,7 @@ where
                     self.verify_observation_owner(owner, true, Some(&io))
                         .await?;
                 }
-                let admission = self.read_admission(Some(&io)).await?;
+                let admission = self.read_admission(Some(&io))?.await?;
                 if let Some(owner) = &self.owner {
                     self.verify_observation_owner(owner, true, Some(&io))
                         .await?;
@@ -343,7 +411,7 @@ where
         }
         let _ = io;
         Ok(HistoryContentFuture::Ordinary {
-            future: Box::pin(async move { Ok((self.read_admission(None).await?, None)) }),
+            future: Box::pin(async move { Ok((self.read_admission(None)?.await?, None)) }),
             frame_bytes: 0,
         })
     }
@@ -379,7 +447,7 @@ where
                         .await?;
                 }
                 let records = self
-                    .replay_records(after, maximum, true, true, Some(&io))
+                    .replay_records(after, maximum, true, true, Some(&io))?
                     .await?;
                 if let Some(owner) = &self.owner {
                     self.verify_observation_owner(owner, true, Some(&io))
@@ -395,7 +463,7 @@ where
         Ok(HistoryContentFuture::Ordinary {
             future: traced(span, async move {
                 Ok((
-                    self.replay_records(after, maximum, true, true, None)
+                    self.replay_records(after, maximum, true, true, None)?
                         .await?,
                     None,
                 ))
@@ -418,7 +486,7 @@ where
         }
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            self.commit_borrowed_with_io(expected_revision, idempotency_key, record, Some(&io))
+            self.commit_borrowed_with_io(expected_revision, idempotency_key, record, Some(&io))?
                 .await?;
             let custody = io.into_native_custody(0)?;
             Ok((record, custody))
