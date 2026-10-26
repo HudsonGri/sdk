@@ -3,6 +3,7 @@
 use super::{AgentTurn, HeadlessOutcome, LocalAgentClient, LocalAgentError, MAXIMUM_AGENT_PROMPT_BYTES};
 use crate::agent::{ConversationEntry, IntentId, StatusRecord};
 use futures::{FutureExt as _, Stream, StreamExt as _};
+use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 
@@ -35,10 +36,37 @@ enum Reply<'a> {
         status: Option<StatusRecord>,
     },
     Closed { id: &'a IntentId },
+    Unknown {
+        id: &'a IntentId,
+        /// Canonical Streams CommitRequest protobuf bytes, not a second request
+        /// schema. The original identity, conditions and payloads stay intact.
+        commit: Vec<u8>,
+    },
+}
+
+fn unknown_reply<'a>(id: &'a IntentId, request: &acyclic_stream::CommitRequest) -> Reply<'a> {
+    Reply::Unknown { id, commit: acyclic_stream::wire_codec::commit_to_wire(request).encode_to_vec() }
+}
+
+/// Preserve exact Unknown custody when an interactive process ends. The caller
+/// writes to its existing error channel after releasing the terminal; this adds
+/// no outbox, recovery loop or automatic resubmission.
+pub fn write_agent_unknown(error: &LocalAgentError, output: &mut impl Write) -> Result<bool, LocalAgentError> {
+    let LocalAgentError::Unknown { id, request } = error else { return Ok(false); };
+    write_reply(output, &unknown_reply(id, request))?;
+    Ok(true)
+}
+
+fn write_reply(output: &mut impl Write, reply: &Reply<'_>) -> Result<(), LocalAgentError> {
+    serde_json::to_writer(&mut *output, reply)?;
+    output.write_all(b"\n")?;
+    output.flush()?;
+    Ok(())
 }
 
 /// Submit a single bounded prompt through the canonical actor entry. A typed
-/// Unknown retains its original commit request in the returned error.
+/// Unknown emits its identity and original canonical request with exit class
+/// Indeterminate; it is never acknowledged or silently resubmitted.
 pub async fn run_agent_prompt(
     client: &mut LocalAgentClient,
     id: &IntentId,
@@ -57,11 +85,13 @@ pub async fn run_agent_prompt(
             HeadlessOutcome::Indeterminate,
         ),
         Err(LocalAgentError::Closed) => (Reply::Closed { id }, HeadlessOutcome::Cancelled),
+        Err(LocalAgentError::Unknown { id: actual, request }) => {
+            write_reply(output, &unknown_reply(&actual, &request))?;
+            return Ok(HeadlessOutcome::Indeterminate);
+        }
         Err(error) => return Err(error),
     };
-    serde_json::to_writer(&mut *output, &reply)?;
-    output.write_all(b"\n")?;
-    output.flush()?;
+    write_reply(output, &reply)?;
     Ok(outcome)
 }
 
