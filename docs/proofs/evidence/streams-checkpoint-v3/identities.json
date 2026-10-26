@@ -1,0 +1,18 @@
+{
+  "native_snapshot": {
+    "commit": "3c6e21324094455a7ad425db04c00a1fd7c65d17",
+    "tree": "9582f891a605b1acb3225c42764273641401a9ec"
+  },
+  "native_signed": {
+    "commit": "391d21d2f2d0d82519d4dcd842909a4c656c610a",
+    "tree": "9582f891a605b1acb3225c42764273641401a9ec"
+  },
+  "typescript_snapshot": {
+    "commit": "e8b7315427e3c1624f80737dc5773c80ccc81c95",
+    "tree": "a06cfb36d78021b8dd497bad4d158ebcaa07675f"
+  },
+  "current_signed": {
+    "commit": "3a348ebf1646daf71a35c6f849caf793620f5e54",
+    "tree": "a06cfb36d78021b8dd497bad4d158ebcaa07675f"
+  }
+}

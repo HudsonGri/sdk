@@ -1,0 +1,141 @@
+bb2run: streams at e8b7315427 (snapshot of 3a348ebf16 + worktree)
+CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9918578688,"afterAllocatedBytes":9339207680,"beforeApparentBytes":9858553009,"afterApparentBytes":9285109696,"incrementalUnits":1,"ageUnits":284,"capUnits":0,"elapsedSeconds":0.37483767800000006}
+bun test v1.4.2 (744846f84)
+
+typescript/packages/stream/test/addressing.test.ts:
+(pass) @acyclic-labs/stream/addressing > Worker route grammar, query matching, specificity and exclusions share vectors [2.97ms]
+(pass) @acyclic-labs/stream/addressing > shared actor triples are disjoint and preserve the legacy default [2.69ms]
+(pass) @acyclic-labs/stream/addressing > Host parsing uses an exact multi-label suffix and exactly two labels [0.42ms]
+(pass) @acyclic-labs/stream/addressing > shared golden pairs use the literal Rust WASM encoding [3.94ms]
+(pass) @acyclic-labs/stream/addressing > shared host vectors use account id directly for URL, SNI and signed Host [0.67ms]
+(pass) @acyclic-labs/stream/addressing > pair values retain bytes and reject alternate encodings [0.42ms]
+(pass) @acyclic-labs/stream/addressing > wrapping existing RPC fields leaves their representation unchanged [0.14ms]
+(pass) @acyclic-labs/stream/addressing > host aliases cannot change signing or TLS spelling [0.10ms]
+(pass) @acyclic-labs/stream/addressing > plain JS callers cannot coerce text or numeric arrays into identity bytes [0.20ms]
+
+typescript/packages/stream/test/credential.test.ts:
+(pass) every browser session attempt resolves a fresh credential before dialing [9.64ms]
+(pass) cancellation while renewing prevents the browser dial [1.45ms]
+
+typescript/packages/stream/test/grpc-follow-options.test.ts:
+(pass) raw follow declarations accept deadlines and reject connection metadata [88.83ms]
+
+typescript/packages/stream/test/native-credentials.test.ts:
+(pass) native shared credential interleavings: correct [14.34ms]
+(pass) native shared credential interleavings: any-release [20.31ms]
+(pass) native shared credential interleavings: no-release [18.70ms]
+(pass) native shared credential interleavings: live-abort-set [21.47ms]
+(pass) native shared credential interleavings: no-abandon [19.06ms]
+(pass) credential admission equals the live request set after arbitrary duplicate cleanup [2.63ms]
+
+typescript/packages/stream/test/native-record-filter.test.ts:
+(pass) native record filtering boundary production [45.63ms]
+(pass) native record filtering boundary dropped-filter [51.44ms]
+(pass) native record filtering boundary consecutive [51.68ms]
+(pass) native record filtering boundary dropped-headers [52.63ms]
+
+typescript/packages/stream/test/read-frames.test.ts:
+(pass) read frames > a compressed frame decodes to the same records [4.36ms]
+(pass) read frames > mixed compressed and plain frames reassemble in order [0.76ms]
+(pass) read frames > oversized, mismatched, corrupt and unknown-codec frames are refused [1.34ms]
+
+typescript/packages/stream/test/session-latest.test.ts:
+(pass) LATEST keeps jumps, attention and watermarks while a full follow progresses [8.24ms]
+(pass) LATEST fences buffered generations and resumes the consumed cut after moved and disconnect [2.90ms]
+(pass) raw ALL data retains metadata and invalid modes fail before opening a session [1.40ms]
+(pass) checked ALL confirms its anchor and reconnects with the last yielded commit [1.55ms]
+(pass) missing or mismatched checked confirmation removes only its channel without data credit [2.26ms]
+
+typescript/packages/stream/test/session-queue.test.ts:
+(pass) ring wraps and releases consumed slots while preserving undefined values [0.11ms]
+(pass) discard admits waiting producers before disposing the detached old values [0.24ms]
+(pass) terminal errors follow buffered records and settle blocked producers [0.09ms]
+
+typescript/packages/stream/test/session.test.ts:
+(pass) session slots, filters and record headers survive the TypeScript bridge [1.65ms]
+(pass) concurrent follows share a node connection and remove every interest [11.64ms]
+(pass) returning unread buffered deliveries never loses aggregate credit [114.30ms]
+(pass) moved resumes the yielded cursor while another channel stays live [1.32ms]
+(pass) transport recovery fences queued records and reuses one live node session [0.77ms]
+(pass) aborting a suspended iterator releases its channel reservation immediately [1259.34ms]
+(pass) concurrent first follows share a bounded silent-peer handshake [3025.25ms]
+(pass) Welcome followed by EOF cannot strand the first subscription [11.81ms]
+
+typescript/packages/stream/test/session-transports.test.ts:
+(pass) public gRPC follows and unaries share one physical HTTP/2 session [61.52ms]
+(pass) raw gRPC follow deadlines remove only their logical channel [109.56ms]
+(pass) public browser follows use one authenticated binary WebSocket without fetch polling [19.60ms]
+
+typescript/packages/stream/test/head-condition.test.ts:
+(pass) head conditions retain commit identity through the client, WASM provider and retries [5.53ms]
+(pass) head normalization keeps the hash fence and rejects an empty-history anchor [0.42ms]
+(pass) HTTP rejects head conditions until the hosted capability is negotiated [0.28ms]
+
+typescript/packages/stream/test/wire-records.test.ts:
+(pass) append and atomic commit encode record messages without losing opaque bytes [1.86ms]
+
+typescript/packages/stream/test/stream.test.ts:
+(pass) absent retry observations project undefined through memory and HTTP [1.03ms]
+(pass) website Stream contract > opens the local provider without exposing provider setup [0.91ms]
+(pass) website Stream contract > local streams do not issue unused hosted access tokens [0.09ms]
+(pass) website Stream contract > JSON streams reject values that cannot satisfy their declared recursive type [0.19ms]
+(pass) website Stream contract > enforces the Rust Stream path, batch, and read bounds before mutation [2.06ms]
+(pass) website Stream contract > rejects oversized commands and invalid cursors before they can change state [7.51ms]
+(pass) website Stream contract > allows a follow cursor exactly at the Rust tail and resumes after the next append [0.85ms]
+(pass) website Stream contract > Rust rejects oversized encoded requests before decoding or dispatch [0.30ms]
+(pass) website Stream contract > requires matching conditions and canonicalizes coordinated retry identity [1.90ms]
+(pass) website Stream contract > rejects forged absence conditions before provider dispatch [0.16ms]
+(pass) website Stream contract > distinguishes a missing tail from zero and materializes ancestor paths [0.81ms]
+(pass) website Stream contract > appends, forks an exact prefix, and follows typed JSON [1.58ms]
+(pass) website Stream contract > keeps the complete committed prefix readable after later appends and a fork [1.29ms]
+(pass) website Stream contract > uses exact uint64 positions, opaque identities, flattened receipts, and typed commit inputs [1.46ms]
+(pass) website Stream contract > projects every Rust memory response oneof with isolated exact values [1.55ms]
+(pass) website Stream contract > Rust memory response projector owns widths, copies, and missing oneofs [0.49ms]
+(pass) website Stream contract > Rust memory response projector owns children page validation and projection [0.30ms]
+(pass) website Stream contract > projects commit responses larger than the bounded request size [16.10ms]
+(pass) website Stream contract > binds commit identities to request content [0.57ms]
+(pass) website Stream contract > enforces Rust commit deadlines at the WASM boundary [0.39ms]
+(pass) website Stream contract > serializes concurrent mutations and replays a shared idempotency key once [0.61ms]
+(pass) website Stream contract > returns CAS conflicts without mutating [0.31ms]
+(pass) website Stream contract > does not create a path when its first conditional append conflicts [0.68ms]
+(pass) website Stream contract > removes cancelled memory followers without waiting for a later append [0.57ms]
+(pass) website Stream contract > closed Rust follow handles end before or during a pending read [0.29ms]
+(pass) website Stream contract > rejects a failed multi-stream commit atomically [0.59ms]
+(pass) website Stream contract > retains a valid prototype-named tail in memory and hosted commit results [0.80ms]
+(pass) website Stream contract > hosted append sends the bytes and key validated at call time [0.44ms]
+(pass) website Stream contract > default transport snapshots append inputs before delayed provider selection [0.92ms]
+(pass) website Stream contract > default transport snapshots token grants before delayed provider selection [0.64ms]
+(pass) website Stream contract > default transport snapshots lazy read cursors when the iterator is created [0.76ms]
+(pass) website Stream contract > Rust encodes every protobuf-backed hosted request shape [0.54ms]
+(pass) website Stream contract > hosted children pages use the Rust response contract [0.87ms]
+(pass) website Stream contract > public stream handles snapshot commit and iterator inputs at call time [0.70ms]
+(pass) website Stream contract > default selection keeps concurrent follow waiters independent [0.34ms]
+(pass) website Stream contract > default selection cancels abandoned native connect and retries for a newcomer [0.22ms]
+(pass) website Stream contract > default selection caches a successfully selected provider [0.10ms]
+(pass) website Stream contract > default childrenPage snapshots hierarchy version and request fields [0.13ms]
+(pass) website Stream contract > read captures one cursor before asynchronous validation [0.56ms]
+(pass) website Stream contract > managed transport validates responses and propagates follow cancellation [1.92ms]
+(pass) website Stream contract > hosted follow has no idle timers and clears cancellation resources [1.00ms]
+(pass) website Stream contract > hosted follow stops on malformed frames and canonical channel errors [1.71ms]
+(pass) website Stream contract > hosted follow does not fetch when its signal is already aborted [0.19ms]
+(pass) website Stream contract > hosted non-success responses preserve canonical Stream error codes [0.67ms]
+(pass) website Stream contract > hosted reads keep the canonical cursor contiguous [0.18ms]
+(pass) website Stream contract > hosted reads reject an empty page beyond the canonical tail [0.17ms]
+(pass) website Stream contract > HTTP provider rejects invalid paths and commit shapes before fetching [0.62ms]
+(pass) website Stream contract > HTTP token grants reject invalid paths before fetching [0.35ms]
+(pass) website Stream contract > HTTP token creation serializes the Rust-validated request [0.25ms]
+(pass) website Stream contract > cancels oversized streaming transport responses at the configured bound [0.32ms]
+(pass) website Stream contract > HTTP transport refuses redirects and header-unsafe or oversized bearer tokens [0.29ms]
+(pass) website Stream contract > round-trips full uint64 positions and opaque identities through the HTTP wire codec [0.33ms]
+(pass) website Stream contract > Rust owns HTTP scalar projection after validating the response schema [0.20ms]
+(pass) path ordering matches Unicode code point order, the order of UTF-8 bytes [342.58ms]
+(pass) delivery acknowledgements use Rust token bounds and the authenticated HTTP endpoint [4.28ms]
+
+typescript/packages/stream/test/session-errors.test.ts:
+(pass) every Rust error code round-trips through TLS gRPC and WASM Session I/O [307.03ms]
+(pass) negative control rejects public aliases entering Rust Session I/O [322.48ms]
+
+ 105 pass
+ 0 fail
+ 20420 expect() calls
+Ran 105 tests across 14 files. [6.37s]

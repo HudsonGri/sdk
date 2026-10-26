@@ -229,6 +229,38 @@ class EvidencePolicy(unittest.TestCase):
                 with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "cannot qualify|missing Store executable"):
                     POLICY.check_actor_store(reference)
 
+    def test_real_streams_checkpoint_preserves_native_and_bun_scope(self):
+        POLICY.check_stream_checkpoint(MANIFEST['stream_checkpoint_observations']['streams-v3'])
+
+    def test_rehashed_streams_checkpoint_cannot_promote_scope(self):
+        original = MANIFEST['stream_checkpoint_observations']['streams-v3']
+        for field in ('qualified_modes', 'current_head_qualified', 'exact_compiled_artifacts_verified', 'positive_proofs'):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = self.copy_file(root, original['repo_receipt'])
+                receipt = json.loads(target.read_bytes())
+                for capture in receipt['captures']:
+                    self.copy_file(root, capture['repo_path'])
+                receipt[field] = ['hosted'] if field == 'qualified_modes' else True
+                target.write_text(json.dumps(receipt))
+                reference = dict(original, sha256=POLICY.sha256(target))
+                with patch.object(POLICY, 'ROOT', root), self.assertRaisesRegex(ValueError, 'cannot qualify a mode'):
+                    POLICY.check_stream_checkpoint(reference)
+
+    def test_rehashed_postprocessed_page_cannot_claim_production_control(self):
+        original = MANIFEST['stream_checkpoint_observations']['streams-v3']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = self.copy_file(root, original['repo_receipt'])
+            receipt = json.loads(target.read_bytes())
+            for capture in receipt['captures']:
+                self.copy_file(root, capture['repo_path'])
+            receipt['controls']['independent_reads'] = 'production_fault'
+            target.write_text(json.dumps(receipt))
+            reference = dict(original, sha256=POLICY.sha256(target))
+            with patch.object(POLICY, 'ROOT', root), self.assertRaisesRegex(ValueError, 'postprocessed page'):
+                POLICY.check_stream_checkpoint(reference)
+
     def copy_evidence(self, root, receipt):
         self.copy_file(root, receipt["repo_log"])
         for source in receipt["executed_oracle_sources"]:

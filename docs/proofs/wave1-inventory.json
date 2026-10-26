@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T03:26:32.275596+00:00",
+  "generated_at": "2026-10-26T03:40:03.356686+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -106,6 +106,13 @@
       "repo_receipt": "docs/proofs/evidence/actor-store-v1/receipt.json",
       "sha256": "5e3d73177266334e026ab78bbe759dd6b0574fbacbffa8c464913c10f2f41a44",
       "qualification": "partial Store output and signed source join only; executable/mutant manifests absent; Runtime/readiness/Keep and full A4 unqualified"
+    }
+  },
+  "stream_checkpoint_observations": {
+    "streams-v3": {
+      "repo_receipt": "docs/proofs/evidence/streams-checkpoint-v3/receipt.json",
+      "sha256": "56ae2d123fb14767ba3e09c9a2ec4c3f7538c75b4b3c636e61699a8e531b8b02",
+      "qualification": "partial native/Loom and Bun source-log joins only; binary/WASM/input identities and full modes pending; page split control is model postprocessing"
     }
   },
   "runner": {
@@ -217,6 +224,11 @@
         "file": ".github/workflows/static.yml",
         "line": 33,
         "sha256": "1cb4bad1998eab75a6979eff12e52f84c55fa11c83e661102184181a0d7d7e26"
+      },
+      {
+        "file": "docs/proofs/streams-checkpoint.md",
+        "line": 1,
+        "sha256": "c65e996b30f40501b4fc84e909ae90ab9a42e551b3879997ba32ad78917fb4de"
       }
     ],
     "scope": "changed Rust file closure, exact public/unsafe/wildcard candidate multiset and receipt/source/invariant binding; effective rustdoc/generated/proto/TS exports and complete mode qualification remain pending",
@@ -955,10 +967,22 @@
       ],
       "required_hooks_or_decisions": [
         "signed canonical ChildrenPageRequest field/schema",
-        "actual cut and byte/admission observations"
+        "actual cut and byte/admission observations",
+        "Streams-v3: three production fault branches observed; independent-page control postprocesses returned pages and is not a production mutation; compiled input/EXE/WASM identities missing"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
-      "source": [],
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
+      "source": [
+        {
+          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "line": 574,
+          "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
+        },
+        {
+          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "line": 559,
+          "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
+        }
+      ],
       "modes": {
         "memory": {
           "status": "unqualified",
@@ -980,7 +1004,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.fork.cut",
@@ -1018,9 +1043,10 @@
       "required_hooks_or_decisions": [
         "decided account-tree namespace domain; actual authority/domain observation",
         "existing Fork extended with canonical exclusions",
-        "captured pre-commit cut identity and membership fence hooks"
+        "captured pre-commit cut identity and membership fence hooks",
+        "Streams-v3: three production fault branches observed; independent-page control postprocesses returned pages and is not a production mutation; compiled input/EXE/WASM identities missing"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1/fork.rs",
@@ -1031,6 +1057,11 @@
           "file": "rust/crates/stream/src/conformance/wave1/fork.rs",
           "line": 293,
           "sha256": "3e6f5a64552f6f514c7a27845c5b4b9b430feaa58661b7e3ffceccc4ce680bbe"
+        },
+        {
+          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "line": 449,
+          "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
         }
       ],
       "modes": {
@@ -1056,7 +1087,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.fork.retention",
@@ -1082,7 +1114,7 @@
         "durable closure/GC hooks",
         "counters separating path/exclusions/index/participants/maintenance"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [],
       "modes": {
         "memory": {
@@ -1105,7 +1137,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.keys.absent-zero-tail",
@@ -1126,7 +1159,7 @@
         "new canonical implementation for positive pass",
         "hosted runner/credentials in isolated bb2 service"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
@@ -1157,7 +1190,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.keys.append",
@@ -1178,7 +1212,7 @@
         "new canonical implementation for positive pass",
         "hosted runner/credentials in isolated bb2 service"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
@@ -1209,7 +1243,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.keys.commit",
@@ -1230,7 +1265,7 @@
         "new canonical implementation for positive pass",
         "hosted runner/credentials in isolated bb2 service"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
@@ -1261,7 +1296,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.keys.lifetime",
@@ -1284,7 +1320,7 @@
         "production replicated clock and GC/retirement hooks",
         "durable paged successful-key index/admission"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [],
       "modes": {
         "memory": {
@@ -1307,7 +1343,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.keys.pending",
@@ -1329,7 +1366,7 @@
         "isolated-service pause/late-message hooks",
         "explicit pending inspection semantics"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [],
       "modes": {
         "memory": {
@@ -1352,7 +1389,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "auth.attenuation-decision",
@@ -1600,7 +1638,7 @@
         "bounded direct verifier admission before decode/allocation; half-open expiry; owner deny final; conjunctive parent grants",
         "canonical private-read Rust/WASM boundary and removal of TS authority copy; source review is not a released API or runtime receipt"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "docs/proofs/wave1-auth-contract.md",
@@ -1629,7 +1667,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "streams.fork.exclusions",
@@ -1652,10 +1691,17 @@
         }
       ],
       "required_hooks_or_decisions": [
-        "canonical RelativePath exclusions and successful digest encoding"
+        "canonical RelativePath exclusions and successful digest encoding",
+        "Streams-v3: three production fault branches observed; independent-page control postprocesses returned pages and is not a production mutation; compiled input/EXE/WASM identities missing"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
-      "source": [],
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
+      "source": [
+        {
+          "file": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
+          "line": 523,
+          "sha256": "db82d834404981753dbe625f872a5d9e2036b444dcb95e6718d5358d125c897d"
+        }
+      ],
       "modes": {
         "memory": {
           "status": "unqualified",
@@ -1677,7 +1723,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "actors.wake-hibernate",
@@ -1801,7 +1848,7 @@
         "accepted absent-path NotFound/no-effect contract from rx-hostability supersedes earlier wait-before-create proposal",
         "private leader movement hook"
       ],
-      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
+      "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [],
       "modes": {
         "memory": {
@@ -1824,7 +1871,8 @@
       "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
       "handover_observations": [
         "updates-v2"
-      ]
+      ],
+      "stream_checkpoint_observation": "streams-v3"
     },
     {
       "id": "actors.idle-bounds",
