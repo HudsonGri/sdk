@@ -122,7 +122,6 @@ async fn execute_with(
         .arg(workspace)
         .arg("--catalog")
         .arg(catalog)
-        .args(["--operation", &operation.to_string()])
         .stdin(if keep_open {
             Stdio::piped()
         } else {
@@ -130,6 +129,11 @@ async fn execute_with(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // JSONL (including dumb-terminal stdin) carries its identity in each
+    // AgentRequest. The CLI operation flag belongs only to the -p entry.
+    if !jsonl {
+        command.args(["--operation", &operation.to_string()]);
+    }
     if !matches!(mode, Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel) {
         command.arg("--settings-root").arg(settings);
     }
