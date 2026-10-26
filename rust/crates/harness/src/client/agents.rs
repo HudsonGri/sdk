@@ -103,6 +103,15 @@ impl AgentClient {
         }).transpose()
     }
 
+    /// Latest actually observed lifecycle state. Before its first delivery the
+    /// result is absent; opening a follow never invents an idle/running phase.
+    pub fn current_status(&self) -> Result<Option<StatusRecord>, AgentClientError> {
+        let view = self.session.view(&self.status).expect("selected status owns a view");
+        let record = view.records().len().checked_sub(1).and_then(|index| view.record(index));
+        record.map(|record| StatusRecord::decode(&record.value).map_err(AgentClientError::Record))
+            .transpose()
+    }
+
     /// Borrow the same core for counters and rendering; no second ClientViews.
     pub const fn session(&self) -> &WireSession {
         &self.session

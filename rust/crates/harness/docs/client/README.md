@@ -1,5 +1,37 @@
 # Harness client views
 
+Agent observation uses `AgentClient` over the shared Rust `WireSession` and the
+platform's authenticated Streams `session::Client`. Each focused agent selects
+its `AgentPath::conversation()` and `AgentPath::status()` streams with explicit
+exclusive cursors. Use a retained cursor or a bounded history page's edge;
+opening the client does not fetch a historical snapshot. View demand and live
+record/byte retention have finite policies. The canonical session owns receive
+credit, transport, authentication and recovery.
+
+On native local hosts, `LocalAgentClient::connect(local, conversation_from,
+status_from, maximum_output_bytes)` obtains the existing pool and registered
+credential from `LocalHarness`. Its `prompt` and `cancel` methods enter the actor
+host. `read_turn` authenticates the selected immutable output file and enforces
+the byte limit before decoding. An agent `Unknown` error retains the exact
+commit request; keep that request under the original intent's custody.
+
+Browser callers initialize the generated WASM module and construct `AgentClient`
+from `client-query` with their authenticated `WasmStream`, canonical agent path,
+explicit cursors and credential slot. The browser object drives the same Rust
+`AgentClient`, with one pending `next()` read. `close()` releases follows and
+wakes a pending read with a typed closure error. `viewRevision()` lets renderers
+reuse an unchanged view; `record(index)` copies only the requested visible turn.
+Sequences cross as exact `BigInt` values. `currentStatus()` reads the Rust fold
+and returns null until a real status arrives, rather than fabricating idle state.
+
+The whole-client migration is in progress: the GraphCoder workflow consumers,
+TaskVolume folds and old Swarm bindings still need replacement. The generic
+absent-stream follow, same-cut child-status projection and exact replay-to-turn
+correlation are owner dependencies. These adapters do not claim that migration
+or its endpoint qualification is complete.
+
+## Local hypotheses
+
 Pure, bounded hypotheses over demanded immutable authoritative references. The
 kernel has no IO, authority issuer, domain reducer, journal, admission route,
 retry policy, worker, network protocol or inverse-patch rollback.
