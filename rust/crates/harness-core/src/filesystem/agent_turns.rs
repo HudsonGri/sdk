@@ -11,6 +11,7 @@ use super::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
     FilesystemHost, FilesystemJournalBinding,
 };
+use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, TurnStop},
@@ -21,7 +22,6 @@ use crate::{
     projection::SelectedModelContext,
     runtime::ContentBindings,
 };
-use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
 use futures::TryStreamExt;
@@ -182,7 +182,9 @@ where
         if private.volume.class() != VolumeClass::AgentPrivate
             || *private.volume.owner() != VolumeOwner::Agent(owner)
         {
-            return Err(Error::Unauthorized("private volume belongs to another agent".into()));
+            return Err(Error::Unauthorized(
+                "private volume belongs to another agent".into(),
+            ));
         }
         let issuer = self.issuer.with_audience(Authority {
             kind: AggregateKind::Conversation,
@@ -191,8 +193,16 @@ where
         let mut grants = Vec::with_capacity(2 * agent.volumes.len() + 1);
         grants.push(crate::contract::capability::INTERACTION_ROUTE.to_owned());
         for binding in &agent.volumes {
-            grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
-            grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
+            grants.push(
+                binding
+                    .volume
+                    .capability(VolumeOperation::Read, &mut None)?,
+            );
+            grants.push(
+                binding
+                    .volume
+                    .capability(VolumeOperation::Write, &mut None)?,
+            );
         }
         let capabilities = Capabilities::new(grants);
         let scope = issuer.bootstrap_scope("agent", &capabilities, Some(owner), &mut None)?;
@@ -357,7 +367,11 @@ where
             let (journal, mut authority, files) = self.journal(agent)?;
             let (policy, configured) = self.approvals(agent, &authority.content).await?;
             authority.approval = configured
-                .map(|policy| policy.bind().map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>))
+                .map(|policy| {
+                    policy
+                        .bind()
+                        .map(|gate| Arc::new(gate) as Arc<dyn crate::runtime::ToolPolicy>)
+                })
                 .transpose()?;
             let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
             let journal = journal
