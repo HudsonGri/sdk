@@ -13,6 +13,8 @@ use std::{
 
 #[path = "agent_model/driver.rs"]
 mod driver;
+#[path = "agent_model/runtime.rs"]
+mod runtime;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/wired.rs"]
 mod wired;

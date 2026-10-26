@@ -6,7 +6,7 @@
 //! harness/agents/<root>/status            status records, never inherited
 //! harness/agents/<root>/closed            exists once the agent is archived
 //! harness/agents/<root>/children/<id>     child subtree, same shape
-//! harness/actors/<id>                     actor state, outside the subtree
+//! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
 //! ```
 
 use super::Error;
@@ -200,11 +200,6 @@ impl AgentPath {
     /// Parent of the child subtrees, the `children_page` parent.
     pub fn children(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{CHILDREN}", self.text))
-    }
-
-    /// Actor state stream, outside the subtree so a spawn may create it.
-    pub fn actor_state(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{ACTORS}/{}", self.id()))
     }
 }
 
