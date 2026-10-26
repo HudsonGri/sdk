@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(not(acyclic_loom))]
 fn alarm(
     generation: u64,
     deadline_unix_ms: Option<u64>,
@@ -279,6 +278,101 @@ mod schedules {
         });
     }
 
+    #[test]
+    fn due_alarm_racing_running_work_parking_retains_one_ready_entry() {
+        loom::model(|| {
+            let set = Arc::new(ReadySet::default());
+            let registration = set.register(7).unwrap();
+            let work = set.take().unwrap();
+            registration
+                .update_alarm(&alarm(1, Some(10), None))
+                .unwrap();
+            let due_set = Arc::clone(&set);
+            let due = thread::spawn(move || due_set.wake_due(10, 1));
+            let park = thread::spawn(move || drop(work));
+            assert_eq!(due.join().unwrap(), 1);
+            park.join().unwrap();
+            assert_eq!(set.alarm_count(), 0);
+            assert_eq!(
+                set.counts(),
+                (1, 1),
+                "a due alarm must survive either order of the parking handoff"
+            );
+            drop(set.take());
+            assert_eq!(set.counts(), (1, 0));
+            drop(registration);
+            assert_eq!(set.counts(), (0, 0));
+        });
+    }
+
+    #[test]
+    fn clear_racing_due_selection_cannot_restore_the_old_generation() {
+        loom::model(|| {
+            let set = Arc::new(ReadySet::default());
+            let registration = Arc::new(set.register(7).unwrap());
+            drop(set.take());
+            registration
+                .update_alarm(&alarm(1, Some(10), None))
+                .unwrap();
+            let due_set = Arc::clone(&set);
+            let due = thread::spawn(move || due_set.wake_due(10, 1));
+            let clearing = Arc::clone(&registration);
+            let clear = thread::spawn(move || {
+                clearing.update_alarm(&alarm(2, None, None)).unwrap();
+            });
+            due.join().unwrap();
+            clear.join().unwrap();
+            assert_eq!(set.alarm_count(), 0);
+            assert_eq!(set.next_deadline(), None);
+            assert!(matches!(
+                registration.update_alarm(&alarm(1, Some(10), None)),
+                Err(super::super::super::Error::Conflict)
+            ));
+            // Selection may already have queued work. The retained generation,
+            // rather than absence of a stale wake, fences actual publication.
+            assert_eq!(set.wake_due(10, 1), 0);
+            drop(set.take());
+            assert_eq!(set.counts(), (1, 0));
+            drop(registration);
+            assert_eq!(set.counts(), (0, 0));
+        });
+    }
+
+    #[test]
+    fn earlier_alarm_racing_dispatcher_wait_retains_a_rearm_signal() {
+        loom::model(|| {
+            let mut set = ReadySet::default();
+            let registration = set.register(7).unwrap();
+            drop(set.take());
+            registration
+                .update_alarm(&alarm(1, Some(100), None))
+                .unwrap();
+            let counter = Arc::new(Counter(AtomicUsize::new(0)));
+            let consumer_counter = Arc::clone(&counter);
+            let consumer = thread::spawn(move || {
+                let waiter = Waker::from(consumer_counter);
+                assert!(
+                    set.poll_ready(&mut Context::from_waker(&waiter))
+                        .is_pending()
+                );
+                let observed = set.next_deadline();
+                (set, observed)
+            });
+            let producer = thread::spawn(move || {
+                registration
+                    .update_alarm(&alarm(2, Some(50), None))
+                    .unwrap();
+                registration
+            });
+            let (_set, observed) = consumer.join().unwrap();
+            let registration = producer.join().unwrap();
+            assert!(
+                observed == Some(50) || counter.0.load(Ordering::SeqCst) > 0,
+                "the sole dispatcher must observe the earlier deadline or retain its wake"
+            );
+            drop(registration);
+        });
+    }
     struct Counter(AtomicUsize);
     impl Wake for Counter {
         fn wake(self: Arc<Self>) {
