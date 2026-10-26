@@ -1,4 +1,6 @@
 [
+  "docs/backends/postgres.md",
+  "docs/backends/s3.md",
   "docs/buildbox-install.md",
   "docs/gate-feature-cache.md",
   "plugin/scripts/fixtures/PROVENANCE.md",
