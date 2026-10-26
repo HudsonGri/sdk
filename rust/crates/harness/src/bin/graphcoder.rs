@@ -38,6 +38,13 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
+            if let Some(cause) = error.downcast_ref::<client::LocalAgentError>() {
+                match client::write_agent_unknown(cause, &mut std::io::stderr().lock()) {
+                    Ok(true) => return ExitCode::from(client::HeadlessOutcome::Indeterminate.exit_code()),
+                    Ok(false) => {},
+                    Err(output) => eprintln!("graphcoder: cannot write unresolved commit: {output}"),
+                }
+            }
             eprintln!("graphcoder: {error}");
             ExitCode::FAILURE
         }
