@@ -162,14 +162,14 @@ where
                 #[cfg(target_arch = "wasm32")]
                 let present = journal.admission(None)?.await?.0.is_some();
                 if !present {
-                    return self.finish_known_reconciliation(task, &fence, io).await;
+                    return self.finish_known_reconciliation(task, &fence, None, io).await;
                 }
                 let transition = journal
                     .observe_latest_record(io)
                     .await?
                     .map(|record| record.transition);
                 let Some(transition) = transition else {
-                    return self.finish_known_reconciliation(task, &fence, io).await;
+                    return self.finish_known_reconciliation(task, &fence, None, io).await;
                 };
                 #[cfg(not(target_arch = "wasm32"))]
                 let context = if let Some(io) = io {
@@ -196,7 +196,8 @@ where
                     self.harness.durable_context(task, operation, None).await?,
                 );
                 for command in transition.commands.iter().take(maximum_commands as usize) {
-                    self.owner_observed(task, &fence, true, io).await?;
+                    self.context_owner_observed(task, &fence, context.context(), io)
+                        .await?;
                     #[cfg(not(target_arch = "wasm32"))]
                     let progress = if let Some(io) = io {
                         let work = io.original_native_work().ok_or_else(|| {
@@ -303,13 +304,8 @@ where
                                         "native result differs from original work",
                                     ));
                                 }
-                                self.owner_observed(
-                                    task,
-                                    &fence,
-                                    true,
-                                    Some(&crate::filesystem::PreparationIo::from_native_work(
-                                        custody.work(),
-                                    )?),
+                                self.context_owner_observed(
+                                    task, &fence, context.context(), Some(io),
                                 )
                                 .await?;
                             }
@@ -323,7 +319,7 @@ where
                 if transition.commands.len() > maximum_commands as usize {
                     return Ok(WorkerTurn::Reconciling);
                 }
-                self.finish_known_reconciliation(task, &fence, io).await
+                self.finish_known_reconciliation(task, &fence, Some(context.context()), io).await
             },
             io,
         )
@@ -339,9 +335,14 @@ where
         &self,
         task: TaskId,
         fence: &LeaseFence,
+        context: Option<&crate::runtime::TaskContext>,
         io: Option<&super::super::PreparationIo>,
     ) -> Result<WorkerTurn> {
-        self.owner_observed(task, fence, true, io).await?;
+        if let Some(context) = context {
+            self.context_owner_observed(task, fence, context, io).await?;
+        } else {
+            self.owner_observed(task, fence, true, io).await?;
+        }
         let cancelled = self
             .host
             .cancellation_requested(
