@@ -1,6 +1,6 @@
 //! Browser access to the same selected-stream owner used by native clients.
 
-use acyclic_harness_client::{DemandPolicy, ViewDemand, WireSession};
+use acyclic_harness_client::{DemandPolicy, ViewDemand, WireSession, WireSessionError};
 use acyclic_stream::{StreamPath, WasmStream, wire};
 use js_sys::{Array, JsString, Uint8Array};
 use prost::Message as _;
@@ -15,7 +15,22 @@ struct ReadState {
 type Readers = Rc<RefCell<BTreeMap<StreamPath, ReadState>>>;
 
 fn error(message: impl std::fmt::Display) -> JsValue {
-    js_sys::Error::new(&message.to_string()).into()
+    let message = message.to_string();
+    coded_error(&message, &message)
+}
+
+fn coded_error(code: &str, message: impl std::fmt::Display) -> JsValue {
+    let error = js_sys::Error::new(&message.to_string());
+    error.set_name(code);
+    error.into()
+}
+
+fn stream_error(cause: acyclic_stream::StreamError) -> JsValue {
+    coded_error(cause.code(), cause)
+}
+
+fn session_error(cause: WireSessionError) -> JsValue {
+    coded_error(cause.code(), cause)
 }
 
 fn path(value: JsString) -> Result<StreamPath, JsValue> {
@@ -26,7 +41,7 @@ fn path(value: JsString) -> Result<StreamPath, JsValue> {
     let value = value
         .as_string()
         .ok_or_else(|| error("CLIENT_INVALID_PATH"))?;
-    StreamPath::new(value).map_err(error)
+    StreamPath::new(value).map_err(stream_error)
 }
 
 fn paths(input: &Array, maximum: usize) -> Result<Vec<StreamPath>, JsValue> {
@@ -70,7 +85,8 @@ impl WasmWireSession {
     /// Share the platform's existing pool; refuse providers with no session I/O.
     #[wasm_bindgen(constructor)]
     pub fn new(stream: &WasmStream, selected: usize, expanded: usize) -> Result<Self, JsValue> {
-        let policy = DemandPolicy::new(selected, expanded).map_err(error)?;
+        let policy = DemandPolicy::new(selected, expanded)
+            .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
         let client = stream
             .session_client()
             .ok_or_else(|| error("CLIENT_NO_SESSION"))?;
@@ -91,8 +107,8 @@ impl WasmWireSession {
             paths(&focused, self.policy.selected_capacity())?,
             paths(&expanded, self.policy.expanded_capacity())?,
         )
-        .map_err(error)?;
-        self.session.borrow_mut().set_view(demand).map_err(error)?;
+        .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
+        self.session.borrow_mut().set_view(demand).map_err(session_error)?;
         {
             let session = self.session.borrow();
             for (path, state) in self.readers.borrow_mut().iter_mut() {
@@ -115,7 +131,7 @@ impl WasmWireSession {
         self.session
             .borrow()
             .register_credential(slot, credential.to_vec().into())
-            .map_err(error)
+            .map_err(session_error)
     }
 
     /// Admit the canonical encoded subscription; network I/O starts in `next`.
@@ -126,11 +142,11 @@ impl WasmWireSession {
         }
         let path = path(resource)?;
         let subscription = wire::SessionSubscription::decode(subscription.to_vec().as_slice())
-            .map_err(error)?;
+            .map_err(|cause| coded_error("invalid_subscription", cause))?;
         self.session
             .borrow_mut()
             .begin_stream(path, subscription)
-            .map_err(error)
+            .map_err(session_error)
     }
 
     /// Consume one bounded canonical frame. Only one pending read per stream;
@@ -174,7 +190,7 @@ impl WasmWireSession {
             self.session.borrow_mut().poll_stream(&guard.path, context)
         })
         .await
-        .map_err(error)?;
+        .map_err(session_error)?;
         Ok(frame.map(|frame| Uint8Array::from(frame.encode_to_vec().as_slice())))
     }
 
@@ -183,7 +199,7 @@ impl WasmWireSession {
         self.session
             .borrow_mut()
             .set_view(ViewDemand::default())
-            .map_err(error)?;
+            .map_err(session_error)?;
         for state in self.readers.borrow_mut().values_mut() {
             state.cancelled = true;
         }
