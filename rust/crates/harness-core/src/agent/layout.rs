@@ -3,11 +3,15 @@
 //! ```text
 //! harness/agents/<root>                   inbox (the subtree's root stream)
 //! harness/agents/<root>/conversation      conversation, inherited by children at the fork cut
-//! harness/agents/<root>/status            status records, never inherited
 //! harness/agents/<root>/closed            exists once the agent is archived
 //! harness/agents/<root>/children/<id>     child subtree, same shape
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
+//! harness/status/<id>                      status records, outside the subtree
 //! ```
+//!
+//! Status lives outside the subtree so the commit that creates an agent (a spawn
+//! fork may write nothing inside its destination) also writes its first status:
+//! every agent a `children` page lists already has one.
 
 use super::Error;
 use acyclic_stream::StreamPath;
@@ -20,13 +24,14 @@ pub const AGENTS: &str = "harness/agents";
 pub const ACTORS: &str = "harness/actors";
 /// Root of every agent volume authority stream, in the same domain.
 pub const VOLUMES: &str = "harness/volumes";
+/// Root of every agent's status stream, keyed by its globally unique id.
+pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 3] = [CHILDREN, STATUS, CLOSED];
+pub const NOT_INHERITED: [&str; 2] = [CHILDREN, CLOSED];
 /// Deepest admitted nesting; bounds every path and every lineage walk.
 pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
-const STATUS: &str = "status";
 const CLOSED: &str = "closed";
 const CHILDREN: &str = "children";
 const ID_HEX: usize = 32;
@@ -189,7 +194,7 @@ impl AgentPath {
 
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{}/{STATUS}", self.text))
+        stream(&format!("{STATUSES}/{}", self.id()))
     }
 
     /// Close marker stream; its existence refuses every later inbox append.

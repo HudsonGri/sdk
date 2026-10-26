@@ -220,7 +220,7 @@ async fn seeded() -> Result<Seeded> {
             },
             CommitCondition::Tail {
                 path: status.clone(),
-                expected: 0,
+                expected: 1,
             },
         ],
         mutations: vec![
@@ -248,12 +248,32 @@ async fn seeded() -> Result<Seeded> {
     ));
     let mut state = AgentState::adopted(parent.clone(), &adopted(id(1)));
     state.conversation_tail = 2;
-    state.status_tail = 1;
+    state.status_tail = 2;
     Ok(Seeded {
         provider,
         parent,
         state,
     })
+}
+
+/// Commits `name`'s spawn from `state`, optionally without the fork exclusion.
+async fn spawn_child(
+    provider: &MemoryStream,
+    state: &AgentState,
+    name: &str,
+    exclude: bool,
+) -> Result<Step> {
+    let step = spawning(state.clone(), name);
+    let mut request = lower(&step, 1, &BTreeMap::new(), delivery_key(&step.state, name)?)?;
+    for mutation in &mut request.mutations {
+        if let CommitMutation::Fork { exclude: names, .. } = mutation
+            && !exclude
+        {
+            names.clear();
+        }
+    }
+    assert!(matches!(provider.commit(request).await?, CommitOutcome::Committed(_)));
+    Ok(step)
 }
 
 fn spawning(mut state: AgentState, name: &str) -> Step {
@@ -309,8 +329,13 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
         vec![b"c1".to_vec(), b"c2".to_vec()]
     );
     assert_eq!(values(&provider, parent.conversation()?).await?.len(), 3);
-    assert!(values(&provider, child.status()?).await?.is_empty());
-    assert_eq!(values(&provider, parent.status()?).await?.len(), 2);
+    // The child's first status rides with its membership: Idle at its ForkAdopted.
+    let first = StatusRecord {
+        phase: Phase::Idle,
+        cursor: 1,
+    };
+    assert_eq!(values(&provider, child.status()?).await?, vec![first.encode()?]);
+    assert_eq!(values(&provider, parent.status()?).await?.len(), 3);
     Ok(())
 }
 
@@ -330,23 +355,20 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
     ));
     let child = parent.child(&AgentId::derive(&parent.id(), "s1"))?;
     assert!(values(&provider, child.inbox()?).await?.is_empty());
-    assert!(values(&provider, parent.status()?).await?.len() == 1);
+    assert!(values(&provider, parent.status()?).await?.len() == 2);
 
-    // Negative control: without the exclusion the child inherits the parent's status.
+    // Spawn s2 normally, then s3 from the advanced parent.
     state.conversation_tail = 2;
-    let step = spawning(state, "s2");
-    let mut request = lower(&step, 1, &BTreeMap::new(), delivery_key(&step.state, "t2")?)?;
-    for mutation in &mut request.mutations {
-        if let CommitMutation::Fork { exclude, .. } = mutation {
-            exclude.clear();
-        }
-    }
-    assert!(matches!(
-        submit(&provider, request).await?,
-        Submitted::Committed(_)
-    ));
-    let leaked = parent.child(&AgentId::derive(&parent.id(), "s2"))?;
-    assert_eq!(values(&provider, leaked.status()?).await?.len(), 1);
+    let first = spawning(state, "s2");
+    let request = lower(&first, 1, &BTreeMap::new(), delivery_key(&first.state, "t2")?)?;
+    assert!(matches!(submit(&provider, request).await?, Submitted::Committed(_)));
+    let s2 = AgentId::derive(&parent.id(), "s2");
+    let s3 = spawn_child(&provider, &first.state, "s3", true).await?;
+    let child = |name: &str| parent.child(&AgentId::derive(&parent.id(), name));
+    assert!(values(&provider, child("s3")?.child(&s2)?.inbox()?).await?.is_empty());
+    // Negative control: without the exclusion s4 inherits its siblings' subtrees.
+    spawn_child(&provider, &s3.state, "s4", false).await?;
+    assert!(!values(&provider, child("s4")?.child(&s2)?.inbox()?).await?.is_empty());
     Ok(())
 }
 
