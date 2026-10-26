@@ -57,8 +57,6 @@ mod owner;
 mod owner_record;
 mod routing;
 mod runtime;
-#[cfg(feature = "grpc")]
-mod session;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
 #[cfg(test)]
@@ -69,11 +67,9 @@ mod turn;
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
 mod workspace;
-pub use agents::{LocalAgents, LocalTurns};
+pub use agents::{AgentFailure, LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
-#[cfg(feature = "grpc")]
-pub use session::{LOCAL_SESSION_CREDENTIAL_SLOT, LocalSession};
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
 
@@ -96,8 +92,6 @@ pub struct LocalHarness {
     /// `bind` has no filesystem of its own, so it hosts no agents.
     agent_stream: Option<Arc<LocalStream>>,
     agents: tokio::sync::OnceCell<agents::Hosted>,
-    #[cfg(feature = "grpc")]
-    session: tokio::sync::OnceCell<LocalSession>,
     task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,

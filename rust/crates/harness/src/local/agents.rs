@@ -42,7 +42,18 @@ pub(super) struct Hosted {
     agents: Arc<LocalAgents>,
     turns: Arc<LocalTurns>,
     root: AgentPath,
+    failures: tokio::sync::broadcast::Sender<AgentFailure>,
     run: tokio::task::JoinHandle<()>,
+}
+
+/// One failed agent delivery. It stays queued and is retried; a waiting
+/// client reports it rather than waiting for an output that may never come.
+#[derive(Clone, Debug)]
+pub struct AgentFailure {
+    /// The actor whose delivery failed; see [`AgentHost::actor`].
+    pub actor: ActorReference,
+    /// The failure, as the runtime reported it.
+    pub error: String,
 }
 
 impl Drop for Hosted {
@@ -182,6 +193,35 @@ impl LocalHarness {
         agents.send(root, &from, &message).await
     }
 
+    /// The configured approval policy, staged once on the root's private
+    /// volume: the root agent's tools run under it.
+    async fn root_policy(
+        &self,
+        root: &crate::agent::AgentId,
+    ) -> Result<crate::conversation::FileRef> {
+        let policy = crate::contract::canonical_json_bytes(&self.approval_policy)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.local.agent.policy.v1");
+        hasher.update(root.as_str().as_bytes());
+        hasher.update(&[0]);
+        hasher.update(&policy);
+        let mut bytes = [0; 16];
+        hasher.finalize_xof().fill(&mut bytes);
+        let operation = OperationId::from_bytes(bytes);
+        Ok(self
+            .input_publisher_with_limit(self.limits.file_bytes)?
+            .stage_once(
+                operation,
+                &format!("inputs/{operation}.json"),
+                &policy,
+                "application/json",
+                "policy",
+                ContentAccess::default(),
+            )?
+            .await?
+            .0)
+    }
+
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
         let authority = self.root_authority.clone().ok_or_else(|| {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
@@ -225,11 +265,60 @@ impl LocalHarness {
             )
             .map_err(storage)?,
         );
+        // A reopened root keeps the policy it was created with: the agent
+        // model has no policy-update record, and replaying a creation with
+        // another policy would refuse the reopen.
+        let existing = AgentPath::root(&id);
+        let root = match agents.state(&existing).await {
+            Ok(state) => {
+                let configured = self.root_policy(&id).await?;
+                if state.policy.as_ref() != Some(&configured) {
+                    tracing::warn!(
+                        "the configured approval policy differs from the one this workspace's                          root agent was created with; the agent keeps its original policy"
+                    );
+                }
+                agents.host(&existing).map_err(storage)?;
+                existing
+            }
+            Err(crate::agent::Error::NoSuchAgent) => self.create_root(&agents, id).await?,
+            Err(error) => return Err(storage(error)),
+        };
+        let (failures, _) = tokio::sync::broadcast::channel(64);
+        let report = failures.clone();
+        let runner = Arc::clone(&agents);
+        let run = tokio::spawn(async move {
+            let Err(error) = runner
+                .run(|actor, error| {
+                    tracing::warn!(?actor, %error, "agent turn failed");
+                    let _ = report.send(AgentFailure {
+                        actor: actor.clone(),
+                        error: error.to_string(),
+                    });
+                })
+                .await;
+            tracing::error!(%error, "agent runtime stopped");
+        });
+        Ok(Hosted {
+            agents,
+            turns,
+            root,
+            failures,
+            run,
+        })
+    }
+
+    /// Create the root agent over this harness's volumes and policy.
+    async fn create_root(
+        &self,
+        agents: &LocalAgents,
+        id: crate::agent::AgentId,
+    ) -> Result<AgentPath> {
         let bind = |name: &str, volume: &VolumeRef| VolumeBinding {
             name: name.to_owned(),
             volume: volume.clone(),
         };
-        let root = agents
+        let policy = self.root_policy(&id).await?;
+        agents
             .create(
                 &IntentId::try_from("root").map_err(storage)?,
                 ForkAdopted {
@@ -243,23 +332,15 @@ impl LocalHarness {
                         bind(GOAL_VOLUME, &self.scratch),
                     ],
                     brief: None,
-                    policy: None,
+                    policy: Some(policy),
                 },
             )
             .await
-            .map_err(storage)?;
-        let runner = Arc::clone(&agents);
-        let run = tokio::spawn(async move {
-            let Err(error) = runner
-                .run(|actor, error| tracing::warn!(?actor, %error, "agent turn failed"))
-                .await;
-            tracing::error!(%error, "agent runtime stopped");
-        });
-        Ok(Hosted {
-            agents,
-            turns,
-            root,
-            run,
-        })
+            .map_err(storage)
+    }
+
+    /// Failed agent deliveries from now on, once the agents are hosted.
+    pub fn agent_failures(&self) -> Option<tokio::sync::broadcast::Receiver<AgentFailure>> {
+        self.agents.get().map(|hosted| hosted.failures.subscribe())
     }
 }
