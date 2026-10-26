@@ -26,6 +26,10 @@ pub type LocalAgents = AgentHost<LocalStream, ExecutorDriver<LocalTurns>>;
 
 /// Settled turns of history in each agent turn's model context.
 const HISTORY_TURNS: u32 = 64;
+/// Backstop on one agent delivery, which awaits a whole turn. A turn is
+/// bounded by its model steps and each model and tool call's own deadline;
+/// this only reclaims a delivery whose provider never answers.
+const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 
 /// The hosted agents, their root, and the runtime task that ends with them.
 pub(super) struct Hosted {
@@ -186,7 +190,7 @@ impl LocalHarness {
                 stream,
                 ExecutorDriver::new(turns),
                 within,
-                ActorLimits::new(10_000, 1 << 20, 1 << 16).map_err(storage)?,
+                ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
                 Arc::new(SystemClock),
             )
             .map_err(storage)?,
