@@ -4,6 +4,8 @@ pub use acyclic_harness_tui::*;
 mod render;
 #[cfg(feature = "terminal")]
 pub use render::ClientRenderer;
+#[cfg(all(feature = "terminal", feature = "grpc", not(target_arch = "wasm32")))]
+pub use render::AgentRenderer;
 
 #[cfg(feature = "terminal")]
 mod diff;

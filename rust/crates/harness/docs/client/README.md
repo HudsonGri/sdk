@@ -43,11 +43,20 @@ reuse an unchanged view; `record(index)` copies only the requested visible turn.
 Sequences cross as exact `BigInt` values. `currentStatus()` reads the Rust fold
 and returns null until a real status arrives, rather than fabricating idle state.
 
-The whole-client migration is in progress: GraphCoder's interactive consumers,
-TaskVolume folds and old Swarm bindings still need replacement. The generic
+GraphCoder's prompt, JSONL, dumb-terminal and interactive entries now use the
+same actor client. Interactive input retains one submitted receipt and restores
+an excess submission to the editor before staging. Its disposable AgentRenderer
+is bound to one AgentPath and retains at most 16 complete turns and 4 MiB of
+answer text. It reuses the Markdown parser, style conversion, source anchors,
+visible wrapping index and frame clock. Only source changes parse text; frames
+borrow visible rows. These are text/count bounds, not an allocator RSS claim.
+The default interactive view starts at the current tail; `--resume` selects at
+most 16 recent records. Neither mode resets the actor's persistent context.
+
+The whole-client migration is in progress: TaskVolume folds and old Swarm
+bindings still need replacement. The generic
 absent-stream follow, same-cut child-status projection, actor-native input
-composition/commands and historical backfill remain open. GraphCoder's prompt,
-JSONL and dumb-terminal entries now use the actor client. These source changes
+composition/commands, terminal effects and historical backfill remain open. These source changes
 do not claim that the complete migration, compilation or endpoint qualification
 is complete.
 

@@ -94,6 +94,10 @@ async fn open(
 
 // Own native phase futures separately from the CLI orchestration frame.
 async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
+    let dumb = acyclic_harness::tui::term::Environment::capture().is_dumb();
+    if dumb && args.resume {
+        return Err("--resume requires an interactive terminal".into());
+    }
     let operation = args
         .operation
         .as_deref()
@@ -108,7 +112,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
     let local = phase(|| open(&args, credentials)).await?;
     if args.prompt.is_some()
         || args.input_format == InputFormat::Jsonl
-        || acyclic_harness::tui::term::Environment::capture().is_dumb()
+        || dumb
     {
         let mut agent = phase(|| client::LocalAgentClient::connect_recent(local, 4 * 1024 * 1024)).await?;
         let mut output = std::io::stdout().lock();
@@ -122,22 +126,7 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         };
         return Ok(outcome.exit_code());
     }
-    let operation = if args.resume {
-        phase(|| client::resume_local_identity(&local, operation)).await?
-    } else {
-        client::local_identity(operation)
-    };
-    phase(|| client::select_local_identity(&local, operation)).await?;
-    let result = phase(|| {
-        client::with_local_commands(
-            local.clone(),
-            operation,
-            view::run(local.clone(), operation, args.inline),
-        )
-    })
-    .await;
-    phase(|| client::disconnect_local(local)).await?;
-    Ok(result?.exit_code())
+    Ok(phase(|| view::run(local, args.inline, args.resume)).await?.exit_code())
 }
 
 #[cfg(test)]
