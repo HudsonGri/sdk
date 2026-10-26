@@ -2,10 +2,12 @@
 """Captured Cargo short errors exercise emitters, public verdict and coordinator."""
 import os
 import importlib.util
+import json
 from hashlib import sha256
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -198,6 +200,75 @@ class ClippyDiagnostics(unittest.TestCase):
         self.assertEqual(missing.returncode, 224)
         self.assertIn('payload start step failed:', missing.stdout)
         self.assertIn('recovery command:', missing.stdout)
+
+    def test_legacy_repair_consumes_the_reported_directory_without_reallocating(self):
+        scripts = self.root / 'scripts'
+        scripts.mkdir()
+        shutil.copyfile(HERE.parents[1] / 'gate-target-cache.py', scripts / 'gate-target-cache.py')
+        output = self.root / 'actual-output'
+        output.mkdir()
+        (output / '.gate-clippy.out').write_text(RAW)
+        self.log.write_text(f'GATE_OUTPUT_DIRECTORY {output}\nGATE_CLIPPY rc=101\nGATE_DONE rc=101\n')
+        driver = self.root / 'payload.sh'
+        driver.write_text(f'cat "{self.log}"\nexit 101\n')
+        for adapter, expected in [(HERE / 'gate-clippy.py', 101),
+                                  (FIXTURES / 'gate1509-footer/former-adapter.py.txt', 224)]:
+            result = subprocess.run([sys.executable, str(adapter), 'run', 'bash', str(driver)],
+                                    cwd=self.root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+            if expected == 101:
+                self.assertTrue(clippy.complete(result.stdout))
+                self.assertEqual(result.stdout.count('GATE_CLIPPY_ERROR '), 2)
+        # A helper's presence does not authorize inventing a second allocation,
+        # even if unrelated diagnostics happen to exist in cwd.
+        shutil.copyfile(self.raw, self.root / '.gate-clippy.out')
+        for header in ['', f'GATE_OUTPUT_DIRECTORY {output}\n' * 2,
+                       'GATE_OUTPUT_DIRECTORY relative/path\n',
+                       f'GATE_OUTPUT_DIRECTORY {self.root / "absent"}\n']:
+            self.log.write_text(header + 'GATE_CLIPPY rc=101\nGATE_DONE rc=101\n')
+            result = subprocess.run([sys.executable, str(HERE / 'gate-clippy.py'), 'run', 'bash', str(driver)],
+                                    cwd=self.root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 224, result.stdout + result.stderr)
+            self.assertFalse(clippy.complete(result.stdout))
+
+    def test_captured_cutoff_retains_actual_status_and_withheld_protocol(self):
+        fixture = FIXTURES / 'gate1509-footer'
+        captured = (fixture / 'tail.bin').read_bytes()
+        origin = json.loads((fixture / 'origin.json').read_text())
+        self.assertEqual(sha256(captured).hexdigest(), origin['sha256'])
+        # The old adapter's terminal error/footer are its output, not evidence
+        # of the inner child outcome. Replay only the preceding real bytes.
+        captured = captured.split(b'error: GATE_RUNNER_INFRA Clippy stream attestation')[0]
+        stream = self.root / 'cutoff.bin'
+        stream.write_bytes(captured)
+        driver = self.root / 'cutoff.py'
+        driver.write_text('import os,signal,sys\nfrom pathlib import Path\n'
+                          'sys.stdout.buffer.write(Path(sys.argv[1]).read_bytes());sys.stdout.buffer.flush()\n'
+                          'os.kill(os.getpid(),signal.SIGKILL)\n')
+        result = subprocess.run([sys.executable, str(HERE / 'gate-clippy.py'), 'run', sys.executable,
+                                 str(driver), str(stream)], capture_output=True)
+        self.assertEqual(result.returncode, 224, result.stderr)
+        text = result.stdout.decode('utf-8')
+        marker = next(line.removeprefix('GATE_PAYLOAD_OBSERVED ') for line in text.splitlines()
+                      if line.startswith('GATE_PAYLOAD_OBSERVED '))
+        observed = json.loads(marker)
+        self.assertEqual(observed, {'child_status': -9, 'exit_status': 137, 'footers': [],
+                                    'bytes': len(captured), 'sha256': sha256(captured).hexdigest()})
+        self.assertIn(captured, result.stdout)
+        self.assertFalse(clippy.complete(text))
+        self.assertEqual(text.count('\nGATE_DONE rc='), 1)
+        old = subprocess.run([sys.executable, str(fixture / 'former-adapter.py.txt'), 'run',
+                              sys.executable, str(driver), str(stream)], capture_output=True)
+        self.assertEqual(old.returncode, 224)
+        self.assertNotIn(b'GATE_PAYLOAD_OBSERVED ', old.stdout,
+                         'the actual former adapter loses the child status')
+        # Mismatched completion markers are retained under an inert prefix;
+        # they cannot be mistaken for an attested candidate completion.
+        stream.write_bytes(b'GATE_DONE rc=0\n')
+        done = subprocess.run([sys.executable, str(HERE / 'gate-clippy.py'), 'run',
+                               sys.executable, str(driver), str(stream)], capture_output=True, text=True)
+        self.assertIn('GATE_PAYLOAD_RETAINED GATE_DONE rc=0\n', done.stdout)
+        self.assertEqual(done.stdout.count('\nGATE_DONE rc='), 1)
 
 
 if __name__ == '__main__':

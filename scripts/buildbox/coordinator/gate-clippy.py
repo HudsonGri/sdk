@@ -5,8 +5,10 @@ from collections import Counter
 from hashlib import sha256
 import contextlib
 import io
+import json
 from pathlib import Path
 import re
+import shlex
 import sys
 import subprocess
 
@@ -57,6 +59,20 @@ def complete(text):
             and sha256(''.join(records).encode()).hexdigest() == digest)
 
 
+def payload_output(text):
+    """Consume the producer's allocation; asking the allocator again is wrong."""
+    directories = re.findall(r'^GATE_OUTPUT_DIRECTORY (.+)$', text, re.M)
+    if len(directories) == 1:
+        output = Path(directories[0])
+        if not output.is_absolute() or not output.is_dir():
+            raise ValueError('reviewed payload output directory is unavailable: ' + str(output))
+        return output
+    if directories or Path('scripts/gate-target-cache.py').is_file():
+        raise ValueError('reviewed payload has no unique invocation-owned output directory')
+    # Historical reviewed runners retained their diagnostics in cwd.
+    return Path.cwd()
+
+
 def run_payload(command):
     """Bridge reviewed older payloads without trusting their partial summaries.
 
@@ -67,7 +83,7 @@ def run_payload(command):
         child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except OSError as error:
         print(f'error: GATE_RUNNER_INFRA payload start step failed: {error}; recovery command: '
-              f'python3 {Path(__file__)} run ' + ' '.join(command))
+              + shlex.join([sys.executable, str(Path(__file__)), 'run', *command]))
         print('GATE_DONE rc=224', flush=True)
         return 224
     lines = []
@@ -76,11 +92,12 @@ def run_payload(command):
         if not line.startswith((b'GATE_DONE rc=', b'GATE_CLIPPY_FINDING ', b'GATE_CLIPPY_ERROR ', b'GATE_CLIPPY_COMPLETE ')):
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
-    status = child.wait()
-    status = status if status >= 0 else 128 - status
+    child_status = child.wait()
+    status = child_status if child_status >= 0 else 128 - child_status
     text = b''.join(lines).decode('utf-8', errors='replace')
+    footers = re.findall(r'^GATE_DONE rc=(-?[0-9]+)$', text, re.M)
     try:
-        if re.findall(r'^GATE_DONE rc=(-?[0-9]+)$', text, re.M) != [str(status)]:
+        if footers != [str(status)]:
             raise ValueError('reviewed payload footer disagrees with its executor')
         if complete(text):
             for line in lines:
@@ -90,23 +107,31 @@ def run_payload(command):
         elif re.search(r'^GATE_CLIPPY rc=', text, re.M):
             if 'GATE_CLIPPY_COMPLETE ' in text:
                 raise ValueError('reviewed payload diagnostic receipt is damaged')
-            output = Path.cwd()
-            if Path('scripts/gate-target-cache.py').is_file():
-                output = Path(subprocess.check_output([sys.executable, 'scripts/gate-target-cache.py', 'output'], text=True).strip())
+            output = payload_output(text)
             statuses = re.findall(r'^GATE_CLIPPY rc=(-?[0-9]+)$', text, re.M)
             if len(statuses) != 1:
                 raise ValueError('reviewed payload has no unique Clippy status')
             expected = io.StringIO()
             with contextlib.redirect_stdout(expected):
                 emit((output / '.gate-clippy.out').read_text(), int(statuses[0]))
-            emitted = expected.getvalue().splitlines()
             # Replace a legacy presentation from the actual completed Cargo
             # output. Do not turn its missing coded errors into INFRA, or
             # trust a truncated legacy warning list as a passing PR.
             sys.stdout.write(expected.getvalue())
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        # Preserve the process result and quarantined protocol bytes before
+        # replacing an unqualified outcome. Private diagnostics retire with
+        # the job, so a generic mismatch would destroy the causal evidence.
+        print('GATE_PAYLOAD_OBSERVED ' + json.dumps({
+            'child_status': child_status, 'exit_status': status, 'footers': footers,
+            'bytes': sum(map(len, lines)), 'sha256': sha256(b''.join(lines)).hexdigest(),
+        }, sort_keys=True), flush=True)
+        for line in lines:
+            if line.startswith((b'GATE_DONE rc=', b'GATE_CLIPPY_FINDING ', b'GATE_CLIPPY_ERROR ', b'GATE_CLIPPY_COMPLETE ')):
+                sys.stdout.buffer.write(b'GATE_PAYLOAD_RETAINED ' + line)
+        sys.stdout.buffer.flush()
         print(f'error: GATE_RUNNER_INFRA Clippy stream attestation step failed: {error}; '
-              f'recovery command: python3 {Path(__file__)} run ' + ' '.join(command))
+              'recovery command: ' + shlex.join([sys.executable, str(Path(__file__)), 'run', *command]))
         status = 224
     print(f'GATE_DONE rc={status}', flush=True)
     return status
