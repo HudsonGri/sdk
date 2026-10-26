@@ -21,13 +21,14 @@ pub const ACTORS: &str = "harness/actors";
 /// Root of every agent volume authority stream, in the same domain.
 pub const VOLUMES: &str = "harness/volumes";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 3] = [CHILDREN, STATUS, CLOSED];
+pub const NOT_INHERITED: [&str; 4] = [CHILDREN, STATUS, CLOSED, JOURNAL];
 /// Deepest admitted nesting; bounds every path and every lineage walk.
 pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
 const STATUS: &str = "status";
 const CLOSED: &str = "closed";
+const JOURNAL: &str = "journal";
 const CHILDREN: &str = "children";
 const ID_HEX: usize = 32;
 
@@ -176,6 +177,11 @@ impl AgentPath {
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{STATUS}", self.text))
+    }
+
+    /// Turn execution journal; intents precede effects, so it is never inherited.
+    pub fn journal(&self) -> Result<StreamPath, Error> {
+        stream(&format!("{}/{JOURNAL}", self.text))
     }
 
     /// Close marker stream; its existence refuses every later inbox append.
