@@ -348,12 +348,7 @@ pub(super) unsafe fn notification(
                 ) {
                     Ok(true) => return Ok(()),
                     Err(error)
-                        if matches!(
-                            error.semantic_error(),
-                            MountSourceError::Work(_)
-                                | MountSourceError::NativeWork(_)
-                                | MountSourceError::Cancelled
-                        ) =>
+                        if crate::native_mount::shared::outcome::source_stops_mount(&error) =>
                     {
                         return Err(error);
                     }
@@ -452,12 +447,7 @@ pub(super) unsafe fn notification(
         Ok(()) => HR_OK,
         Err(error) => {
             let status = source_hresult(&error);
-            if matches!(
-                error.semantic_error(),
-                MountSourceError::Work(_)
-                    | MountSourceError::NativeWork(_)
-                    | MountSourceError::Cancelled
-            ) {
+            if crate::native_mount::shared::outcome::source_stops_mount(&error) {
                 let mut failures = lock_recover(&runtime.post_operation_failure);
                 if failures.callback_failure.is_none() {
                     failures.callback_failure = Some((error.into(), work.receipt()));
