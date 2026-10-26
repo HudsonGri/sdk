@@ -27,7 +27,7 @@ use crate::{
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, DirectoryPage, Fs, MemoryAuthorityBackend,
-    MemoryObjectBackend, StreamAuthorityStore,
+    MemoryObjectBackend,
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
