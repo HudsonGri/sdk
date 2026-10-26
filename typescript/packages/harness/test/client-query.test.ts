@@ -11,14 +11,14 @@ async function fixture(inbox = 1n) {
   await appendRecord(stream, `${root}/conversation`, conversation("first", inbox));
   await appendRecord(stream, statusPath, '{"phase":"idle","cursor":0}');
   const client = new AgentClient(stream, root, 0n, 0n, 0);
-  const read = () => receiveUntil(client, () => client.recordCount() === 1n && client.currentStatus() !== null);
+  const read = () => receiveUntil(client, () => client.recordCount() === 1 && client.currentStatus() !== null);
   return { stream, client, read, free() { client.close(); client.free(); stream.free(); } };
 }
 
 test("actor deliveries and live getters read the same already-folded record", async () => {
   const f = await fixture();
   try {
-    expect(f.client.recordCount()).toBe(0n);
+    expect(f.client.recordCount()).toBe(0);
     expect(f.client.record(0)).toBeNull();
     expect(f.client.currentStatus()).toBeNull();
     let delivered = false;
@@ -48,11 +48,11 @@ test("a failed UI render does not discard settled records or reorder later arriv
     expect(() => { throw new Error("output rejected"); }).toThrow("output rejected");
     expect(record(f.client, root, 0)).toEqual(first);
     await appendRecord(f.stream, `${root}/conversation`, conversation("later", 2n));
-    await receiveUntil(f.client, () => f.client.recordCount() === 2n);
+    await receiveUntil(f.client, () => f.client.recordCount() === 2);
     expect([0, 1].map(index => message(record(f.client, root, index)).id)).toEqual(["first", "later"]);
     const replay = new AgentClient(f.stream, root, 0n, 0n, 0);
     try {
-      await receiveUntil(replay, () => replay.recordCount() === 2n);
+      await receiveUntil(replay, () => replay.recordCount() === 2);
       expect([replay.record(0), replay.record(1)]).toEqual([f.client.record(0), f.client.record(1)]);
     } finally { replay.close(); replay.free(); }
   } finally { f.free(); }
@@ -65,9 +65,9 @@ test("reopening at the explicit cursor excludes consumed records", async () => {
     const cursor = f.client.agentWindow(root).nextSequence;
     const resumed = new AgentClient(f.stream, root, cursor, 1n, 0);
     try {
-      expect(resumed.recordCount()).toBe(0n);
+      expect(resumed.recordCount()).toBe(0);
       await appendRecord(f.stream, `${root}/conversation`, conversation("next", 2n));
-      await receiveUntil(resumed, () => resumed.recordCount() === 1n);
+      await receiveUntil(resumed, () => resumed.recordCount() === 1);
       expect(record(resumed, root, 0).sequence).toBe(cursor);
       expect(message(record(resumed, root, 0)).id).toBe("next");
       expect(resumed.agentWindow(root).nextSequence).toBe(cursor + 1n);
@@ -90,13 +90,13 @@ test("identical record payloads retain their separate stream origins on reopen",
   const f = await fixture();
   try {
     await appendRecord(f.stream, `${root}/conversation`, conversation("first", 1n));
-    await receiveUntil(f.client, () => f.client.recordCount() === 2n);
+    await receiveUntil(f.client, () => f.client.recordCount() === 2);
     const entries = [record(f.client, root, 0), record(f.client, root, 1)];
     expect(entries[0]!.entry).toEqual(entries[1]!.entry);
     expect(entries.map(entry => entry.sequence)).toEqual([0n, 1n]);
     const replay = new AgentClient(f.stream, root, 0n, 0n, 0);
     try {
-      await receiveUntil(replay, () => replay.recordCount() === 2n);
+      await receiveUntil(replay, () => replay.recordCount() === 2);
       expect([replay.record(0), replay.record(1)]).toEqual(entries);
     } finally { replay.close(); replay.free(); }
   } finally { f.free(); }
