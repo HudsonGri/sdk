@@ -33,6 +33,9 @@ async fn actor_prompt_replays_the_same_settled_turn_without_regeneration() {
         let lines: Vec<_> = std::str::from_utf8(&output).unwrap().lines().collect();
         assert_eq!(lines.len(), 1, "one exact settlement, no legacy snapshot dialect");
         let reply: Value = serde_json::from_str(lines[0]).unwrap();
+        let typed: acyclic_harness::client::AgentReply = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(typed.outcome(), acyclic_harness::client::HeadlessOutcome::Completed);
+        assert!(matches!(typed, acyclic_harness::client::AgentReply::Settled { .. }));
         assert_eq!(reply["kind"], "settled");
         assert_eq!(reply["id"], operation.to_string());
         assert_eq!(reply["entry"]["input"]["message"]["id"], operation.to_string());
