@@ -22,6 +22,18 @@ pub enum AgentClientError {
     Closed(StreamPath),
 }
 
+impl AgentClientError {
+    /// Preserve the canonical cause classification across platform adapters.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Session(cause) => cause.code(),
+            Self::Record(cause) => cause.code(),
+            Self::Closed(_) => "agent_stream_closed",
+        }
+    }
+}
+
 /// One observed transition, already applied to the shared bounded Rust fold.
 #[derive(Debug, serde::Serialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]

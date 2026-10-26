@@ -10,6 +10,13 @@ mod agents;
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 pub use agents::{AgentClient, AgentClientError, AgentEvent, AgentSelection};
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use acyclic_harness_core::agent::{
+    AgentPath, ConversationEntry, Delivered, Error as AgentError, IntentId, Phase, StatusRecord,
+};
 mod demand;
 pub use demand::{DemandError, DemandPolicy, ViewDemand};
 
