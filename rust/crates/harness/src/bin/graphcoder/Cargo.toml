@@ -13,7 +13,7 @@ name = "graphcoder"
 path = "../graphcoder.rs"
 
 [dependencies]
-acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http"] }
+acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http", "grpc"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 acyclic-native-runtime = { path = "../../../../native-runtime" }
 acyclic-stream = { path = "../../../../stream", default-features = false }
