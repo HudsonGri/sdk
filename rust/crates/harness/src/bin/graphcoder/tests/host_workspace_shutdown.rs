@@ -1,7 +1,10 @@
 //! Real native owner shutdown must retire mounts before its runtime exits.
 use acyclic_harness::{
-    TaskId,
-    local::{host_files, host_owner::HostAction},
+    agent::AgentPath,
+    local::{
+        host_files,
+        host_owner::{HostAction, SessionAction},
+    },
 };
 use std::{
     process::Command,
@@ -73,18 +76,21 @@ fn native_workspace_shutdown_retires_mounts_on_interrupt_and_terminate() {
             },
         )
         .unwrap();
-        let task: TaskId = serde_json::from_value(root.get("task").unwrap().clone()).unwrap();
+        let task: AgentPath = serde_json::from_value(root.get("task").unwrap().clone()).unwrap();
         let child = host_files::request(
             &checkout,
-            HostAction::Fork {
+            HostAction::Session {
                 parent: task,
                 reference: "child".into(),
+                action: SessionAction::Spawn {
+                    prompt: "write a file".into(),
+                },
             },
         )
         .unwrap();
         let view = std::path::PathBuf::from(child.get("cwd").unwrap().as_str().unwrap());
         std::fs::write(view.join("native-write.txt"), "captured before shutdown").unwrap();
-        let child: TaskId = serde_json::from_value(child.get("task").unwrap().clone()).unwrap();
+        let child: AgentPath = serde_json::from_value(child.get("task").unwrap().clone()).unwrap();
         host_files::request(&checkout, HostAction::Capture { task: child }).unwrap();
         #[cfg(target_os = "linux")]
         {
