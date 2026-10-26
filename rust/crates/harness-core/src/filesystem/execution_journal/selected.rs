@@ -96,6 +96,17 @@ where
     ) -> Result<()> {
         tracing::trace!(target: "acyclic_harness::read_profile", phase = "selected:begin");
         self.require_operation(operation_id, io)?;
+        if let Some(bound) = &self.bound_selection {
+            return if bound == selected {
+                Ok(())
+            } else {
+                Err(crate::filesystem::interaction_host::interaction_boundary(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "selection differs from the agent conversation",
+                ))
+            };
+        }
         let turn_operation = self.turn_operation(operation_id);
         {
             let (association_hold, records) = {

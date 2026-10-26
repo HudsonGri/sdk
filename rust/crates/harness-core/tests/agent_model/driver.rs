@@ -135,12 +135,14 @@ impl TurnHost for Host {
         &'a self,
         _: &'a AgentState,
         _: OperationId,
+        _: &'a acyclic_harness_core::model::ModelContent,
     ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
         let open = OpenTurn {
             executor: self.0.clone(),
             journal: Arc::new(Unused),
             max_steps: 4,
             custody: None,
+            selected: None,
         };
         Box::pin(async move { Ok(open) })
     }

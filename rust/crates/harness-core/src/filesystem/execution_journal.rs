@@ -90,6 +90,9 @@ pub struct FilesystemExecutionJournal<P, A: 'static, O: 'static> {
     schemas: SchemaRegistry,
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
+    /// The one model context an agent turn may dispatch, built by its turn host
+    /// from the agent's own conversation stream; any other selection is refused.
+    bound_selection: Option<crate::projection::SelectedModelContext>,
     interactions: Option<FilesystemInteractionHost<P, A, O>>,
     owner: Option<(TaskJournalOwner<P>, OperationId)>,
     execution: Option<(OperationId, OperationId)>,

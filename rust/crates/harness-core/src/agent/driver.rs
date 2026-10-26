@@ -31,15 +31,19 @@ pub struct OpenTurn {
     /// Signing custody of the journal's authority; the journal holds only a
     /// weak admission port, so the custody lives exactly as long as the turn.
     pub custody: Option<crate::core::AuthorityIssuer>,
+    /// The agent's prior conversation and this input, as the one selection the
+    /// journal admits; `None` for a turn without history.
+    pub selected: Option<crate::projection::SelectedModelContext>,
 }
 
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: Send + Sync {
-    /// Opens `turn` for `agent`.
+    /// Opens `turn` for `agent`, whose model-visible input is `input`.
     fn open<'a>(
         &'a self,
         agent: &'a AgentState,
         turn: OperationId,
+        input: &'a ModelContent,
     ) -> BoxFuture<'a, crate::Result<OpenTurn>>;
 }
 
@@ -100,7 +104,7 @@ fn starting(agent: &AgentState, input: Option<TurnInput>) -> Result<TurnInput, E
 
 /// Model-visible content of a turn input: a message or event file as a file
 /// part, every other input as its canonical record text.
-fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
+pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     Ok(match input {
         TurnInput::Brief { brief: file }
         | TurnInput::Message { body: file, .. }
@@ -129,14 +133,15 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
         Box::pin(async move {
             let input = starting(agent, input)?;
             let turn = turn_id(agent, &input)?;
-            let open = self.host.open(agent, turn).await.map_err(host_error)?;
+            let content = model_input(&input)?;
+            let open = self.host.open(agent, turn, &content).await.map_err(host_error)?;
             let progress = open
                 .executor
                 .execute_progress(
                     ExecutorInput {
                         operation_id: turn,
-                        input: model_input(&input)?,
-                        selected_context: None,
+                        input: content,
+                        selected_context: open.selected.clone(),
                         max_steps: open.max_steps,
                     },
                     &*open.journal,

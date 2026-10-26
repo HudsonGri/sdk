@@ -23,7 +23,9 @@ pub use machine::{
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered};
-pub use driver::{ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, approval_intent, turn_id};
+pub use driver::{
+    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, approval_intent, model_input, turn_id,
+};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, VOLUMES};
 pub use lower::{delivery_key, lower, recipients};
