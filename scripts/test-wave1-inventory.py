@@ -119,6 +119,33 @@ class EvidencePolicy(unittest.TestCase):
                 with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, "cannot qualify redesigned"):
                     POLICY.check_observations(reference)
 
+    def test_real_handover_preserves_snapshot_and_final_failure_scope(self):
+        POLICY.check_handover(MANIFEST["handover_observations"]["updates-v2"])
+
+    def test_rehashed_handover_cannot_promote_older_pass_or_signed_wip(self):
+        original = MANIFEST["handover_observations"]["updates-v2"]
+        variants = [
+            ("full_obligation_qualified", True, "cannot qualify runtime"),
+            ("streams.qualified_pin", "41d8b46a5e3e18786d601b125b586b5b7f413506", "cannot become a qualified pin"),
+            ("streams.latest_tested_snapshot", "1a7ae0d2e73652a46ef59b030ce6b52f16b36307", "cannot be relabelled"),
+            ("streams.latest_tested_outcome", "passed", "rejection cannot become a pass"),
+            ("actors.state", "qualified", "sketch cannot qualify runtime"),
+        ]
+        for key, value, reason in variants:
+            with self.subTest(field=key), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = self.copy_file(root, original["repo_receipt"])
+                receipt = json.loads(target.read_text())
+                for capture in receipt["captures"]:
+                    self.copy_file(root, capture["repo_path"])
+                parts = key.split(".")
+                destination = receipt if len(parts) == 1 else receipt[parts[0]]
+                destination[parts[-1]] = value
+                target.write_text(json.dumps(receipt))
+                reference = dict(original, sha256=POLICY.sha256(target))
+                with patch.object(POLICY, "ROOT", root), self.assertRaisesRegex(ValueError, reason):
+                    POLICY.check_handover(reference)
+
     def test_partial_eof_control_cannot_claim_complete_a5(self):
         original = MANIFEST["partial_proofs"]["append-eof"]
         POLICY.check_append_eof(original)

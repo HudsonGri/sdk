@@ -144,6 +144,33 @@ def check_observations(reference):
     require(observations["rbfs-session-transport"]["status"] == "owner_reported_no_raw_receipt", "Cloud report cannot claim raw execution admission")
 
 
+def check_handover(reference):
+    path = source_path(reference["repo_receipt"])
+    require(sha256(path) == reference["sha256"], "handover receipt changed")
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    require(receipt["kind"] == "handover_observations_not_runtime_qualification", "unsupported handover observations")
+    require(not receipt["full_obligation_qualified"] and receipt["positive_proofs"] == receipt["negative_controls_detected"] == 0, "handover cannot qualify runtime proof")
+    for capture in receipt["captures"]:
+        captured = source_path(capture["repo_path"])
+        require(sha256(captured) == capture["sha256"] and captured.stat().st_size == capture["bytes"], "handover capture changed")
+    base = path.parent
+    streams = receipt["streams"]
+    require(streams["state"] == "signed_wip_not_qualified" and streams["qualified_pin"] is None, "signed WIP cannot become a qualified pin")
+    require((base / "streams/signature.txt").read_text().startswith(streams["signed_transfer"] + " G "), "Streams transfer signature capture differs")
+    require(streams["older_positive_snapshot"] != streams["latest_tested_snapshot"] and streams["signed_transfer"] not in (streams["older_positive_snapshot"], streams["latest_tested_snapshot"]), "distinct snapshot observations cannot be relabelled as final head")
+    good = (base / "streams/streams-tests.log").read_text()
+    require(streams["older_positive_counts"] == [375, 10, 1] and streams["older_positive_seconds"] == [9.45, 0.06, 0.24], "older Streams selection differs")
+    require(all(f"{count} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in {seconds:.2f}s" in good for count, seconds in zip(streams["older_positive_counts"], streams["older_positive_seconds"])), "older Streams captured outcomes differ")
+    bad = (base / "streams/streams-rust-all.log").read_text()
+    require(streams["latest_tested_outcome"] == "rejected" and streams["latest_passed"] == 374 and streams["latest_failed"] == 6 and streams["latest_seconds"] == 9.77, "latest Streams rejection cannot become a pass")
+    require("374 passed; 6 failed; 0 ignored;" in bad and "left: Some(Err(InvalidResponse))" in bad and "right: Some(Err(Unavailable))" in bad and bad.count("error: LimitExceeded") == 3, "latest Streams failure witnesses differ")
+    loom = (base / "streams/streams-loom.log").read_text()
+    require(streams["loom_cases"] == 4 and "4 passed; 0 failed;" in loom and loom.count("should panic ... ok") == 2, "Streams Loom observation differs")
+    require(all("tail_record: None" in (base / "streams/source" / name).read_text() for name in ("grpc/client.rs", "wasm/remote.rs")), "Streams unfinished projection source differs; new review required")
+    require(receipt["actors"]["state"] == "sketch_only_no_signed_implementation_or_runtime_receipt", "actor sketch cannot qualify runtime proof")
+    require(receipt["rb_fs"]["state"] == "owner_reported_no_raw_receipt", "hosted report cannot qualify raw execution")
+
+
 def check_append_eof(reference):
     path = source_path(reference["repo_receipt"])
     require(sha256(path) == reference["sha256"], "append EOF receipt changed")
@@ -196,6 +223,8 @@ def check(require_qualified):
             require(entry["source_review"] in inventory["source_reviews"], f"missing source review: {entry['id']}")
         if "partial_proof" in entry:
             require(entry["partial_proof"] in inventory["partial_proofs"], f"missing partial proof: {entry['id']}")
+        for observation in entry.get("handover_observations", []):
+            require(observation in inventory["handover_observations"], f"missing handover observation: {entry['id']}")
         for control in entry["negative_controls"]:
             if control["status"] == "detected":
                 require(control["receipt"] in inventory["evidence"], f"missing control receipt: {entry['id']}")
@@ -207,6 +236,8 @@ def check(require_qualified):
         check_source_review(reference)
     for reference in inventory.get("owner_observations", {}).values():
         check_observations(reference)
+    for reference in inventory.get("handover_observations", {}).values():
+        check_handover(reference)
     for reference in inventory.get("partial_proofs", {}).values():
         check_append_eof(reference)
     cleanliness = inventory["cleanliness"]

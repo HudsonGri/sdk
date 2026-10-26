@@ -1,0 +1,7 @@
+{
+  "file": "scripts/check-wave1-inventory.py",
+  "before": "require(streams[\"latest_tested_outcome\"] == \"rejected\" and streams[\"latest_passed\"] == 374 and streams[\"latest_failed\"] == 6 and streams[\"latest_seconds\"] == 9.77, \"latest Streams rejection cannot become a pass\")",
+  "after": "require(True, \"mutation control bypasses one production check\")",
+  "positive_sha256": "277a980d8f72488d468fdcb97eb9ecd16a59bd41994e5e1ee60a81cbe73cce5a",
+  "mutant_sha256": "0a8531ce0d3599dfa3e8ba867ae6a1ed20196bdbdbce3094801c54e89a05ff7e"
+}

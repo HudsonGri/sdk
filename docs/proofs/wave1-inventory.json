@@ -2,7 +2,7 @@
   "schema_version": 1,
   "scope": "approved_redesign_wave1",
   "status": "in_progress_not_a_full_stack_guarantee",
-  "generated_at": "2026-10-26T02:01:51.286890+00:00",
+  "generated_at": "2026-10-26T02:12:34.867679+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
   "worktree": "Q:/worktrees/redesign-verify",
   "branch": "redesign/verify-wave1",
@@ -170,6 +170,13 @@
       "qualification": "exact same-oracle EOF control only; complete A5 unqualified"
     }
   },
+  "handover_observations": {
+    "updates-v2": {
+      "repo_receipt": "docs/proofs/evidence/owner-handover-v2/observations.json",
+      "sha256": "6d4f60efa094e7a032b00193b36c04ca88e3bf08e16b7992df54b84deb360683",
+      "qualification": "none; signed Streams WIP with distinct passing/failing snapshots, A4 sketch, owner-reported durable follow prerequisite only"
+    }
+  },
   "cleanliness": {
     "tool": "clippy",
     "command": "build-slot --remote cargo clippy -p acyclic-stream --no-deps --message-format=json --features http,local --test wave1_keys --example wave1-conformance",
@@ -245,8 +252,8 @@
       "id": "actors.checkpoint-alarm",
       "owner": "b-runtime",
       "risk": "data_loss_or_corruption",
-      "invariant": "Epoch-fenced checkpoint, consumed cursor and alarm set/clear are one durable transition; retries repeat logical receipt, stale owner/alarm generation cannot publish.",
-      "proof_specification": "Real Runtime crash-cut DST and canonical commit/epoch loom; same native/WASM package across providers.",
+      "invariant": "Epoch-fenced checkpoint, consumed cursor and alarm set/clear are one durable transition; retries repeat logical receipt, stale owner/alarm generation cannot publish. Pause state and outbox share the same durable tuple; settlement racing pause/takeover is state-version fenced. Keep preserves alarm generation; every Set/Clear advances it with checked overflow. Unknown retains original-key/preparation custody.",
+      "proof_specification": "Real Runtime crash-cut DST and canonical commit/epoch loom; same native/WASM package across providers. A4-01..04/06/08 in verify-to-b-runtime.md add whole-tuple crash cuts, pause/settle races, equal-deadline/clear-empty/overflow, outbox holds and typed checkpoint/cursor failure; no external-I/O exactly-once inference.",
       "negative_controls": [
         {
           "mutation": "split checkpoint/alarm",
@@ -263,9 +270,12 @@
       ],
       "required_hooks_or_decisions": [
         "A4 handler/manifest/Runtime signatures",
-        "checkpoint/alarm crash and trusted-clock hooks"
+        "checkpoint/alarm crash and trusted-clock hooks",
+        "concrete durable CAS state-version/epoch guard and signed implementation",
+        "alarm generation checked arithmetic and deterministic clock seam",
+        "outbox/preparation hold ownership across Unknown; native/WASM checkpoint bytes"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "a4_sketch_only_no_signed_implementation_or_runtime_receipt",
       "source": [],
       "modes": {
         "memory": {
@@ -285,7 +295,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "client.cursor-reducer",
@@ -465,7 +478,8 @@
       ],
       "required_hooks_or_decisions": [
         "current generated artifacts and binding source SHA",
-        "BigInt/error/disposal production observation hooks"
+        "BigInt/error/disposal production observation hooks",
+        "Streams signed41d8 grpc/WASM page-tail decode absent; malformed WASM protobuf terminal classification not established"
       ],
       "implementation_state": "specified_pending_owner_api",
       "source": [],
@@ -611,7 +625,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "fs.conditional-publication",
@@ -741,7 +758,7 @@
         "signed canonical ChildrenPageRequest field/schema",
         "actual cut and byte/admission observations"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [],
       "modes": {
         "memory": {
@@ -761,7 +778,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.fork.cut",
@@ -801,7 +821,7 @@
         "existing Fork extended with canonical exclusions",
         "captured pre-commit cut identity and membership fence hooks"
       ],
-      "implementation_state": "fixed_oracles_detect_old_source_concurrency_crash_proofs_pending",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1/fork.rs",
@@ -834,7 +854,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.fork.retention",
@@ -860,7 +883,7 @@
         "durable closure/GC hooks",
         "counters separating path/exclusions/index/participants/maintenance"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [],
       "modes": {
         "memory": {
@@ -880,7 +903,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.keys.absent-zero-tail",
@@ -901,7 +927,7 @@
         "new canonical implementation for positive pass",
         "hosted runner/credentials in isolated bb2 service"
       ],
-      "implementation_state": "oracle_implemented_old_source_negative_detected_positive_fails",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
@@ -929,7 +955,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.keys.append",
@@ -950,7 +979,7 @@
         "new canonical implementation for positive pass",
         "hosted runner/credentials in isolated bb2 service"
       ],
-      "implementation_state": "oracle_implemented_old_source_negative_detected_positive_fails",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
@@ -978,7 +1007,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.keys.commit",
@@ -999,7 +1031,7 @@
         "new canonical implementation for positive pass",
         "hosted runner/credentials in isolated bb2 service"
       ],
-      "implementation_state": "oracle_implemented_old_source_negative_detected_positive_fails",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
@@ -1027,7 +1059,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.keys.lifetime",
@@ -1050,7 +1085,7 @@
         "production replicated clock and GC/retirement hooks",
         "durable paged successful-key index/admission"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [],
       "modes": {
         "memory": {
@@ -1070,7 +1105,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.keys.pending",
@@ -1092,7 +1130,7 @@
         "isolated-service pause/late-message hooks",
         "explicit pending inspection semantics"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [],
       "modes": {
         "memory": {
@@ -1112,7 +1150,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "auth.attenuation-decision",
@@ -1241,7 +1282,8 @@
       ],
       "required_hooks_or_decisions": [
         "canonical credential/admission transport",
-        "typed unrequested versus retired authority observation"
+        "typed unrequested versus retired authority observation",
+        "Streams signed41d8 missing-route acceptance/refund still lacks bounded never-issued versus retired ownership seam"
       ],
       "implementation_state": "specified_pending_owner_api",
       "source": [],
@@ -1335,7 +1377,7 @@
         "A6 subtree grant-coverage decision",
         "endpoint credential fixture captured from real issuer"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [],
       "modes": {
         "memory": {
@@ -1355,7 +1397,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "streams.fork.exclusions",
@@ -1380,7 +1425,7 @@
       "required_hooks_or_decisions": [
         "canonical RelativePath exclusions and successful digest encoding"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [],
       "modes": {
         "memory": {
@@ -1400,13 +1445,16 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "actors.wake-hibernate",
       "owner": "b-runtime",
       "risk": "liveness",
-      "invariant": "Append racing registration/replay/hibernate/cancel/resume cannot disappear; pause preserves inputs; hibernation retains a resumption cut.",
+      "invariant": "Append racing registration/replay/hibernate/cancel/resume cannot disappear; pause preserves inputs; hibernation retains a resumption cut. Shared durable wake owner survives the last tail check and heap hibernation; no unregister-after-recheck lost-wake window.",
       "proof_specification": "Production ready-registration primitive loom and DST around append/wake/hibernate crash cuts.",
       "negative_controls": [
         {
@@ -1423,9 +1471,10 @@
         }
       ],
       "required_hooks_or_decisions": [
-        "real ready queue and wake-registration hook"
+        "real ready queue and wake-registration hook",
+        "A4-05 real shared wake registration lifetime, append/pause/resume/cancel interleavings"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "a4_sketch_only_no_signed_implementation_or_runtime_receipt",
       "source": [],
       "modes": {
         "memory": {
@@ -1445,7 +1494,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "fs.canonical-root",
@@ -1519,7 +1571,7 @@
         "accepted absent-path NotFound/no-effect contract from rx-hostability supersedes earlier wait-before-create proposal",
         "private leader movement hook"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "signed_41d8_wip_unqualified_earlier_snapshots_pass_latest_tested_snapshot_rejected",
       "source": [],
       "modes": {
         "memory": {
@@ -1539,7 +1591,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "actors.idle-bounds",
@@ -1558,9 +1613,10 @@
         }
       ],
       "required_hooks_or_decisions": [
-        "real scheduler work/live-resource counters"
+        "real scheduler work/live-resource counters",
+        "A4-07 actual registration/channel/queue/due-index/payload counters at fixed ready work; O(1) metadata alone insufficient"
       ],
-      "implementation_state": "specified_pending_owner_api",
+      "implementation_state": "a4_sketch_only_no_signed_implementation_or_runtime_receipt",
       "source": [],
       "modes": {
         "memory": {
@@ -1580,7 +1636,10 @@
           "reason": "no passing receipt at a production implementation pin"
         }
       },
-      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback"
+      "fast_tier": "each selected test <10s; fixed corpus, no skipped/pass fallback",
+      "handover_observations": [
+        "updates-v2"
+      ]
     },
     {
       "id": "client.demand-bounds",
