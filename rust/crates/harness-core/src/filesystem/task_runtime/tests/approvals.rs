@@ -334,6 +334,11 @@ async fn native_recorded_tool_waits_for_exact_approval_and_replays_without_dispa
             )
             .await?;
         for _ in 0..2 {
+            // Resumption and replay are separate invocations. Keep their
+            // original ceiling and allocation ledger, including live custody.
+            let work = work.invocation_window()?;
+            assert_eq!(work.budget(), super::native_mail::BUDGET);
+            let io = PreparationIo::from_native_work(&work)?;
             let source = context.read_file(&command.payload, Some(&io)).await?;
             let payload: Value = io.decode_json(&source)?;
             let progress = commands
