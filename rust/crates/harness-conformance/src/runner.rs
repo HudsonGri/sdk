@@ -72,7 +72,6 @@ pub fn requirements(value: &Value) -> TestResult<Vec<String>> {
             if [
                 "goal-local",
                 "agents",
-                "composer_entry",
                 "notifications",
                 "task_query",
                 "subagents",
@@ -243,7 +242,7 @@ async fn run_case(
 
 fn fixture_reason(value: &Value) -> &'static str {
     match value["driver"].as_str() {
-        Some("local" | "goal-local" | "agents" | "composer_entry") => {
+        Some("local" | "goal-local" | "agents") => {
             "driver inspects native LocalHarness state or native client entrypoints"
         }
         Some("swarm") => {

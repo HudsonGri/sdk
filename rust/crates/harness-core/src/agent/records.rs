@@ -215,7 +215,8 @@ pub enum InboxRecord {
     Hook(Hook),
 }
 
-/// Current phase of an agent, appended to its status stream on change.
+/// Current phase of an agent, appended to its status stream on change and on
+/// the step that creates its conversation stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Phase {
