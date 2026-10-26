@@ -9,6 +9,10 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
+#[cfg(not(target_arch = "wasm32"))]
+mod external_host;
+#[cfg(not(target_arch = "wasm32"))]
+pub use external_host::run_external_process_host;
 #[cfg(windows)]
 mod custodian;
 mod events;
@@ -16,6 +20,8 @@ mod pump;
 #[cfg(windows)]
 mod spawner;
 pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInput};
+#[cfg(windows)]
+mod custodian_admission;
 mod custody;
 pub use custody::ProcessCustody;
 mod storage;

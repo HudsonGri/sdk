@@ -45,6 +45,8 @@ use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
+#[cfg(not(target_arch = "wasm32"))]
+pub use process_tree::run_external_process_host;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, OwnedCaptureInput,
     ProcessCaptureFailure, ProcessCustody, ProcessDrain, ProcessInput, ProcessOutput, ProcessTree,
@@ -134,3 +136,8 @@ use health::{FileHealth, HealthOwner};
 
 #[cfg(test)]
 mod tests;
+
+/// Shared process incarnation observations.
+pub mod process_identity;
+#[cfg(windows)]
+mod executable;
