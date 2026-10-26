@@ -7,7 +7,7 @@ import type {
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
-import type { AgentClient, AgentWindow, FileClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "../src/client.js";
+import type { AgentClient, AgentEvent, AgentWindow, StatusRecord, FileClient, ClientQuery, FileClientLimits, FileKey, Cursor, QueryDelivery } from "../src/client.js";
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
   ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,
@@ -25,6 +25,12 @@ type AssertNever<Value extends never> = Value;
 type _AgentViewCursorsStayExact = Assert<Equal<Parameters<AgentClient["setView"]>[1], BigUint64Array>>;
 type _AgentWindowUsesTheRustContract = Assert<Equal<ReturnType<AgentClient["agentWindow"]>, AgentWindow>>;
 type _AgentWindowCountersStayExact = Assert<Equal<AgentWindow[keyof AgentWindow], bigint>>;
+
+type _AgentEventsUseTheRustContract = Assert<Equal<Awaited<ReturnType<AgentClient["next"]>>, AgentEvent>>;
+
+type _AgentRecordsExposeAbsence = Assert<Equal<ReturnType<AgentClient["agentRecord"]>, AgentEvent | null>>;
+
+type _ApprovalStatusesUseTheRustContract = Assert<Equal<ReturnType<AgentClient["agentStatus"]>, StatusRecord | null>>;
 
 type _FileClientPreservesExactBounds = Assert<Equal<FileClientLimits["commands"] | FileClientLimits["bytes"], bigint>>;
 type _FileClientUsesCanonicalRequestKeys = Assert<Equal<Parameters<FileClient["enqueue"]>[0], FileKey>>;

@@ -27,6 +27,16 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
     await append(`harness/status/${id}`, `{"phase":"running","cursor":${inbox}}`);
   }
   const client = new AgentClient(stream, root, 0n, 0n, 0);
+  const record = (agent: string, index: number) => {
+    const event = client.agentRecord(agent, index);
+    check(event?.kind === "conversation", "selected conversation record is missing");
+    return event;
+  };
+  const message = (agent: string, index: number) => {
+    const input = record(agent, index).entry.input;
+    check("message" in input, "conversation input is not a message");
+    return input.message;
+  };
   const selected = (agents: string[], from = 0n) => client.setView(agents,
     new BigUint64Array(agents.map(() => from)), new BigUint64Array(agents.map(() => 0n)));
   const until = async (condition: () => boolean) => { while (!condition()) await client.next(); };
@@ -35,9 +45,9 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
     await until(() => client.agentWindow(root).recordCount === 1n
       && client.agentWindow(child).recordCount === 1n
       && client.agentStatus(root) !== null && client.agentStatus(child) !== null);
-    check(client.agentRecord(child, 0).agent === child, "record lost its selected agent identity");
-    check(client.agentRecord(root, 0).entry.input.message.inbox === inbox, "input receipt lost u64 precision");
-    check(client.agentStatus(child).cursor === inbox, "status cursor lost u64 precision");
+    check(record(child, 0).agent === child, "record lost its selected agent identity");
+    check(message(root, 0).inbox === inbox, "input receipt lost u64 precision");
+    check(client.agentStatus(child)?.cursor === inbox, "status cursor lost u64 precision");
     const before = client.agentWindow(root), revision = client.viewRevision();
     selected([child, root]);
     check(client.selectedAgents().join(",") === `${child},${root}`, "focus did not move");
@@ -47,7 +57,7 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
     if (recover) await recover();
     await append(`${root}/conversation`, entry("live"));
     await until(() => client.agentWindow(root).recordCount === 2n);
-    check(client.agentRecord(root, 1).entry.input.message.id === "live", "live record lost or duplicated");
+    check(message(root, 1).id === "live", "live record lost or duplicated");
     selected([child]);
     check(client.selectedAgents().length === 1, "demotion retained an agent");
     let refused = false;
@@ -58,7 +68,7 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
     check(client.agentWindow(root).nextSequence === 2n, "new selection ignored its explicit cursor");
     await append(`${root}/conversation`, entry("after-selection"));
     await until(() => client.agentWindow(root).recordCount === 1n);
-    check(client.agentRecord(root, 0).sequence === 2n, "reselection created a hole or duplicate");
+    check(record(root, 0).sequence === 2n, "reselection created a hole or duplicate");
     return { selected: 2, liveRecords: 2, recovered: !!recover };
   } finally { client.close(); client.free(); }
 }

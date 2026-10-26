@@ -24,11 +24,14 @@ pub enum AgentClientError {
 
 /// One observed transition, already applied to the shared bounded Rust fold.
 #[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// A settled turn and its immutable output reference.
     Conversation {
         /// Originating selected agent, including inherited conversation records.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Sequence in the selected conversation stream.
         sequence: u64,
@@ -38,6 +41,7 @@ pub enum AgentEvent {
     /// A lifecycle transition from the selected agent's actual status path.
     Status {
         /// Originating selected agent; never inferred from a relative suffix.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Exact status published by the agent host.
         status: StatusRecord,
