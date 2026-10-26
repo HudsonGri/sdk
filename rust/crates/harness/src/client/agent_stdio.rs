@@ -1,6 +1,6 @@
 //! Bounded native input over the shared agent client, without workflow files.
 
-use super::{AgentTurn, HeadlessOutcome, LocalAgentClient, LocalAgentError};
+use super::{AgentTurn, HeadlessOutcome, LocalAgentClient, LocalAgentError, MAXIMUM_AGENT_PROMPT_BYTES};
 use crate::agent::{ConversationEntry, IntentId, StatusRecord};
 use futures::{FutureExt as _, Stream, StreamExt as _};
 use serde::{Deserialize, Serialize};
@@ -45,9 +45,6 @@ pub async fn run_agent_prompt(
     prompt: &str,
     output: &mut impl Write,
 ) -> Result<HeadlessOutcome, LocalAgentError> {
-    if prompt.is_empty() || prompt.len() > super::jsonl::MAXIMUM_REQUEST_BYTES {
-        return Err(crate::Error::Invalid("agent prompt must be 1..=65536 bytes".into()).into());
-    }
     let (reply, outcome) = match client.prompt_turn(id, prompt).await {
         Ok(AgentTurn { sequence, entry, output }) => (
             Reply::Settled { id, sequence, entry, output }, HeadlessOutcome::Completed,
@@ -86,7 +83,7 @@ pub async fn run_agent_jsonl(
         };
         let Some(line) = next else { return Ok(HeadlessOutcome::Completed); };
         let line = line?;
-        if line.len() > super::jsonl::MAXIMUM_REQUEST_BYTES {
+        if line.len() > MAXIMUM_AGENT_PROMPT_BYTES {
             return Err(crate::Error::Invalid("agent request line exceeds byte bound".into()).into());
         }
         let request: AgentRequest = serde_json::from_str(&line)?;

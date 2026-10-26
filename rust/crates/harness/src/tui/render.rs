@@ -10,6 +10,10 @@ use acyclic_markdown::Markdown;
 use std::sync::OnceLock;
 
 mod approvals;
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+mod agent;
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+pub use agent::AgentRenderer;
 mod archive;
 #[cfg(not(target_arch = "wasm32"))]
 mod pacing;
