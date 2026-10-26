@@ -38,6 +38,11 @@ fn bytes<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], VerifyError> {
 }
 
 pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
+    // Direct callers bypass CredentialProvider, so admit the shared byte
+    // ceiling before prost or the envelope vectors can allocate.
+    if input.len() > crate::credential::MAX_CREDENTIAL_BYTES {
+        return Err(VerifyError::Malformed);
+    }
     let original = input;
     let mut blocks = Vec::new();
     let mut proof = None;
