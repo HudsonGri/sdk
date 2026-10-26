@@ -63,7 +63,7 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
         }
         Ok::<_, Error>(
             stream
-                .append_batch(records, if_tail, Some(key.clone()))
+                .append_batch(records, if_tail, key.clone())
                 .await,
         )
     }
