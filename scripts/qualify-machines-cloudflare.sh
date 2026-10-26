@@ -3,8 +3,8 @@
 set -euo pipefail
 trap 'printf "Cloudflare qualification step at line %s failed; recovery: bash scripts/qualify-machines-cloudflare.sh\n" "$LINENO" >&2' ERR
 fail() { printf '%s failed; recovery: %s\n' "$1" "$2" >&2; exit 1; }
-cargo test --locked -q -p acyclic-machines -p acyclic-machines-daytona -p acyclic-conformance --features cloudflare,e2b,modal,shell-conformance --lib || fail 'Machines regression tests' 'cargo test --locked -p acyclic-machines -p acyclic-machines-daytona -p acyclic-conformance --features cloudflare,e2b,modal,shell-conformance --lib'
-cargo build --locked -q -p acyclic-machines --features cloudflare,e2b,modal,shell-conformance --example cloudflare-conformance || fail 'Cloudflare conformance build' 'cargo build --locked -p acyclic-machines --features cloudflare,e2b,modal,shell-conformance --example cloudflare-conformance'
+cargo test --locked -q -p acyclic-machines -p acyclic-machines-daytona -p acyclic-conformance --features cloudflare,e2b,modal,machines-shell --lib || fail 'Machines regression tests' 'cargo test --locked -p acyclic-machines -p acyclic-machines-daytona -p acyclic-conformance --features cloudflare,e2b,modal,machines-shell --lib'
+cargo build --locked -q -p acyclic-conformance --features cloudflare,e2b,modal,machines-shell --example cloudflare-conformance || fail 'Cloudflare conformance build' 'cargo build --locked -p acyclic-conformance --features cloudflare,e2b,modal,machines-shell --example cloudflare-conformance'
 binary="${CARGO_TARGET_DIR:-target}/debug/examples/cloudflare-conformance"
 export WRANGLER_SEND_METRICS=false
 cd deploy/machines-cloudflare

@@ -713,7 +713,6 @@ name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
- "acyclic-conformance",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-proto-build",

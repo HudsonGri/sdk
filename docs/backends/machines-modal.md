@@ -48,7 +48,7 @@ response server is used.
 
 3. Export those returned IDs as `MODAL_APP_ID` and `MODAL_IMAGE_ID`. From the
    repository root run
-   `cargo run --locked -p acyclic-machines --features modal,shell-conformance --example modal-conformance`.
+   `cargo run --locked -p acyclic-conformance --features modal,machines-shell --example modal-conformance`.
 4. Preserve the namespace, full output and elapsed time. Capture sanitized real
    SandboxCreateV2/WaitV2/TerminateV2 and router Start/StdioRead/Wait/StdinWrite
    responses, with endpoint roles, versions, capture time, hashes and frame ordering.

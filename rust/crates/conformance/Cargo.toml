@@ -10,6 +10,9 @@ description = "Internal black-box conformance suites for Acyclic service provide
 readme = "README.md"
 
 [features]
+cloudflare = ["acyclic-machines/cloudflare"]
+e2b = ["acyclic-machines/e2b"]
+modal = ["acyclic-machines/modal"]
 machines-shell = ["acyclic-harness/machines", "acyclic-harness/native-execution"]
 client-session = ["acyclic-harness/grpc", "acyclic-stream/grpc"]
 harness-accounting = ["acyclic-harness/filesystem"]
@@ -124,6 +127,21 @@ test = false
 
 [lints]
 workspace = true
+
+[[example]]
+name = "cloudflare-conformance"
+path = "examples/cloudflare_conformance.rs"
+required-features = ["cloudflare", "machines-shell"]
+
+[[example]]
+name = "e2b-conformance"
+path = "examples/e2b_conformance.rs"
+required-features = ["e2b", "machines-shell"]
+
+[[example]]
+name = "modal-conformance"
+path = "examples/modal_conformance.rs"
+required-features = ["modal", "machines-shell"]
 
 [[bin]]
 name = "client-conformance"

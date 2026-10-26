@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         driver,
         image,
         workspace,
-        "cargo run --locked -p acyclic-machines --features e2b,shell-conformance --example e2b-conformance",
+        "cargo run --locked -p acyclic-conformance --features e2b,machines-shell --example e2b-conformance",
     )
     .await
 }

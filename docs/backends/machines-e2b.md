@@ -63,7 +63,7 @@ window/host. The researched Compose environment pins infra commit
    or reassign this template during the run.
    For hosted E2B, perform this step in the coordinator's account and use
    `https://api.e2b.app`, domain `e2b.app`, and unset `E2B_ENVD_PROXY`.
-4. Run `cargo run --locked -p acyclic-machines --features e2b,shell-conformance --example e2b-conformance`.
+4. Run `cargo run --locked -p acyclic-conformance --features e2b,machines-shell --example e2b-conformance`.
    Save the namespace, output, elapsed time and sanitized real control/Connect/file
    traffic for a recorded-response fixture bundle, including capture time,
    source versions and hashes. Preserve frame bytes and ordering; remove only secrets.

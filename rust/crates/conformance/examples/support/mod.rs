@@ -30,12 +30,10 @@ pub async fn run<D: SandboxDriver>(
         "{name} conformance resource namespace: {}",
         config.namespace
     );
-    #[cfg(feature = "shell-conformance")]
     let workspace = config.workspace.clone();
     let provider = std::sync::Arc::new(RemoteMachines::new(driver, config)?);
     let result = async {
         acyclic_conformance::machines(provider.as_ref()).await?;
-        #[cfg(feature = "shell-conformance")]
         acyclic_conformance::machines_shell::verify(provider.clone(), &workspace).await?;
         Ok::<(), String>(())
     }

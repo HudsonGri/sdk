@@ -10,7 +10,7 @@ It writes the same private-volume request, streamed stdout/stderr and terminal
 metadata as the native shell. Command expiry and combined output allowance travel
 through the Machines seam; typed stops map to the native `ToolResult.stop` shape.
 The output volume must belong to the signed scope's agent. Qualify the actual
-tool calls with the provider examples' `shell-conformance` feature; all examples
+tool calls with the conformance crate's `machines-shell` feature; all examples
 use the same vectors for publication before exit, stops and cancellation on drop.
 The binding uses the machine's configured disk workspace. It does not create a
 kernel filesystem projection or import task volumes.

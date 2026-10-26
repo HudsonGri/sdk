@@ -47,7 +47,7 @@ Worker TypeScript check. Its complete log is
 3. Run `npx wrangler deploy`; retain its deployment version and container image
    digest. Export `CLOUDFLARE_MACHINES_TRANSPORT_TOKEN` securely in the Rust test environment.
 4. From the repository root run
-   `cargo run --locked -p acyclic-machines --features cloudflare,shell-conformance --example cloudflare-conformance -- https://WORKER_HOST`.
+   `cargo run --locked -p acyclic-conformance --features cloudflare,machines-shell --example cloudflare-conformance -- https://WORKER_HOST`.
    Preserve the printed namespace, complete output and elapsed time. The runner
    destroys all observed machines even on a failed vector. Inspect that namespace
    for an uncertain create before rerunning; never replay an unknown mutation.

@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         driver,
         support::required("MODAL_IMAGE_ID")?,
         "/workspace".into(),
-        "cargo run --locked -p acyclic-machines --features modal,shell-conformance --example modal-conformance",
+        "cargo run --locked -p acyclic-conformance --features modal,machines-shell --example modal-conformance",
     )
     .await
 }
