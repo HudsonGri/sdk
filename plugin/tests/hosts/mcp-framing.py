@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+from native_fixture import fixture_environment
 
 options = argparse.ArgumentParser(description=__doc__)
 options.add_argument("binary")
@@ -22,12 +23,7 @@ started = time.monotonic()
 results = []
 with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
     root = Path(temporary)
-    env = {"PATH": os.environ["PATH"]}
-    for name in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_STATE_HOME",
-                 "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
-        directory = root / name.lower()
-        directory.mkdir()
-        env[name] = str(directory)
+    env = fixture_environment(root)
     for host in ([args.host] if args.host else ("codex", "claude-code", "pi")):
         for case in ([args.case] if args.case else ("framed", "oversized-open", "oversized-delimited")):
             process = subprocess.Popen([binary, "__mcp", host], cwd=root, env=env,

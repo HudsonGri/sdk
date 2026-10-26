@@ -4,6 +4,14 @@ use std::sync::Arc;
 
 const STDERR_TAIL_BYTES: usize = 4096;
 
+/// One bounded output pass, distinguishing quiescence from actual progress.
+pub struct ProcessDrain {
+    /// The pipe reached its terminal EOF.
+    pub closed: bool,
+    /// Actual bytes consumed, including those outside the retained tail.
+    pub read_bytes: usize,
+}
+
 /// Small, stable storage for an originally funded process-tree owner.
 ///
 /// Allocate this before attempting spawn. Storage and retirement use the original
@@ -51,16 +59,21 @@ impl ProcessTreeIo<'_> {
             .read_output_controlled(bytes, Some(self.meter.as_ref()), true)
     }
     /// Drains a bounded pass while retaining only the originally funded tail.
-    /// Returns true only at EOF, including when stdout closed before stderr.
-    pub fn drain_stderr(&mut self) -> io::Result<bool> {
+    /// Reports EOF and actual progress, even when stdout closed before stderr.
+    pub fn drain_stderr(&mut self) -> io::Result<ProcessDrain> {
         let mut bytes = [0; 8192];
+        let mut read_bytes = 0;
         for _ in 0..4 {
             let Some(count) = self.read_stderr(&mut bytes)? else {
                 break;
             };
             if count == 0 {
-                return Ok(true);
+                return Ok(ProcessDrain {
+                    closed: true,
+                    read_bytes,
+                });
             }
+            read_bytes += count;
             let chunk = bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?;
             let capacity = STDERR_TAIL_BYTES;
             let keep = chunk.len().min(capacity);
@@ -77,7 +90,10 @@ impl ProcessTreeIo<'_> {
                     .ok_or(io::ErrorKind::InvalidData)?,
             );
         }
-        Ok(false)
+        Ok(ProcessDrain {
+            closed: false,
+            read_bytes,
+        })
     }
     /// Observes direct-child exit while retaining descendant custody.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
@@ -144,9 +160,15 @@ impl ProcessTreeStorage {
     }
 
     /// Drains diagnostics even when a refused spawn acquired no native tree.
-    pub fn drain_stderr(&mut self, meter: &Arc<dyn crate::NativeReadMeter>) -> io::Result<bool> {
+    pub fn drain_stderr(
+        &mut self,
+        meter: &Arc<dyn crate::NativeReadMeter>,
+    ) -> io::Result<ProcessDrain> {
         if matches!(self.slot.data.as_slice(), [slot] if slot.tree.is_none()) {
-            return Ok(true);
+            return Ok(ProcessDrain {
+                closed: true,
+                read_bytes: 0,
+            });
         }
         self.io(meter)?.drain_stderr()
     }

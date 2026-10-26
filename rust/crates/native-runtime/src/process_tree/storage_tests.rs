@@ -29,7 +29,7 @@ fn bounded_poll_scopes_preserve_original_storage_and_retirement_credit() {
         let mut io = slot.io(&meter).unwrap();
         assert!(io.try_wait().unwrap().is_none());
         io.read_stdout(&mut [0; 1024]).unwrap();
-        assert!(!io.drain_stderr().unwrap());
+        assert!(!io.drain_stderr().unwrap().closed);
         assert_eq!(
             original.used_operations.load(Ordering::Acquire),
             before,
@@ -54,20 +54,26 @@ fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
     let mut command = super::super::tests::command("stderr-bulk", root.path());
     command.stdout(std::process::Stdio::null());
     slot.spawn(&mut command, None).unwrap();
+    let mut read_bytes = 0;
     loop {
         let meter: Arc<dyn crate::NativeReadMeter> =
             Arc::new(crate::tests::ReadBudgetMeter::new(32, 65536));
         let mut io = slot.io(&meter).unwrap();
         assert_eq!(io.read_stdout(&mut [0; 1024]).unwrap(), Some(0));
-        let eof = io.drain_stderr().unwrap();
+        let drain = io.drain_stderr().unwrap();
+        read_bytes += drain.read_bytes;
         if let Some(status) = io.try_wait().unwrap() {
             assert_eq!(status.code(), Some(7));
-            if eof {
+            if drain.closed {
                 break;
             }
         }
         std::thread::yield_now();
     }
+    assert!(
+        read_bytes >= 262_144,
+        "stderr progress was hidden from the scheduler"
+    );
     assert_eq!(slot.stderr_tail().len(), 4096);
     assert!(slot.stderr_tail().ends_with(b"stderr-tail-marker"));
     slot.terminate().unwrap();

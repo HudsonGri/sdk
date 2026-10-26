@@ -169,8 +169,8 @@ impl Sessions {
         }
         Ok(())
     }
-    fn output(&self, reference: &str, running: &mut Running) -> Result<bool> {
-        let stderr_closed = running.process.drain_stderr()?;
+    fn output(&self, reference: &str, running: &mut Running) -> Result<()> {
+        running.process.drain_stderr()?;
         let mut chunk = [0u8; 8192];
         // Bound each pass so a busy child cannot starve cancellation or peers.
         for _ in 0..16 {
@@ -178,7 +178,7 @@ impl Sessions {
                 break;
             };
             if count == 0 {
-                return Ok(stderr_closed);
+                return Ok(());
             }
             for event in running
                 .events
@@ -221,9 +221,10 @@ impl Sessions {
                 }
             }
         }
-        Ok(false)
+        Ok(())
     }
-    fn refresh(&mut self, waiting: &mut Vec<(Value, String)>) -> Result<()> {
+    fn refresh(&mut self, waiting: &mut Vec<(Value, String)>) -> Result<bool> {
+        let mut progressed = false;
         let page: Option<Vec<Component>> = serde_json::from_value(host_files::request(
             &self.cwd,
             HostAction::Sessions {
@@ -243,7 +244,9 @@ impl Sessions {
         for reference in references {
             let observed = self.request(&reference, SessionAction::Observe)?;
             let observed = if let Some(mut running) = self.children.remove(&reference) {
-                match self.refresh_running(&reference, &observed, &mut running) {
+                let refreshed = self.refresh_running(&reference, &observed, &mut running);
+                progressed |= running.process.take_output_progress();
+                match refreshed {
                     Ok(Some(observed)) => {
                         self.start(&reference, &observed)?;
                         observed
@@ -267,7 +270,7 @@ impl Sessions {
                 }
             }
         }
-        Ok(())
+        Ok(progressed)
     }
     fn refresh_running(
         &self,
@@ -301,10 +304,10 @@ impl Sessions {
                 Ok(true) => {}
                 Err(error) => exited = Err(error.into()),
             }
-            match self.output(reference, running) {
-                Ok(true) => {}
-                Ok(false) => return Ok(None),
-                Err(error) => exited = Err(error),
+            // Exit is the capture boundary. A detached process can retain a
+            // pipe writer after containment stops; EOF cannot own settlement.
+            if let Err(error) = self.output(reference, running) {
+                exited = Err(error);
             }
         }
         let outcome = match exited {
@@ -477,13 +480,25 @@ pub(super) fn serve(host: &str) -> Result<()> {
     let mut next_refresh = Instant::now();
     let serving = (|| -> Result<()> {
         loop {
+            let mut progressed = false;
             if Instant::now() >= next_refresh {
                 if let Some(state) = sessions.as_mut() {
-                    state.refresh(&mut waiting)?;
+                    progressed = state.refresh(&mut waiting)?;
                 }
-                next_refresh = Instant::now() + Duration::from_millis(100);
+                next_refresh = Instant::now()
+                    + if progressed {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_millis(100)
+                    };
             }
-            let message = match receive.recv_timeout(Duration::from_millis(20)) {
+            // Ready output schedules another bounded turn. Only a quiescent
+            // pass may park; idle waiting cannot throttle a backpressured pipe.
+            let message = match receive.recv_timeout(if progressed {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(20)
+            }) {
                 Ok(Ok(value)) => value,
                 Ok(Err(_)) => {
                     emit(
@@ -566,6 +581,10 @@ fn catalog() -> Value {
         json!({"name":name,"description":format!("{name} a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged."),"inputSchema":{"type":"object","properties":{"reference":{"type":"string"},"prompt":{"type":"string"}},"required":if prompt {vec!["reference","prompt"]} else {vec!["reference"]},"additionalProperties":false}})
     }))})
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/held-stderr.rs"]
+mod exit_tests;
 
 #[cfg(test)]
 mod tests {

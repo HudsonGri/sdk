@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+from native_fixture import fixture_environment
 
 
 def main():
@@ -114,13 +115,8 @@ def main():
 
             thread = threading.Thread(target=owner)
             thread.start()
-            env = {'PATH': os.environ['PATH'], 'ACYCLIC_HOST_ARGS': json.dumps(flags),
-                   'ACYCLIC_WORKSPACE': str(workspace), 'ACYCLIC_TASK': parent}
-            for key in ('HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_STATE_HOME',
-                        'XDG_CONFIG_HOME', 'XDG_DATA_HOME'):
-                home = root / key.lower()
-                home.mkdir()
-                env[key] = str(home)
+            env = fixture_environment(root, {'ACYCLIC_HOST_ARGS': json.dumps(flags),
+                   'ACYCLIC_WORKSPACE': str(workspace), 'ACYCLIC_TASK': parent})
             bridge = subprocess.Popen([binary, '__mcp', host], cwd=workspace, env=env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:

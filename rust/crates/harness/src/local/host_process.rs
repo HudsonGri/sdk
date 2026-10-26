@@ -155,6 +155,7 @@ impl HostProcessLease {
             tree,
             lease: Some(self),
             work: work.clone(),
+            output_progress: false,
         })
     }
 
@@ -187,6 +188,7 @@ pub struct HostSessionProcess {
     tree: ProcessTreeStorage,
     lease: Option<HostProcessLease>,
     work: acyclic_fs::NativeMaterializationWork,
+    output_progress: bool,
 }
 
 fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
@@ -233,14 +235,23 @@ impl HostSessionProcess {
 
     /// Reads through the existing bounded native output owner.
     pub fn read_stdout(&mut self, bytes: &mut [u8]) -> Result<Option<usize>> {
-        self.live_io()?.read_stdout(bytes).map_err(storage)
+        let read = self.live_io()?.read_stdout(bytes).map_err(storage)?;
+        self.output_progress |= read.is_some_and(|count| count > 0);
+        Ok(read)
     }
 
     /// Drains bounded stderr through shared process capture, retaining its tail.
     pub fn drain_stderr(&mut self) -> Result<bool> {
         self.require_live()?;
         let meter = self.polling_meter()?;
-        self.tree.drain_stderr(&meter).map_err(storage)
+        let drained = self.tree.drain_stderr(&meter).map_err(storage)?;
+        self.output_progress |= drained.read_bytes > 0;
+        Ok(drained.closed)
+    }
+
+    /// Takes the actual I/O progress edge; quiet polls never manufacture one.
+    pub fn take_output_progress(&mut self) -> bool {
+        std::mem::take(&mut self.output_progress)
     }
 
     /// Formats a failed native outcome with bounded diagnostic context.
@@ -329,10 +340,16 @@ mod tests {
         process.spawn(&mut command)?;
         let before = work.remaining().map_err(storage)?;
         let live = work.live_allocation_bytes();
+        let mut progressed = false;
         for _ in 0..32_768 {
             process.read_stdout(&mut [0; 8192])?;
             process.drain_stderr()?;
             process.try_wait()?;
+            progressed |= process.take_output_progress();
+            assert!(
+                !process.take_output_progress(),
+                "an output edge was delivered twice"
+            );
             assert_eq!(
                 work.remaining().map_err(storage)?.backend_read_operations,
                 before.backend_read_operations,
@@ -343,6 +360,10 @@ mod tests {
         assert!(
             work.receipt().backend_read_operations > 65_536,
             "polling must retain cumulative work beyond a single invocation budget"
+        );
+        assert!(
+            progressed,
+            "actual output never scheduled another ready turn"
         );
         process.release()?;
         Ok(())

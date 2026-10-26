@@ -19,7 +19,7 @@ pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInpu
 mod custody;
 pub use custody::ProcessCustody;
 mod storage;
-pub use storage::{ProcessTreeIo, ProcessTreeStorage};
+pub use storage::{ProcessDrain, ProcessTreeIo, ProcessTreeStorage};
 #[cfg(unix)]
 mod warden;
 

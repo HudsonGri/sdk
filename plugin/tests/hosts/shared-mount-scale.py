@@ -8,12 +8,23 @@ must enable test-support for the shared resource sampler/oracle request.
 import json
 import os
 import pathlib
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from native_events import native_event_fixture
+from native_fixture import fixture_environment
+
+
+def interrupted(signum, frame):
+    traceback.print_stack(frame)
+    raise SystemExit('step=shared native scale interrupted; recovery: python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER HOST')
+
+
+signal.signal(signal.SIGTERM, interrupted)
 
 
 def main():
@@ -39,16 +50,11 @@ def main():
         bins.mkdir()
         barrier.bind(('127.0.0.1', 0))
         barrier.listen(4)
-        env = {'PATH': str(bins) + os.pathsep + os.environ['PATH'],
+        env = fixture_environment(root, {'PATH': str(bins) + os.pathsep + os.environ['PATH'],
                'FIXTURE_EVENTS': str(fixture_path), 'FIXTURE_FLAGS': json.dumps(flags), 'FIXTURE_HOST': host,
                'FIXTURE_WORKSPACE': str(workspace),
                'FIXTURE_BARRIER': str(barrier.getsockname()[1]),
-               'ACYCLIC_CACHED_DESCRIPTORS': '1', 'ACYCLIC_ADMITTED_DESCRIPTORS': '1'}
-        for key in ('HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_STATE_HOME',
-                    'XDG_CONFIG_HOME', 'XDG_DATA_HOME'):
-            directory = root / key.lower()
-            directory.mkdir()
-            env[key] = str(directory)
+               'ACYCLIC_CACHED_DESCRIPTORS': '1', 'ACYCLIC_ADMITTED_DESCRIPTORS': '1'})
         (workspace / 'AGENTS.md').write_text('shared scale discovery fixture')
         executable = bins / {'codex': 'codex', 'claude-code': 'claude', 'pi': 'pi'}[host]
         executable.write_text(r'''#!/usr/bin/env python3
@@ -98,6 +104,7 @@ sys.exit(17)
                 task = parent['task']
 
                 def client(action):
+                    print(json.dumps({'host': host, 'step': 'workspace command', 'action': action}), flush=True)
                     result = subprocess.run([binary, '__workspace'], cwd=workspace, env=env,
                                             input=json.dumps(action), text=True,
                                             capture_output=True, timeout=2)
@@ -121,10 +128,12 @@ sys.exit(17)
                                                    'method': 'tools/call',
                                                    'params': {'name': name, 'arguments': arguments}}) + '\n')
                     bridge.stdin.flush()
+                    print(json.dumps({'host': host, 'step': 'await tool', 'tool': name, 'reference': reference}), flush=True)
                     message = json.loads(bridge.stdout.readline())
                     assert message['id'] == sequence and 'error' not in message, message
                     result = message['result']
                     assert not result.get('isError'), result
+                    print(json.dumps({'host': host, 'step': 'tool completed', 'tool': name, 'reference': reference}), flush=True)
                     return json.loads(result['content'][0]['text'])
 
                 paths = []
@@ -171,6 +180,7 @@ sys.exit(17)
                     assert failure.endswith('diagnostic-tail-' + host), failure
                     assert len(failure.encode()) < 4300, len(failure.encode())
                     client({'kind': 'fs', 'task': task, 'command': 'merge agents/' + reference})
+                    print(json.dumps({'host': host, 'step': 'verify merge', 'reference': reference}), flush=True)
                     assert (workspace / (reference + '.txt')).read_text() == reference
                     assert (path / (reference + '.txt')).read_text() == reference
                 bridge.stdin.close()

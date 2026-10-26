@@ -6,6 +6,7 @@ the real-host e2e suite; this regression never reads native authentication.
 """
 import json, os, pathlib, selectors, signal, subprocess, sys, tempfile, time, traceback
 from native_events import native_event_fixture
+from native_fixture import fixture_environment
 if len(sys.argv) != 5:
  raise SystemExit(__doc__)
 acyclic, graphcoder, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:4])
@@ -19,9 +20,7 @@ def interrupted(signum, frame):
 signal.signal(signal.SIGTERM,interrupted)
 with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.home()) as temporary:
  root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
- env={'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied')}
- for key in ('HOME','CODEX_HOME','CLAUDE_CONFIG_DIR','XDG_STATE_HOME','XDG_CONFIG_HOME','XDG_DATA_HOME'):
-  directory=root/key.lower();directory.mkdir();env[key]=str(directory)
+ env=fixture_environment(root, {'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied')})
  (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
  fake=bin_dir/'codex'
  fake.write_text('''#!/usr/bin/env python3

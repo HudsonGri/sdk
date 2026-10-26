@@ -389,14 +389,27 @@ fn a_claim_by_relative_path_is_held_by_its_absolute_path() -> io::Result<()> {
 }
 
 /// A runtime directory whose process lock path makes a record longer than
-/// any record: `depth` nested directories of 200 bytes.
+/// any record, while keeping the native path below the OS pathname ceiling.
+/// Derive the suffix from the fixture root so deeper admitted roots cannot
+/// accidentally turn this record-size proof into a pathname-size failure.
 #[cfg(target_os = "linux")]
-fn long_runtime_directory(base: &Path, depth: usize) -> io::Result<PathBuf> {
+fn long_runtime_directory(base: &Path) -> io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt as _;
     let mut runtime = base.to_path_buf();
-    for _ in 0..depth {
+    let mut remaining = crate::claim::RECORD_LIMIT
+        .checked_sub(128 + base.as_os_str().as_encoded_bytes().len())
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    while remaining > 201 {
         runtime.push("r".repeat(200));
+        remaining -= 201;
     }
+    runtime.push(
+        "r".repeat(
+            remaining
+                .checked_sub(1)
+                .ok_or(io::ErrorKind::InvalidInput)?,
+        ),
+    );
     std::fs::create_dir_all(&runtime)?;
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
     Ok(runtime)
@@ -406,7 +419,7 @@ fn long_runtime_directory(base: &Path, depth: usize) -> io::Result<PathBuf> {
 #[test]
 fn a_process_whose_record_would_not_fit_holds_its_claims_instead() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
-    let runtime = long_runtime_directory(directory.path(), 20)?;
+    let runtime = long_runtime_directory(directory.path())?;
     let path = directory.path().join("owner.lock");
     let mut owner = Owner::spawn_with(&path, &[("XDG_RUNTIME_DIR", &runtime)])?;
     // No record that a reader could take only in part.
