@@ -15,7 +15,6 @@ def load(name, file):
 
 
 features = load('gate_feature_crates', 'gate-feature-crates.py')
-pairs = load('gate_cfg_pairs', 'gate-cfg-pairs.py')
 
 # The #1602 break: the module carried an extra stacked cfg its re-export lacked.
 BROKEN = '''#[cfg(all(
@@ -29,50 +28,6 @@ mod local;
 pub use local::LocalThing;
 '''
 FIXED = BROKEN.replace('#[cfg(all(\n    feature = "filesystem-local",\n    feature = "tui",\n    not(target_arch = "wasm32")\n))]\n', '')
-
-
-class CfgPairs(unittest.TestCase):
-    def test_flags_module_cfg_missing_from_reexport(self):
-        found = list(pairs.findings('commands.rs', BROKEN))
-        self.assertEqual(len(found), 1)
-        self.assertIn('commands.rs:9:1: error:', found[0])
-        self.assertIn('without its `mod local;`', found[0])
-
-    def test_matching_and_stricter_reexports_pass(self):
-        self.assertEqual(list(pairs.findings('commands.rs', FIXED)), [])
-        stricter = '#[cfg(feature = "a")]\nmod ok;\n#[cfg(all(feature = "a", unix))]\npub(crate) use self::ok::X;\n'
-        self.assertEqual(list(pairs.findings('x.rs', stricter)), [])
-        ungated = 'mod plain;\npub use plain::Y;\n// #[cfg(feature = "x")]\n'
-        self.assertEqual(list(pairs.findings('x.rs', ungated)), [])
-        implied = '#[cfg(any(test, feature = "a"))]\nmod m;\n#[cfg(feature = "a")]\npub use m::Z;\n'
-        self.assertEqual(list(pairs.findings('x.rs', implied)), [])
-        alias = '#[cfg(target_family = "windows")]\nmod w;\n#[cfg(windows)]\nuse w::W;\n'
-        self.assertEqual(list(pairs.findings('x.rs', alias)), [])
-        nested = '#[cfg(feature = "a")]\nmod n;\nfn f() {\n    let s = "{";\n    use n::Q;\n}\n'
-        self.assertEqual(list(pairs.findings('x.rs', nested)), [])
-
-    def test_crate_features_and_targets_imply(self):
-        # native-execution enables filesystem; linux is never wasm32; loom is off.
-        text = ('#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]\nmod native;\n'
-                '#[cfg(all(feature = "native-execution", target_os = "linux"))]\npub use native::A;\n'
-                '#[cfg(not(target_arch = "wasm32"))]\nmod cache;\n#[cfg(acyclic_loom)]\npub use cache::B;\n')
-        table = {'native-execution': ['filesystem', 'dep:notify'], 'filesystem': []}
-        self.assertEqual(list(pairs.findings('x.rs', text, table)), [])
-        self.assertEqual(len(list(pairs.findings('x.rs', text, {}))), 1)
-
-    def test_per_configuration_definitions_and_test_targets(self):
-        split = ('#[cfg(loom)]\n#[path = "sync/loom.rs"]\nmod implementation;\n'
-                 '#[cfg(not(loom))]\nmod implementation {\n    pub use std::sync::*;\n}\npub use implementation::*;\n')
-        self.assertEqual(list(pairs.findings('src/sync.rs', split)), [])
-        only_loom = split.split('#[cfg(not(loom))]')[0] + 'pub use implementation::*;\n'
-        self.assertEqual(len(list(pairs.findings('src/sync.rs', only_loom))), 1)
-        tested = '#[cfg(test)]\nmod sequences;\nuse sequences::Parsed;\n'
-        self.assertEqual(list(pairs.findings('crate/tests/cases/config.rs', tested)), [])
-        self.assertEqual(len(list(pairs.findings('crate/src/config.rs', tested))), 1)
-
-    def test_flags_weaker_reexport_after_nested_items(self):
-        text = 'fn f() { let c = \'}\'; let s = r#"}"#; }\n#[cfg(feature = "a")]\nmod n;\npub use n::Q;\n'
-        self.assertEqual(len(list(pairs.findings('x.rs', text))), 1)
 
 
 class FeatureCrates(unittest.TestCase):

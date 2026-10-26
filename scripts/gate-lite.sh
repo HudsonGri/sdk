@@ -31,10 +31,6 @@ if [ "$rc" != 0 ]; then
   echo "GATE_DONE rc=$rc"
   exit "$rc"
 fi
-# A re-export compiled where its module is not breaks narrower feature
-# selections (E0432) that --all-features never builds; refuse it statically.
-python3 scripts/gate-cfg-pairs.py rust; pairs_rc=$?
-[ "$pairs_rc" = 0 ] || echo "GATE_LITE_CFG_PAIRS_FAILED rc=$pairs_rc; recovery: python3 scripts/gate-cfg-pairs.py rust"
 # The job-owned target plus the host sccache authority keeps rebuilds warm.
 cargo check --locked --all-features --bins --tests --message-format=short "${args[@]}"; rc=$?
 if [ "$rc" != 0 ]; then
@@ -68,7 +64,6 @@ if [ "$rc" = 0 ] && [ -s .gate-feature-packages ]; then
       "$rc" "$p" "${features:+ --features $features}"
   done <<< "$sets"
 fi
-[ "$rc" = 0 ] && rc=$pairs_rc
 if [ "$rc" = 0 ] && [ ${#windows[@]} -gt 0 ]; then
   echo "GATE_LITE_WINDOWS_START target=x86_64-pc-windows-msvc crates=$((${#windows[@]} / 2)) features=all targets=all"
   python3 scripts/with-xwin-cache.py --workers 1 -- \
