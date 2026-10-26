@@ -1,17 +1,9 @@
 //! Raw verification must admit its input before allocating decoded authority.
-acyclic_test_support::counting_allocator!();
-
-#[path = "common/signed.rs"]
-mod signed;
-
-use acyclic_auth::{
-    contract::{Caveat, CaveatKind, ResourcePattern},
-    credential::MAX_CREDENTIAL_BYTES,
-    verify::{VerifyError, verify},
-};
+use super::*;
+use acyclic_auth::credential::MAX_CREDENTIAL_BYTES;
 
 fn with_audience_padding(padding: usize) -> Vec<u8> {
-    signed::root(|block| {
+    root(|block| {
         block.caveats.push(Caveat {
             kind: CaveatKind::Audience(ResourcePattern {
                 name: format!("workers:/{}", "a".repeat(padding)),
@@ -31,19 +23,19 @@ fn signed_at_size(size: usize) -> Vec<u8> {
 
 #[test]
 fn direct_verification_accepts_signed_inputs_through_the_shared_byte_ceiling() {
-    let trust = signed::Snapshot::default();
+    let trust = Snapshot::default();
     for size in [MAX_CREDENTIAL_BYTES - 1, MAX_CREDENTIAL_BYTES] {
-        assert!(verify(&signed_at_size(size), &trust, signed::NOW).is_ok());
+        assert!(verify(&signed_at_size(size), &trust, NOW).is_ok());
     }
 }
 
 #[test]
 fn direct_verification_refuses_oversized_signed_input_without_decode_allocations() {
-    let trust = signed::Snapshot::default();
+    let trust = Snapshot::default();
     let bytes = signed_at_size(MAX_CREDENTIAL_BYTES + 1);
     let measured = acyclic_test_support::measure(|| {
         assert!(matches!(
-            verify(&bytes, &trust, signed::NOW),
+            verify(&bytes, &trust, NOW),
             Err(VerifyError::Malformed)
         ));
     });
