@@ -32,13 +32,8 @@ def selection_probes(module, records, source, python, checksum):
         ("malformed-empty", [0, 1], [0, 0]),
     ):
         directory = records / label
-        # Copy the actual admitted host source closure, rather than pairing the
-        # new native host with the former C# fixture source.
-        receipt = json.loads(Path(os.environ["WIN_TEST_PROCESS_HOST_RECEIPT"]).read_text(encoding="utf-8"))
-        for name in receipt["source"]:
-            destination = directory / "source" / name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source / name, destination)
+        # All selections consume one already-admitted immutable source export.
+        directory.mkdir(parents=True)
         counter = directory / "invocations"
         # These are protocol fixtures, not product tests. Both manifest entries
         # invoke the same hash-admitted installed executable with different
@@ -58,7 +53,7 @@ def selection_probes(module, records, source, python, checksum):
         ])
         try:
             runtime = ["-c", probe, *(["--list"] if label == "listing" else [])]
-            rc = module.run_tests(directory, manifest, runtime)
+            rc = module.run_tests(directory, manifest, runtime, source=source)
         except RuntimeError as error:
             assert label in ("all-empty", "malformed-empty") and "ZERO" in str(error), (label, error)
         else:

@@ -80,8 +80,11 @@ def main():
 
         def capture(*args, **kwargs):
             process = original_popen(*args, **kwargs)
-            processes.append(process)
-            process.stdout = Output(process.stdout)
+            # Profile bootstrap uses the same owner but is not the blocked
+            # command under observation. Its completed line is unrelated.
+            if "-c" in args[0] and child in args[0]:
+                processes.append(process)
+                process.stdout = Output(process.stdout)
             return process
 
         def cancel_blocked_read():

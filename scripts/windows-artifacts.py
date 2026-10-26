@@ -187,6 +187,16 @@ def admit_archive(records, archive, expected_sha256, *, required_members=None):
                 raise ValueError("Process host aliases a test or fixture artifact")
             allowed[name] = host["sha256"]
             allowed["host-receipt.json"] = host["receipt_sha256"]
+            # The composable host factory's real Cargo stream is a required
+            # producer input, independent of the enclosing helper's stem.
+            # Admit its exact receipt-bound bytes, never an unverified log alias.
+            producer = host["receipt"].get("producer")
+            if producer is not None:
+                checksum = producer["cargo_json_sha256"]
+                if not isinstance(checksum, str) or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                    raise ValueError("Export step=native-host-cargo-admission: invalid log digest; "
+                                     "recovery=fetch the complete source-matched native host producer export")
+                allowed["logs/cargo.jsonl"] = checksum
             for path, checksum in host["receipt"]["source"].items():
                 if manifest["source"].get(path) != checksum:
                     raise ValueError("Process host source differs from the exported graph: " + path)

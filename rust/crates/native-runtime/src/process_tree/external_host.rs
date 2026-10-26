@@ -76,14 +76,22 @@ struct Completion(Option<std::fs::File>);
 
 impl Completion {
     fn open(path: Option<&Path>) -> io::Result<Self> {
-        path.map(|path| std::fs::OpenOptions::new().write(true).create_new(true).open(path))
-            .transpose()
-            .map(Self)
+        path.map(|path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        })
+        .transpose()
+        .map(Self)
     }
 
     fn retired(&mut self, code: i32, cancelled: bool) -> io::Result<()> {
         if let Some(file) = &mut self.0 {
-            writeln!(file, "{{\"schema\":\"acyclic.process-custody-completion.v1\",\"process_tree_retired\":true,\"exit_code\":{code},\"cancelled\":{cancelled}}}")?;
+            writeln!(
+                file,
+                "{{\"schema\":\"acyclic.process-custody-completion.v1\",\"process_tree_retired\":true,\"exit_code\":{code},\"cancelled\":{cancelled}}}"
+            )?;
             file.sync_all()?;
         }
         Ok(())
@@ -137,8 +145,14 @@ impl Drop for Directory {
 pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) -> io::Result<i32> {
     let invocation = Invocation::parse(arguments)?;
     let mut completion = Completion::open(invocation.completion.as_deref())?;
-    let directory = invocation.custody.is_none().then(Directory::create).transpose()?;
-    let custody_path = invocation.custody.as_deref()
+    let directory = invocation
+        .custody
+        .is_none()
+        .then(Directory::create)
+        .transpose()?;
+    let custody_path = invocation
+        .custody
+        .as_deref()
         .or_else(|| directory.as_ref().map(|directory| directory.0.as_path()))
         .ok_or_else(invalid_arguments)?;
     let custody = ProcessCustody::acquire(custody_path)?;
@@ -187,7 +201,11 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
     if let Some(failure) = state.failure.take() {
         return Err(failure);
     }
-    let code = if state.cancelled { 124 } else { exit_code(status) };
+    let code = if state.cancelled {
+        124
+    } else {
+        exit_code(status)
+    };
     completion.retired(code, state.cancelled)?;
     Ok(code)
 }
@@ -233,11 +251,18 @@ mod tests {
         tree.cleanup_on_drop = false;
         assert_eq!(
             retire_after_observation(&mut tree, child, Err(io::ErrorKind::Interrupted.into()))
-                .unwrap_err().kind(),
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::Interrupted,
         );
-        assert!(tree.child.is_some(), "failed wait must retain the original child");
-        assert!(tree.custody.is_some(), "failed wait must retain recovery authority");
+        assert!(
+            tree.child.is_some(),
+            "failed wait must retain the original child"
+        );
+        assert!(
+            tree.custody.is_some(),
+            "failed wait must retain recovery authority"
+        );
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
         tree.terminate(None).unwrap();
         assert!(tree.is_reaped());
@@ -250,16 +275,24 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let receipt = directory.path().join("completion.json");
         let parsed = Invocation::parse([
-            "--completion".into(), receipt.clone().into_os_string(),
-            "--custody".into(), directory.path().as_os_str().to_owned(),
-            "--inherit-input".into(), executable.clone().into_os_string(),
-            "--completion".into(), "literal & % child argument".into(),
-        ]).unwrap();
+            "--completion".into(),
+            receipt.clone().into_os_string(),
+            "--custody".into(),
+            directory.path().as_os_str().to_owned(),
+            "--inherit-input".into(),
+            executable.clone().into_os_string(),
+            "--completion".into(),
+            "literal & % child argument".into(),
+        ])
+        .unwrap();
         assert_eq!(parsed.executable, executable.as_os_str());
         assert_eq!(parsed.completion.as_deref(), Some(receipt.as_path()));
         assert_eq!(parsed.custody.as_deref(), Some(directory.path()));
         assert!(parsed.inherit_input);
-        assert_eq!(parsed.arguments, ["--completion", "literal & % child argument"]);
+        assert_eq!(
+            parsed.arguments,
+            ["--completion", "literal & % child argument"]
+        );
     }
 
     #[test]
@@ -269,9 +302,18 @@ mod tests {
         for arguments in [
             vec!["--completion".into(), "relative".into(), executable.clone()],
             vec!["--custody".into(), "relative".into(), executable.clone()],
-            vec!["--completion".into(), receipt.clone(), "--completion".into(), receipt, executable],
+            vec![
+                "--completion".into(),
+                receipt.clone(),
+                "--completion".into(),
+                receipt,
+                executable,
+            ],
         ] {
-            assert_eq!(Invocation::parse(arguments).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                Invocation::parse(arguments).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
         }
     }
 
@@ -281,7 +323,10 @@ mod tests {
         let path = directory.path().join("completion.json");
         let mut completion = Completion::open(Some(&path)).unwrap();
         assert!(std::fs::read(&path).unwrap().is_empty());
-        assert_eq!(Completion::open(Some(&path)).err().unwrap().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            Completion::open(Some(&path)).err().unwrap().kind(),
+            io::ErrorKind::AlreadyExists
+        );
         completion.retired(17, false).unwrap();
         let receipt = std::fs::read_to_string(path).unwrap();
         assert!(receipt.contains("\"exit_code\":17"));

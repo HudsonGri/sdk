@@ -81,4 +81,3 @@ fn physical_record_removal_failure_keeps_the_same_owned_recovery_record() {
     Record::retire(&mut retained, Some(&recovery)).unwrap();
     assert!(retained.is_none());
 }
-

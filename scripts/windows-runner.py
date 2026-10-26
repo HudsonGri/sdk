@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -163,23 +164,47 @@ class Commands:
         identity = uuid.uuid4().hex
         fixture = self.records / "profiles" / identity
         fixture.mkdir(parents=True)
-        home = fixture / "home"
-        codex = home / ".codex-fixture"
-        temp = self.records / "tmp" / identity
-        for folder in (codex, temp, home / "AppData/Local", home / "AppData/Roaming"):
-            folder.mkdir(parents=True)
-        env = os.environ.copy()
-        for key in list(env):
-            upper = key.upper()
-            if upper.endswith("API_KEY") or "AUTH_TOKEN" in upper or upper in (
-                "OPENAI_ACCESS_TOKEN", "CODEX_ACCESS_TOKEN", "RUST_MIN_STACK"
-            ):
-                del env[key]
+        bridge = self.source / "scripts/graphcoder-e2e/scratch.mjs"
+        node = shutil.which("node")
+        if not bridge.is_file() or node is None:
+            raise RuntimeError("Windows command step=shared-profile-input: missing node or scratch.mjs; "
+                               "recovery=admit Node and the source-matched shared scratch.mjs profile bridge")
+        # Bootstrap has only OS launch inputs and its own temporary directory.
+        # All product profile selectors and their directories come from the
+        # shared factory, through this same process owner and fleet lease.
+        inherited = {key: value for key, value in os.environ.items() if key.upper() in (
+            "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "LANG", "LC_ALL",
+            "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROGRAMFILES", "PROGRAMFILES(X86)",
+        )}
+        temporary = fixture / "bootstrap"
+        temporary.mkdir()
+        result = self._run(
+            [str(Path(node).resolve()), str(bridge), "profile", str(fixture)],
+            cwd=self.source, name="shared-profile", sha256=digest(node),
+            prepared_environment=(identity + "-profile", dict(inherited, TEMP=str(temporary), TMP=str(temporary))),
+            profile=True,
+        )
+        if result["exit"]:
+            raise RuntimeError("Windows command step=shared-profile-bootstrap failed: " + str(result["exit"])
+                               + "; recovery=node scripts/graphcoder-e2e/scratch.mjs profile ABSOLUTE_SETTINGS")
+        try:
+            profile = json.loads(Path(result["log"]).read_text(encoding="utf-8"))
+            if not isinstance(profile, dict) or "HOME" not in profile or not all(
+                    isinstance(key, str) and isinstance(value, str) for key, value in profile.items()):
+                raise ValueError("profile bridge must emit a nonempty string environment")
+        except (OSError, ValueError) as error:
+            raise RuntimeError("Windows command step=shared-profile-protocol: " + str(error)
+                               + "; recovery=adopt the source-matched scratch.mjs profile CLI") from error
+        # Merge explicitly selected non-profile test inputs only. Inherited
+        # HOME/auth/provider settings never enter the bootstrap or product.
+        selected = {key: value for key, value in os.environ.items()
+                    if key.upper().startswith(("ACYCLIC_", "E2E_", "WIN_TEST_"))
+                    and not (key.upper().endswith("API_KEY") or "AUTH_TOKEN" in key.upper()
+                             or key.upper().endswith("ACCESS_TOKEN"))}
+        env = dict(inherited, **selected, **profile)
+        home = Path(profile["HOME"])
         env.update(
-            HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(codex),
-            TEMP=str(temp), TMP=str(temp), LOCALAPPDATA=str(home / "AppData/Local"),
-            APPDATA=str(home / "AppData/Roaming"), HOMEDRIVE=home.drive,
-            HOMEPATH=str(home)[len(home.drive):], RUST_TEST_THREADS="4",
+            HOMEDRIVE=home.drive, HOMEPATH=str(home)[len(home.drive):], RUST_TEST_THREADS="4",
             ACYCLIC_TEST_SOURCE_ROOT=str(self.source), GIT_CONFIG_NOSYSTEM="1",
             GIT_CONFIG_GLOBAL=str(home / ".gitconfig"), E2E_PROCESS_HOST=str(self.host),
             PYTHONDONTWRITEBYTECODE="1",
@@ -215,7 +240,13 @@ class Commands:
             self._selection = None
 
     def run(self, argv, *, cwd, name, sha256, libtest=False):
-        """Run admitted argv. Only the libtest adapter adds libtest arguments."""
+        """Run admitted argv, including shared profile preparation in timing."""
+        return self._run(argv, cwd=cwd, name=name, sha256=sha256, libtest=libtest,
+                         started=time.monotonic())
+
+    def _run(self, argv, *, cwd, name, sha256, libtest=False,
+             prepared_environment=None, profile=False, started=None):
+        """The same native process lifecycle for profile bootstrap and commands."""
         if not self.acquired:
             raise RuntimeError("Windows fleet lease is not held")
         if self.cancellation is not None and self.cancellation.requested:
@@ -232,11 +263,11 @@ class Commands:
             if any(value.startswith("--test-threads") for value in argv[1:]):
                 raise ValueError("the runner owns --test-threads=4")
             argv.append("--test-threads=4")
-        identity, env = self._environment()
+        identity, env = prepared_environment or self._environment()
         completions = self.records / "native-completions"
         completions.mkdir(exist_ok=True)
         completion_path = completions / (identity + ".json")
-        start = time.monotonic()
+        start = time.monotonic() if started is None else started
         summaries = []
         log_path = self.records / (identity + ".log")
         proc = None
@@ -308,18 +339,23 @@ class Commands:
         # Each completed command owns one immutable structured receipt. The
         # invocation summary below is only a view: reusing a producer/records
         # directory must never erase an earlier invocation's evidence.
-        receipts = self.records / "receipts"
+        receipts = self.records / ("profile-receipts" if profile else "receipts")
         receipts.mkdir(exist_ok=True)
+        if profile:
+            result["profile_source_sha256"] = digest(self.source / "scripts/graphcoder-e2e/scratch.mjs")
+        else:
+            result["profile_receipt"] = str(self.records / "profile-receipts" / (identity + "-profile.json"))
         with (receipts / (identity + ".json")).open("x", encoding="utf-8") as receipt:
             json.dump(result, receipt, indent=2)
-        self.results.append(result)
-        if libtest and self._selection is not None:
-            self._selection.append(result)
-        (self.records / "results.json").write_text(json.dumps(self.results, indent=2), encoding="utf-8")
-        print("WIN_TEST_RESULT", json.dumps(result), flush=True)
+        if not profile:
+            self.results.append(result)
+            if libtest and self._selection is not None:
+                self._selection.append(result)
+            (self.records / "results.json").write_text(json.dumps(self.results, indent=2), encoding="utf-8")
+        print("WIN_TEST_PROFILE" if profile else "WIN_TEST_RESULT", json.dumps(result), flush=True)
         if verification_error:
             raise RuntimeError(verification_error)
-        return outcome if 0 <= outcome < 256 else 1
+        return result if profile else (outcome if 0 <= outcome < 256 else 1)
 
 
 def fixture_binary(records, manifest):
@@ -335,9 +371,9 @@ def fixture_binary(records, manifest):
     return binary
 
 
-def run_tests(records, manifest, runtime, *, cancellation=None):
+def run_tests(records, manifest, runtime, *, cancellation=None, source=None):
     """The libtest adapter over the same generic command custody API."""
-    source = records / "source"
+    source = Path(source).resolve() if source is not None else records / "source"
     binary = fixture_binary(records, manifest)
     if "process_host" in manifest:
         host = admitted_host(source, records / "bin" / manifest["process_host"]["name"],
