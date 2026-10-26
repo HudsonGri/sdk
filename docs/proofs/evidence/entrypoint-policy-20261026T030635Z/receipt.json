@@ -1,0 +1,73 @@
+{
+  "kind": "proof_entry_policy_only_not_full_api_or_runtime_proof",
+  "source_manifest_sha256": "69ba26590d02a0450208c3c3e95774d4ba9948ee76841e7450a75746fbdf6360",
+  "tests_sha256": "fa7568e439b5c3b7bb3048d163b05df2e7251de22739de853375d2540032629b",
+  "runs": [
+    {
+      "label": "positive",
+      "selected": 13,
+      "exit": 0,
+      "seconds": 4.172000000020489,
+      "log_sha256": "ae7694b5564af48abab51cd38ad59eada31a0adfc8cd56662b90e22e80afc41d",
+      "implementations": {
+        "scripts/check-proof-coverage.py": "9cc1a6bdcb10343181d540a01c2c3c6d6b8fcc7b7a15e6b4ec4688086de6f8af",
+        "scripts/proof_inventory_scan.py": "c20424d7d56ee19056c02561159409701d4794162d04cf398f459053c46859c9"
+      }
+    },
+    {
+      "label": "omit-candidate-multiset",
+      "selected": 13,
+      "exit": 1,
+      "seconds": 2.60999999998603,
+      "log_sha256": "7161768d79e948f8e597c1d7898aba5fab314599151c4f9bc3232030a53d5d9d",
+      "implementations": {
+        "scripts/check-proof-coverage.py": "3a196c209a5a1a29a3a9d94bed0e60769caddd56df0fbe2cd17b61e6f5e7ac91",
+        "scripts/proof_inventory_scan.py": "c20424d7d56ee19056c02561159409701d4794162d04cf398f459053c46859c9"
+      }
+    },
+    {
+      "label": "borrow-dependency-proof",
+      "selected": 13,
+      "exit": 1,
+      "seconds": 3.4209999999729916,
+      "log_sha256": "426775b2337caa035e833f3137880b3eaad1f5f2f7d3012fa2abfb1fd3532808",
+      "implementations": {
+        "scripts/check-proof-coverage.py": "c7c9c6bc96bb0084456c9cd62d253f34a18ef38abcdb27ae28ef4e9032d95e87",
+        "scripts/proof_inventory_scan.py": "c20424d7d56ee19056c02561159409701d4794162d04cf398f459053c46859c9"
+      }
+    },
+    {
+      "label": "borrow-unrelated-invariant",
+      "selected": 13,
+      "exit": 1,
+      "seconds": 2.297000000020489,
+      "log_sha256": "0f81ef0432d864ff3d2dc8ecc4739cc2940f562d050b7de09eec7e8825a52bc7",
+      "implementations": {
+        "scripts/check-proof-coverage.py": "942258b9173788a1824ff0c8300a8df53faf140c94a61722d4b02ce3be3bacdc",
+        "scripts/proof_inventory_scan.py": "c20424d7d56ee19056c02561159409701d4794162d04cf398f459053c46859c9"
+      }
+    },
+    {
+      "label": "omit-unsafe-discovery",
+      "selected": 13,
+      "exit": 1,
+      "seconds": 2.530999999959022,
+      "log_sha256": "16a7eb91100c05d44ae9f0d20d0d3d87f9f722940f7d66e0bce8f03cc07b3d75",
+      "implementations": {
+        "scripts/check-proof-coverage.py": "9cc1a6bdcb10343181d540a01c2c3c6d6b8fcc7b7a15e6b4ec4688086de6f8af",
+        "scripts/proof_inventory_scan.py": "d130feb94dc60b9df1057d059343ad6b1dbb5d8e0ebaa4defda9080485b8c258"
+      }
+    },
+    {
+      "label": "omit-wildcard-discovery",
+      "selected": 13,
+      "exit": 1,
+      "seconds": 2.6880000000237487,
+      "log_sha256": "05db6e054bcc733b2004dc3a13aba1c48208f36f42d988e23fae4e74c5505a46",
+      "implementations": {
+        "scripts/check-proof-coverage.py": "31d34e04d8671df05d02d94f22c1735d89780f503d4438347f0111ab679e6ea3",
+        "scripts/proof_inventory_scan.py": "c20424d7d56ee19056c02561159409701d4794162d04cf398f459053c46859c9"
+      }
+    }
+  ]
+}

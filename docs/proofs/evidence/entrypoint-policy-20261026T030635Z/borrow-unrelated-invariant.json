@@ -1,0 +1,7 @@
+{
+  "path": "scripts/check-proof-coverage.py",
+  "before": "require(set(row['invariants']) <= proofs[row['proof']]['invariants'], 'receipt does not prove the registered invariant: ' + name)",
+  "after": "require(True, 'invariant comparison omitted')",
+  "positive_sha256": "9cc1a6bdcb10343181d540a01c2c3c6d6b8fcc7b7a15e6b4ec4688086de6f8af",
+  "mutant_sha256": "942258b9173788a1824ff0c8300a8df53faf140c94a61722d4b02ce3be3bacdc"
+}

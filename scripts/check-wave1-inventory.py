@@ -295,6 +295,10 @@ def check(require_qualified):
     require(entries == sorted(entries, key=lambda entry: (risks[entry["risk"]], entry["id"])), "risk order differs from contract")
     references = inventory["entrypoints"] + [inventory["runner"]]
     references.extend(inventory["hst_reporting"]["source"])
+    guard = inventory["entrypoint_guard"]
+    require(guard["status"] == "delta_registration_only_pending_canonical_joins_and_ci", "source drift policy cannot become full API or CI qualification")
+    require(sha256(source_path(guard["manifest"])) == guard["manifest_sha256"], "entrypoint registry changed")
+    references.extend(guard["source"])
     for entry in entries:
         require(entry["invariant"] and entry["proof_specification"] and entry["negative_controls"], f"missing contract or negative control: {entry['id']}")
         require(set(entry["modes"]) == {"memory", "local", "hosted", "wasm_browser"}, f"missing mode: {entry['id']}")

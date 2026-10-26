@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "scope": "changed Rust source registration; effective rustdoc, schema, TS and generated API joins pending",
+  "reviewed_files": {
+    "rust/crates/stream/src/conformance/wave1/coverage.rs": {
+      "sha256": "5a809d30887bc2d7be95625875892c38c8f88ac25fb78e7349046fc3b5641385",
+      "entries": [
+        {
+          "kind": "file_review",
+          "line": 1,
+          "name": "",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_const",
+          "line": 41,
+          "name": "ALL",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_enum",
+          "line": 12,
+          "name": "HistoryId",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_enum",
+          "line": 100,
+          "name": "UnqualifiedReason",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_fn",
+          "line": 58,
+          "name": "id",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_fn",
+          "line": 80,
+          "name": "partial_cases",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_fn",
+          "line": 108,
+          "name": "name",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_fn",
+          "line": 129,
+          "name": "hst_coverage",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_fn",
+          "line": 150,
+          "name": "require_hst_qualification",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_struct",
+          "line": 117,
+          "name": "UnqualifiedHistory",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        },
+        {
+          "kind": "public_struct",
+          "line": 141,
+          "name": "Unqualified",
+          "invariants": [
+            "hst_reporting.availability_refusal"
+          ],
+          "proof": "hst-reporting-v1"
+        }
+      ]
+    }
+  },
+  "proofs": {
+    "hst-reporting-v1": {
+      "adapter": "hst_reporting_v1",
+      "receipt": {
+        "repo_receipt": "docs/proofs/evidence/hst-reporting-v1/admission.json",
+        "sha256": "1fb9fa37481d3dd56cb92cd7e5b542bc179afe7447a11d2fceab8ca6b3f3d825"
+      }
+    }
+  },
+  "invariants": {
+    "hst_reporting.availability_refusal": "Stable HST IDs report missing capability; explicit complete qualification refuses before provider setup. Linux reporting proof only, not provider/cross-mode qualification."
+  }
+}

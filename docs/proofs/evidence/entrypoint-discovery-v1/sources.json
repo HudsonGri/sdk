@@ -1,0 +1,17 @@
+{
+  "kind": "actual_production_source_for_discovery_not_runtime_proof",
+  "sources": [
+    {
+      "path": "rust/crates/native-runtime/src/held_sync.rs",
+      "sha256": "cba5fa85ec1bdd2b1217724a157827fbf392d00a7e4a1d9e791ff6f9ab9dfe2a",
+      "source_commit": "ce8b71ab57bd2665811fde4be77e8d8fc5693804",
+      "origin": "actual git show ce8b71ab57bd2665811fde4be77e8d8fc5693804:rust/crates/native-runtime/src/held_sync.rs"
+    },
+    {
+      "path": "rust/crates/stream/src/grpc/server.rs",
+      "sha256": "779abb199cb200aaf98378b557e3835a8e30b2d2af7f638de4af5fd039dc8150",
+      "source_commit": "ce8b71ab57bd2665811fde4be77e8d8fc5693804",
+      "origin": "actual git show ce8b71ab57bd2665811fde4be77e8d8fc5693804:rust/crates/stream/src/grpc/server.rs"
+    }
+  ]
+}
