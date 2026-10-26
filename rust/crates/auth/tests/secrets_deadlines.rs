@@ -30,9 +30,11 @@ async fn refuses_silence(stall: Stall) -> TestResult {
             if count == 0 || request.len() + count > 8192 {
                 return Err(std::io::Error::other("fixture request headers missing"));
             }
-            request.extend_from_slice(bytes.get(..count).ok_or_else(|| {
-                std::io::Error::other("fixture read exceeds buffer")
-            })?);
+            request.extend_from_slice(
+                bytes
+                    .get(..count)
+                    .ok_or_else(|| std::io::Error::other("fixture read exceeds buffer"))?,
+            );
         }
         match stall {
             Stall::Headers => {}
