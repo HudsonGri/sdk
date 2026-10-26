@@ -91,7 +91,7 @@ pub use agent_local::{AgentTurn, LocalAgentClient, LocalAgentError, MAXIMUM_AGEN
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod agent_stdio;
 #[cfg(all(feature = "grpc", feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use agent_stdio::{AgentRequest, run_agent_jsonl, run_agent_prompt, write_agent_unknown};
+pub use agent_stdio::{AgentReply, AgentRequest, run_agent_jsonl, run_agent_prompt, write_agent_unknown};
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;
