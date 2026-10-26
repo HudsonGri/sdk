@@ -8,9 +8,9 @@
 //! so the executor can dispatch no other history.
 
 use super::{
-    agent_effects::FilesystemTurnEffects, agent_internal::AgentInternalFiles,
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost, FilesystemJournalBinding,
+    FilesystemHost, FilesystemJournalBinding, agent_effects::FilesystemTurnEffects,
+    agent_internal::AgentInternalFiles,
 };
 use crate::approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalPolicy};
 use crate::{
@@ -215,7 +215,11 @@ where
             );
         }
         for file in external {
-            if !agent.volumes.iter().any(|binding| binding.volume == *file.volume()) {
+            if !agent
+                .volumes
+                .iter()
+                .any(|binding| binding.volume == *file.volume())
+            {
                 grants.push(file.read_capability(&mut None)?);
             }
         }

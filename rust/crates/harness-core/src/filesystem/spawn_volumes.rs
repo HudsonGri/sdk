@@ -170,7 +170,12 @@ where
                 .ok_or(Error::Record("spawned private volume was not created"))?;
             // The spawn wrote the brief under the spawning tool's bound.
             let bytes = match generation
-                .read(&format!("/{BRIEF}"), u64::MAX, WorkBudget::UNBOUNDED, &cancellation)
+                .read(
+                    &format!("/{BRIEF}"),
+                    u64::MAX,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
             {
                 Ok(receipt) => receipt.value,
@@ -245,7 +250,13 @@ where
             .planned
             .iter()
             .filter(|planned| planned.source.is_none())
-            .map(|planned| planned.brief.iter().map(|brief| (BRIEF, brief.clone())).collect())
+            .map(|planned| {
+                planned
+                    .brief
+                    .iter()
+                    .map(|brief| (BRIEF, brief.clone()))
+                    .collect()
+            })
             .collect();
         let mut files = files.iter();
         let mut creations = Vec::new();
@@ -266,7 +277,9 @@ where
                     initialization: self.host.volume_initialization(),
                     creation: acyclic_fs::CreationOperation::populated(
                         acyclic_fs::OperationId::from_bytes(planned.key),
-                        files.next().ok_or_else(|| guest("spawn creation missing"))?,
+                        files
+                            .next()
+                            .ok_or_else(|| guest("spawn creation missing"))?,
                     ),
                 }),
             }

@@ -84,11 +84,10 @@ impl TurnExecutors for Executors {
                         .await?
                 }
             };
-            let context = local.runtime.harness().agent_context(
-                turn,
-                &authority.grants,
-                authority.content.clone(),
-            )?;
+            let context = local
+                .runtime
+                .harness()
+                .agent_context(&authority.grants, authority.content.clone())?;
             let reader = authority.content.reader.clone();
             let (model, provider) = local.agent()?;
             let provider = provider
@@ -187,9 +186,10 @@ impl LocalHarness {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
         let id = crate::agent::AgentId::from_bytes(self.root.into_bytes());
-        let stream = self.agent_stream.clone().ok_or_else(|| {
-            Error::Unsupported("an embedded harness has no agent stream".into())
-        })?;
+        let stream = self
+            .agent_stream
+            .clone()
+            .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
         let limits = TurnLimits {
             maximum_bytes: self.limits.file_bytes,
             max_steps: u32::try_from(self.limits.model_steps)
