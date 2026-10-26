@@ -44,3 +44,16 @@ canonical Streams `CommitRequest` protobuf bytes. The byte array is copied
 before the borrowed WASM slice expires. The caller keeps its original intent
 and this request; the client does not acknowledge or automatically resubmit it.
 Browser host controls must use this adapter for this custody guarantee to apply.
+
+A delivery is folded before `next()` resolves. Rendering a returned event has no
+publication acknowledgement callback and cannot roll back the shared fold. A
+failed render can read the retained record again; it must not advance a separate
+UI cursor or submit the input again. Reopening from an explicit stream cursor
+starts an empty bounded window at that edge. Reopening from zero replays records
+into a new bounded window; it does not restore an unbounded history cache.
+
+The adapter tests use canonical record appends only to exercise this boundary.
+They do not qualify AgentHost creation, approval authority or durable submission.
+The retired TaskVolume callback fold's buffered-publication/reconnect behavior
+is not the actor client's contract. Durable command admission and recovery remain
+host/Streams responsibilities, with their existing separate consumer tests.
