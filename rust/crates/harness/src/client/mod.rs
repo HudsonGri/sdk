@@ -134,8 +134,6 @@ pub mod query_verification {
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use crate::wasm::swarm::WasmClientViews;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::WasmHypothesisClient;
 
 type Record<D> = Fact<<D as Domain>::Key, <D as Domain>::Basis, <D as Domain>::Value>;

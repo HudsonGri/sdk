@@ -82,8 +82,9 @@ scrolls separately from the transcript. Scrollbar seeks retain stable source
 identities. `harness-tui` owns the shared read/frame input boundary and sparse
 `SourceRows` identity map, independently of the storage provider.
 
-The whole-client migration is in progress: internal TaskVolume folds, browser
-legacy bindings and their durable-host fixtures still need replacement. The generic
+The whole-client migration is in progress: internal native TaskVolume folds and
+replacement durable-host coverage still need work. The old browser task-volume
+bindings and their mechanism-specific fixtures are removed. The generic
 absent-stream follow, same-cut child-status projection, actor-native input
 composition, project/skill catalog capture, remaining command dispatch,
 approvals, terminal effects and historical backfill remain open. These source changes

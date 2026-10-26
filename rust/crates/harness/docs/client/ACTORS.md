@@ -40,10 +40,11 @@ actor observations above, Rust `PageWindow` for provider pages, and the owning
 host for input and approval controls. Initialization requires those actor/page
 exports without requiring the retired `WasmClientViews` class.
 
-The original FileClient recovery, ordering, publication and byte-admission tests
-retain their unchanged oracles through an internal test fixture. That fixture
-is not a supported product API or a replacement submission path. Its remaining
-host migration is separate from the actor record observation smoke.
+The old WASM FileClient, task-volume query and ClientViews adapters and their
+mechanism-specific fixtures are removed. Recovery, ordering, publication,
+credential admission, byte admission and document-restart custody still require
+coverage through the actual actor host; the actor record observation smoke does
+not qualify them. The browser paging and selective hydration assertions remain.
 
 The browser host can return this same client with the Rust `from_session`
 factory, sharing its authenticated session and credential slot. It does not

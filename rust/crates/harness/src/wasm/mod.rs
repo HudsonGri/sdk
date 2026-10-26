@@ -67,19 +67,11 @@ use reducer::schema_registry;
 mod tool;
 use tool::*;
 #[cfg(target_arch = "wasm32")]
-mod file_client;
-mod file_worker;
-#[cfg(target_arch = "wasm32")]
-mod query;
-#[cfg(target_arch = "wasm32")]
-pub(crate) mod swarm;
-#[cfg(target_arch = "wasm32")]
 mod wire_session;
 #[cfg(target_arch = "wasm32")]
 mod agent_client;
 #[cfg(target_arch = "wasm32")]
 mod page_window;
-mod task_views;
 mod wire;
 
 #[cfg(target_arch = "wasm32")]
