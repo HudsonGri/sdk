@@ -17,7 +17,7 @@ use acyclic_actors::{
     guest::Handler,
     local::{Clock, Runtime, Store},
 };
-use acyclic_stream::{CommitRequest, StreamPath, StreamProvider};
+use acyclic_stream::{CommitCondition, CommitRequest, StreamPath, StreamProvider};
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
@@ -105,7 +105,9 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
     /// Append `record` to `to`'s inbox in one conditional commit: a prompt
     /// (`Message`), `Cancel`, an `Approval` response or a `Hook`. The key binds
     /// recipient, sender and record intent, so resending an intent never
-    /// appends it twice; on [`Error::Unknown`] call `send` again.
+    /// appends it twice. Changed bytes under the same intent are a definitive
+    /// idempotency mismatch. On [`Error::Unknown`], retain and retry the exact
+    /// returned request with [`submit`].
     pub async fn send(
         &self,
         to: &AgentPath,
@@ -141,24 +143,25 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver + 'static> AgentHost<P,
         Ok(())
     }
 
-    /// One inbox commit, re-decided only when the recipient's tail moved.
-    ///
-    /// The key binds recipient, sender and intent, and streams keeps keys of
-    /// successful commits only: a key that names another request means this
-    /// intent is already in the inbox, so a resend (after a crash, from any
-    /// tail) reports [`Delivered::Committed`] and writes nothing.
+    /// One inbox commit, independent of the observed inbox tail. The tail read
+    /// rejects an absent agent; an existing inbox cannot disappear. The closed
+    /// marker fences admission in the commit itself. Removing only the inbox
+    /// Tail condition makes exact intent retries identical after other appends,
+    /// while changed semantic bytes still fail the provider's digest check.
     async fn deliver(
         &self,
         to: &AgentPath,
         request: impl Fn(u64) -> Result<CommitRequest, Error>,
     ) -> Result<Delivered, Error> {
         loop {
+            let inbox = to.inbox()?;
             let tail = inbox_tail(&*self.provider, to).await?;
-            match submit(&*self.provider, request(tail)?).await {
-                Ok(Submitted::Committed(_))
-                | Err(Error::Stream(acyclic_stream::StreamError::IdempotencyMismatch)) => {
-                    return Ok(Delivered::Committed);
-                }
+            let mut request = request(tail)?;
+            request.conditions.retain(|condition| {
+                !matches!(condition, CommitCondition::Tail { path, .. } if path == &inbox)
+            });
+            match submit(&*self.provider, request).await {
+                Ok(Submitted::Committed(_)) => return Ok(Delivered::Committed),
                 Err(error) => return Err(error),
                 Ok(Submitted::RecipientClosed(_)) => return Ok(Delivered::Closed),
                 Ok(Submitted::InboxMoved(_)) => {}

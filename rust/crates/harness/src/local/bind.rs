@@ -218,7 +218,7 @@ impl BoundComposition {
             files,
             runtime: Arc::new(runtime),
             agent: AgentId::from_bytes([1; 16]),
-            agent_key: None,
+            agent_authority: None,
             agents: tokio::sync::OnceCell::new(),
             task_files,
             project: volume.clone(),

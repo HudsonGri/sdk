@@ -15,7 +15,7 @@ use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost},
     conversation::{ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner},
-    core::{AggregateKind, Authority, AuthorityIssuer, SchemaRegistry, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, SchemaRegistry, Scope},
     executor::{ExecutionJournal, Executor, TurnOutput},
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
@@ -33,7 +33,7 @@ pub const PRIVATE_VOLUME: &str = "private";
 /// over every bound volume, and the agent's content bound to that scope.
 pub struct TurnAuthority {
     /// Signing custody; it must outlive the turn's journal.
-    pub issuer: AuthorityIssuer,
+    pub issuer: AuthorityRoot,
     /// Read and write over the agent's bound volumes.
     pub scope: Scope,
     /// The capabilities `scope` grants, for the executor's tool authority.
@@ -73,7 +73,7 @@ pub struct TurnLimits {
 pub struct FilesystemTurnHost<P, A, O> {
     stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
-    issuer: (String, [u8; 32]),
+    issuer: AuthorityRoot,
     executors: Arc<dyn TurnExecutors>,
     schemas: SchemaRegistry,
     limits: TurnLimits,
@@ -85,12 +85,13 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Host signing each agent's authority with `issuer` (an id and its key).
+    /// Host signing each agent's authority with `issuer`'s custody, under
+    /// that agent's conversation audience.
     #[must_use]
     pub fn new(
         stream: Arc<P>,
         host: Arc<FilesystemHost<A, O>>,
-        issuer: (String, [u8; 32]),
+        issuer: AuthorityRoot,
         executors: Arc<dyn TurnExecutors>,
         limits: TurnLimits,
     ) -> Self {
@@ -119,21 +120,17 @@ where
         {
             return Err(Error::Unauthorized("private volume belongs to another agent".into()));
         }
-        let issuer = AuthorityIssuer::new(
-            self.issuer.0.clone(),
-            self.issuer.1,
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: agent.path.id().as_str().to_owned(),
-            },
-        );
+        let issuer = self.issuer.with_audience(Authority {
+            kind: AggregateKind::Conversation,
+            id: agent.path.id().as_str().to_owned(),
+        });
         let mut grants = Vec::with_capacity(2 * agent.volumes.len());
         for binding in &agent.volumes {
             grants.push(binding.volume.capability(VolumeOperation::Read, &mut None)?);
             grants.push(binding.volume.capability(VolumeOperation::Write, &mut None)?);
         }
         let capabilities = Capabilities::new(grants);
-        let scope = issuer.issue("agent", &capabilities, Some(owner), None, &mut None)?;
+        let scope = issuer.bootstrap_scope("agent", &capabilities, Some(owner), &mut None)?;
         let verifier = issuer.verifier(&mut None)?;
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&self.host),

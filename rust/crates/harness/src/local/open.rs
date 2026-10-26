@@ -369,7 +369,7 @@ impl Opening {
             files,
             runtime,
             agent: owner.agent,
-            agent_key: Some(owner.key),
+            agent_authority: Some(issuer.clone()),
             agents: tokio::sync::OnceCell::new(),
             task_files,
             project: owner.project.clone(),

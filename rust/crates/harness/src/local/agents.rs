@@ -69,7 +69,7 @@ impl TurnExecutors for Executors {
                 Some(manifest) => manifest.clone(),
                 None => {
                     local
-                        .stage_context_manifest_with(turn, prompt, writer)
+                        .stage_context_manifest_with(turn, prompt, writer)?
                         .await?
                 }
             };
@@ -151,7 +151,7 @@ impl LocalHarness {
     }
 
     async fn host_agents(self: &Arc<Self>) -> Result<Hosted> {
-        let key = self.agent_key.ok_or_else(|| {
+        let authority = self.agent_authority.clone().ok_or_else(|| {
             Error::Unsupported("an embedded harness has no agent signing custody".into())
         })?;
         let id = crate::agent::AgentId::from_bytes(self.agent.into_bytes());
@@ -165,7 +165,7 @@ impl LocalHarness {
         let turns = FilesystemTurnHost::new(
             stream.clone(),
             self.files.clone(),
-            ("acyclic.local".to_owned(), key),
+            authority,
             Arc::new(Executors(Arc::downgrade(self))),
             limits,
         );
