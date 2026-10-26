@@ -291,8 +291,7 @@ mod tests {
             } else {
                 (reject_control_admission(&mut tree, child, admission), None)
             };
-            let completed = tree.is_reaped()
-                && std::fs::read_dir(&records).unwrap().count() == 0;
+            let completed = tree.is_reaped() && std::fs::read_dir(&records).unwrap().count() == 0;
             if let Some(child) = retained_for_fixture_cleanup {
                 tree.child = Some(child);
             }
