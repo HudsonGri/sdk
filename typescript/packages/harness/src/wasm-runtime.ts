@@ -6,9 +6,6 @@ let initialization: Promise<void> | undefined;
 const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateContract", "validateWorkflowAdmission", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
-  "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
-  "validateWireResume", "validateWireObserve", "validateWireCancel",
-  "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult", "validateToolProjection", "jsonToolProjectionSchema", "modelContentInventory",
   "validateMcpCatalog", "searchMcpCatalog", "mcpModelDefinitions", "validateMcpStdioRequest",
   "validateMcpCallbackRequest", "mcpCallbackOperation",
@@ -75,7 +72,7 @@ export function assertHarnessWasmExports(value: unknown): void {
   }
 }
 
-/** Initializes the one WASM instance shared by the reducer and wire transports. */
+/** Initializes the one WASM instance shared by the reducer and actor/session views. */
 export async function ensureHarnessWasm(): Promise<void> {
   if (initialization !== undefined) return initialization;
   let moduleLoaded = false;
