@@ -14,6 +14,17 @@ mod session;
 ))]
 pub use session::{WireSession, WireSessionError};
 
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+mod stream_view;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use stream_view::{StreamView, StreamViewPolicy};
+
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::Arc,
