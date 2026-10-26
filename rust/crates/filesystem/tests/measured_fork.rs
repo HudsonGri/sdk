@@ -6,6 +6,14 @@
     not(target_arch = "wasm32")
 ))]
 
+#[macro_use]
+#[path = "support/unbounded.rs"]
+mod unbounded;
+
+#[macro_use]
+#[path = "support/provider_receipt.rs"]
+mod provider_receipt;
+
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions, Fs, IdempotencyKey,
@@ -36,21 +44,9 @@ fn finite_budget() -> Result<WorkBudget, Box<dyn Error>> {
 async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let parent = fs
-        .create_workspace(
-            "measured-parent",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let parent = unbounded!(fs, create_workspace("measured-parent"))?;
     parent.write_text("/kept.txt", "original").await?;
-    let pinned = parent
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let pinned = unbounded!(parent, head())?;
     let key = IdempotencyKey::new();
     let cancellation = CancellationToken::new();
     let exhausted = parent
@@ -70,26 +66,10 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         .await;
     assert!(exhausted.is_err());
     assert!(
-        fs.open_workspace(
-            "measured-child",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        unbounded!(fs, open_workspace("measured-child")).is_err()
     );
     assert_eq!(
-        parent
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(parent, head())?.id(),
         pinned.id()
     );
     let budget = finite_budget()?;
@@ -110,13 +90,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         .await?;
     created.work.verify(budget)?;
     assert!(created.work.backend_write_operations > 0);
-    let generation = created
-        .value
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id();
+    let generation = unbounded!(created.value, head())?.id();
     let retried = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "measured-child",
@@ -135,42 +109,15 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
     retried.work.verify(budget)?;
     assert_eq!(retried.value.id(), created.value.id());
     assert_eq!(
-        retried
-            .value
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(retried.value, head())?.id(),
         generation
     );
     assert_eq!(
-        retried
-            .value
-            .read(
-                "/kept.txt",
-                32,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?,
+        unbounded!(retried.value, read("/kept.txt", 32))?,
         OwnedBytes::from_static(b"original")
     );
     assert_eq!(
-        parent
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(parent, head())?.id(),
         pinned.id()
     );
     assert!(
@@ -196,20 +143,8 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
 async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let parent = fs
-        .create_workspace(
-            "cancel-parent",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let pinned = parent
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let parent = unbounded!(fs, create_workspace("cancel-parent"))?;
+    let pinned = unbounded!(parent, head())?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let key = IdempotencyKey::new();
@@ -235,46 +170,18 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     assert!(matches!(cancelled.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*cancelled.work, WorkCounters::default());
     assert!(
-        fs.open_workspace(
-            "cancel-child",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        unbounded!(fs, open_workspace("cancel-child")).is_err()
     );
     assert_eq!(
-        parent
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(parent, head())?.id(),
         pinned.id()
     );
-    let other = fs
-        .create_workspace(
-            "foreign-source",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let other = unbounded!(fs, create_workspace("foreign-source"))?;
     let foreign = match parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "foreign-child",
             ForkOptions::from_generation(
-                other
-                    .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?,
+                unbounded!(other, head())?,
                 IdempotencyKey::new(),
             ),
             acyclic_fs::PublicationPermit::Unrestricted,
@@ -327,16 +234,7 @@ impl AsyncObjectStore for CancelAfterPut {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-            let receipt = {
-                let __object_args = (id, bytes, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = self
-                    .inner
-                    .put(__object_args.0, __object_args.1, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }?;
+            let receipt = provider_receipt!(self.inner, put(id, bytes), budget, cancellation)?;
             self.after_put(cancellation);
             Ok(receipt)
         }
@@ -356,16 +254,7 @@ impl AsyncObjectStore for CancelAfterPut {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-            let receipt = {
-                let __object_args = (writes, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = self
-                    .inner
-                    .put_many(__object_args.0, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }?;
+            let receipt = provider_receipt!(self.inner, put_many(writes), budget, cancellation)?;
             self.after_put(cancellation);
             Ok(receipt)
         }
@@ -385,19 +274,7 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.read_budget()?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (id, maximum_bytes, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = self
-                    .inner
-                    .read(__object_args.0, __object_args.1, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = provider_receipt!(self.inner, read(id, maximum_bytes), budget, cancellation);
         context.accept(result)
     }
 
@@ -415,20 +292,7 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = self
-                    .inner
-                    .read_many(__object_args.0, &mut __object_work)
-                    .await
-                    .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = provider_receipt!(self.inner, read_many(requests), budget, cancellation);
         context.accept(result).map(|values| (values, None))
     }
 
@@ -443,19 +307,7 @@ impl AsyncObjectStore for CancelAfterPut {
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            {
-                let __object_args = (id, budget, cancellation);
-                let mut __object_work =
-                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-                let __object_result = self
-                    .inner
-                    .contains(__object_args.0, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
+        let result = provider_receipt!(self.inner, contains(id), budget, cancellation);
         context.accept(result)
     }
 }
@@ -475,21 +327,9 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let parent = fs
-        .create_workspace(
-            "inflight-parent",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let parent = unbounded!(fs, create_workspace("inflight-parent"))?;
     parent.write_text("/kept.txt", "pinned").await?;
-    let pinned = parent
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let pinned = unbounded!(parent, head())?;
     let key = IdempotencyKey::new();
     armed.store(true, Ordering::SeqCst);
     let cancellation = CancellationToken::new();
@@ -512,26 +352,10 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     assert!(observed.load(Ordering::SeqCst));
     assert!(cancellation.is_cancelled());
     assert!(
-        fs.open_workspace(
-            "inflight-child",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        unbounded!(fs, open_workspace("inflight-child")).is_err()
     );
     assert_eq!(
-        parent
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(parent, head())?.id(),
         pinned.id()
     );
     let created = parent
@@ -549,13 +373,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
             },
         )
         .await?;
-    let initial = created
-        .value
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-        .id();
+    let initial = unbounded!(created.value, head())?.id();
     let retried = parent
         .fork::<_, _, acyclic_fs::WorkspaceError>(
             "inflight-child",
@@ -572,30 +390,11 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
         )
         .await?;
     assert_eq!(
-        retried
-            .value
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-            .id(),
+        unbounded!(retried.value, head())?.id(),
         initial
     );
     assert_eq!(
-        retried
-            .value
-            .read(
-                "/kept.txt",
-                32,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?,
+        unbounded!(retried.value, read("/kept.txt", 32))?,
         OwnedBytes::from_static(b"pinned")
     );
     Ok(())

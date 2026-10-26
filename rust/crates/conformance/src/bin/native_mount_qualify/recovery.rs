@@ -155,16 +155,13 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
     runtime.block_on(async move {
         fs::create_dir_all(&root)?;
         let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
-        let workspace = engine
-            .create_workspace_with_config(
+        let workspace = unbounded!(
+            engine,
+            create_workspace_with_config(
                 "crash-owner",
                 VolumeConfig::native(Lifecycle::Durable),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+        )?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace
             .mount(&mount, MountOptions::read_write())
@@ -180,9 +177,7 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
             let _open_hydrated_file = File::open(mount.join("alive.txt"))?;
         }
         fs::write(ready, b"ready")?;
-        loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        }
+        std::future::pending::<Result<(), Failure>>().await
     })
 }
 
@@ -190,25 +185,8 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
 async fn verify_remounted_workspace(crash_root: &Path, mount: &Path) -> Result<(), Failure> {
     eprintln!("qualification phase: reopening durable crash workspace");
     let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
-    let workspace = engine
-        .open_workspace(
-            "crash-owner",
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    if workspace
-        .read(
-            "/alive.txt",
-            16,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
+    let workspace = unbounded!(engine, open_workspace("crash-owner"))?;
+    if unbounded!(workspace, read("/alive.txt", 16))?
         .as_ref()
         != b"alive"
     {

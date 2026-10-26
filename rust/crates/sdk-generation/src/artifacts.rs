@@ -15,30 +15,19 @@ pub(super) fn package_for_crate<'a>(
     metadata: &'a Metadata,
     crate_name: &str,
 ) -> Result<&'a Package, CliError> {
-    let matches = metadata
+    metadata
         .packages
         .iter()
-        .filter(|package| {
+        .find(|package| {
             package.targets.iter().any(|target| {
-                target.kind.iter().any(|kind| {
-                    matches!(
-                        kind,
-                        TargetKind::ProcMacro
-                            | TargetKind::Lib
-                            | TargetKind::RLib
-                            | TargetKind::CDyLib
-                            | TargetKind::StaticLib
-                            | TargetKind::DyLib
-                    )
-                }) && target.name.replace('-', "_") == crate_name
+                is_library_target(target) && target.name.replace('-', "_") == crate_name
             })
         })
-        .collect::<Vec<_>>();
-    matches.into_iter().next().ok_or_else(|| {
-        CliError(format!(
-            "Rustdoc crate `{crate_name}` has no matching Cargo package target"
-        ))
-    })
+        .ok_or_else(|| {
+            CliError(format!(
+                "Rustdoc crate `{crate_name}` has no matching Cargo package target"
+            ))
+        })
 }
 
 pub(super) fn published_packages(root: &Path) -> Result<Vec<String>, CliError> {
@@ -421,7 +410,7 @@ pub(super) fn collect_span_filenames(value: &serde_json::Value, output: &mut BTr
     }
 }
 
-pub(super) fn collect_named_files(
+fn collect_named_files(
     root: &Path,
     output: &mut BTreeMap<String, Vec<PathBuf>>,
 ) -> Result<(), CliError> {
@@ -482,7 +471,7 @@ pub(super) fn write_immutable(path: &Path, bytes: &[u8]) -> Result<(), CliError>
 
 pub(super) fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>, CliError> {
     let mut files = Vec::new();
-    collect_files(output, output, &mut files, true)?;
+    collect_files(output, output, &mut files)?;
     files.sort();
     let mut result = BTreeMap::new();
     for path in files {
@@ -534,12 +523,7 @@ pub(super) fn declared_archive_toolchain(metadata: &Metadata) -> Result<String, 
     serde_json::to_string(&declarations).map_err(|e| CliError(e.to_string()))
 }
 
-pub(super) fn collect_files(
-    root: &Path,
-    current: &Path,
-    files: &mut Vec<PathBuf>,
-    include_all: bool,
-) -> Result<(), CliError> {
+fn collect_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> Result<(), CliError> {
     for entry in fs::read_dir(current).map_err(io_error)? {
         let path = entry.map_err(io_error)?.path();
         if path.is_dir() {
@@ -550,8 +534,8 @@ pub(super) fn collect_files(
             if path == root.join(".profile-build") {
                 continue;
             }
-            collect_files(root, &path, files, include_all)?;
-        } else if include_all {
+            collect_files(root, &path, files)?;
+        } else {
             // Atomic publication leaves a short-lived sibling while the
             // immutable artifact is linked into place. It is producer scratch
             // space and must never enter the published artifact inventory.
@@ -565,7 +549,6 @@ pub(super) fn collect_files(
             files.push(path);
         }
     }
-    let _ = root;
     Ok(())
 }
 

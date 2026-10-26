@@ -27,24 +27,18 @@ async fn put(
     page: &TreePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = tree_page_id(page, 8)?;
-    {
-        let __object_args = (
-            id,
-            OwnedBytes::from(encode_tree_page(
-                page,
-                8,
-                |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
-                |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-            )?),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
-        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-        let __object_result =
-            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
-                .await;
-        __object_work.receipt(__object_result)
-    }?;
+    AsyncObjectStore::put(
+        store,
+        id,
+        OwnedBytes::from(encode_tree_page(
+            page,
+            8,
+            |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+            |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+        )?),
+        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+    )
+    .await?;
     Ok(id)
 }
 
@@ -414,22 +408,11 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             }
             let budget = context.work.remaining(context.budget)?;
             let cancellation = context.cancellation;
-            let result = async {
-                {
-                    let __object_args = (id, bytes, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::put(
-                        &self.inner,
-                        __object_args.0,
-                        __object_args.1,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
+            let result = {
+                let mut work = crate::AuthorityWork::new(budget, cancellation);
+                let result = AsyncObjectStore::put(&self.inner, id, bytes, &mut work).await;
+                work.receipt(result)
+            };
             context.accept(result)
         }
         async fn read(
@@ -463,22 +446,13 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             }
             let budget = context.work.remaining(context.budget)?;
             let cancellation = context.cancellation;
-            let result = async {
-                {
-                    let __object_args = (requests, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                    let __object_result = AsyncObjectStore::read_many(
-                        &self.inner,
-                        __object_args.0,
-                        &mut __object_work,
-                    )
+            let result = {
+                let mut work = crate::AuthorityWork::new(budget, cancellation);
+                let result = AsyncObjectStore::read_many(&self.inner, requests, &mut work)
                     .await
                     .map(|(values, _allocation)| values);
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
+                work.receipt(result)
+            };
             context.accept(result).map(|values| (values, None))
         }
         async fn contains(
@@ -492,21 +466,11 @@ async fn custody_listing_retains_only_known_sdk_prefix_when_provider_panics()
             }
             let budget = context.work.remaining(context.budget)?;
             let cancellation = context.cancellation;
-            let result = async {
-                {
-                    let __object_args = (id, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                    let __object_result = AsyncObjectStore::contains(
-                        &self.inner,
-                        __object_args.0,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
+            let result = {
+                let mut work = crate::AuthorityWork::new(budget, cancellation);
+                let result = AsyncObjectStore::contains(&self.inner, id, &mut work).await;
+                work.receipt(result)
+            };
             context.accept(result)
         }
     }
