@@ -35,8 +35,9 @@ struct Reading<'a> {
 
 impl Drop for Reading<'_> {
     fn drop(&mut self) {
-        self.waker.borrow_mut().take();
+        let waker = self.waker.borrow_mut().take();
         self.busy.set(false);
+        drop(waker);
     }
 }
 
@@ -133,6 +134,14 @@ impl WasmAgentClient {
         let entry = self.with_client(|client| client.conversation_entry(index))?
             .map_err(client_error)?;
         to_js(&entry)
+    }
+
+    /// Read the latest status from the Rust fold, or null until one is actually
+    /// delivered. The browser does not maintain a second status map.
+    #[wasm_bindgen(js_name = currentStatus)]
+    pub fn current_status(&self) -> Result<JsValue, JsValue> {
+        let status = self.with_client(AgentClient::current_status)?.map_err(client_error)?;
+        to_js(&status)
     }
 }
 
