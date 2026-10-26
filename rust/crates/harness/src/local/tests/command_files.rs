@@ -112,10 +112,8 @@ async fn roundtrip(prompt: String) -> Result<()> {
     // Reopening only the durable command files does not prove the old native
     // destination is reusable. Exercise the same projection through this OS's
     // real mount adapter while the previous owner is still retained.
-    crate::local::workspace::volumes::project_unscoped(
-        &harness.workspace.as_ref().unwrap().mounts,
-    )
-    .await?;
+    crate::local::workspace::volumes::project_unscoped(&harness.workspace.as_ref().unwrap().mounts)
+        .await?;
     let mut owner = CommandSession::open(
         Arc::new(harness.task_files().inner.reopen().await?),
         session,
