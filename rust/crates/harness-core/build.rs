@@ -1,5 +1,4 @@
-//! Builds the canonical harness Protobuf messages and descriptor set, plus
-//! the tonic service glue under the `grpc` feature.
+//! Builds the canonical harness Protobuf messages and descriptor set.
 
 #[path = "src/native_environment.rs"]
 pub mod native_environment;
@@ -25,24 +24,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "cargo:rustc-env=HARNESS_DESCRIPTOR_DIGEST={}",
         digest.to_hex()
     );
-    #[cfg(feature = "grpc")]
-    {
-        // Tonic service glue reuses the canonical messages generated above;
-        // it lives in its own directory because it shares the package name.
-        let out = std::path::PathBuf::from(
-            native_environment::variable("OUT_DIR").ok_or("OUT_DIR is unset")?,
-        )
-        .join("grpc");
-        std::fs::create_dir_all(&out)?;
-        let mut prost = tonic_prost_build::Config::new();
-        prost.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
-        tonic_prost_build::configure()
-            .build_client(true)
-            .build_server(true)
-            .out_dir(out)
-            .extern_path(".acyclic.harness.v2", "crate::wire")
-            .extern_path(".acyclic.protocol.v1", "crate::wire")
-            .compile_with_config(prost, &[proto], &[include])?;
-    }
     Ok(())
 }

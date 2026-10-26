@@ -37,17 +37,6 @@ pub(crate) mod generated {
     }
 }
 
-#[cfg(feature = "grpc")]
-/// Generated tonic client and server surfaces using the canonical Harness messages.
-#[allow(
-    clippy::pedantic,
-    clippy::allow_attributes_without_reason,
-    reason = "generated tonic bindings"
-)]
-pub mod transport {
-    include!(concat!(env!("OUT_DIR"), "/grpc/acyclic.harness.v2.rs"));
-}
-
 pub(crate) const MCP_INITIALIZATION: &str = concat!(
     "{\"capabilities\":{},\"clientInfo\":{\"name\":\"acyclic-harness\",\"version\":\"",
     env!("CARGO_PKG_VERSION"),
