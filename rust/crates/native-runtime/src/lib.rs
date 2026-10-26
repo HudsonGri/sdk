@@ -137,7 +137,7 @@ use health::{FileHealth, HealthOwner};
 #[cfg(test)]
 mod tests;
 
-/// Shared process incarnation observations.
-pub mod process_identity;
 #[cfg(windows)]
 mod executable;
+/// Shared process incarnation observations.
+pub mod process_identity;
