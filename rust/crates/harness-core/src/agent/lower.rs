@@ -1,8 +1,10 @@
 //! Lowers one [`Step`] into its single Streams commit.
 //!
 //! Own streams (conversation, status) are conditioned on the exact tails in the
-//! prior state, because the agent is their only writer. Recipient inboxes are
-//! conditioned on `Absent{closed}` and the tail the caller observed. Spawns fork
+//! prior state, because the agent is their only writer. Recipients are only the
+//! parent and spawned children, which exist by construction, so their appends
+//! are unconditional: a moved tail or a closed recipient (a parent archiving
+//! its subtree awaits every child's `ChildDone`) never blocks a step. Spawns fork
 //! the agent's own subtree at its consumed cursor; the same-commit conversation
 //! append is a source-descendant write, which Streams excludes from the child's
 //! inherited cut, so the child sees exactly the conversation before this step.
@@ -15,19 +17,6 @@ use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, IdempotencyKey, StreamPath,
 };
 use std::collections::{BTreeMap, BTreeSet};
-
-/// Agents whose inbox tails the caller must observe before [`lower`].
-#[must_use]
-pub fn recipients(step: &Step) -> BTreeSet<AgentPath> {
-    step.outs
-        .iter()
-        .filter_map(|out| match out {
-            Out::Send { to, .. } => Some(to.clone()),
-            Out::Archive { target, .. } => Some(target.clone()),
-            Out::Conversation(_) | Out::Spawn { .. } => None,
-        })
-        .collect()
-}
 
 #[derive(Default)]
 struct Builder {
@@ -51,7 +40,9 @@ impl Builder {
         self.appends.entry(path).or_default().push(record.into());
     }
 
-    fn recipient(&mut self, to: &AgentPath, tails: &BTreeMap<AgentPath, u64>) -> Result<(), Error> {
+    /// Rejects a write into a child this same commit forks; Streams forbids
+    /// mutations under a fork destination.
+    fn recipient(&self, to: &AgentPath) -> Result<(), Error> {
         let inbox = to.inbox()?;
         if self.created.iter().any(|created| {
             inbox == *created
@@ -62,30 +53,15 @@ impl Builder {
         }) {
             return Err(Error::Record("a step cannot write to a child it spawns"));
         }
-        let expected = *tails.get(to).ok_or(Error::NoSuchAgent)?;
-        if expected == 0 {
-            return Err(Error::NoSuchAgent);
-        }
-        self.condition(CommitCondition::Absent { path: to.closed()? });
-        self.condition(CommitCondition::Tail {
-            path: inbox,
-            expected,
-        });
         Ok(())
     }
 }
 
 /// Builds the step's one commit.
 ///
-/// `cursor` is the number of inbox records consumed after this step, `tails`
-/// holds the observed inbox tail of every agent in [`recipients`], and `key` is
-/// the delivery's stable identity, so a retried delivery replays exactly.
-pub fn lower(
-    step: &Step,
-    cursor: u64,
-    tails: &BTreeMap<AgentPath, u64>,
-    key: IdempotencyKey,
-) -> Result<CommitRequest, Error> {
+/// `cursor` is the number of inbox records consumed after this step, and `key`
+/// is the delivery's stable identity, so a retried delivery replays exactly.
+pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequest, Error> {
     let state = &step.state;
     let path = &state.path;
     let sender = Sender::Agent { path: path.clone() };
@@ -135,27 +111,26 @@ pub fn lower(
                 if matches!(record, InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)) {
                     return Err(Error::Record("send carries neither ForkAdopted nor Archive"));
                 }
-                builder.recipient(to, tails)?;
+                builder.recipient(to)?;
                 builder.append(to.inbox()?, record.encode()?);
             }
             Out::Archive { target, id } => {
-                builder.recipient(target, tails)?;
+                builder.recipient(target)?;
                 let control = Control {
                     by: sender.clone(),
                     id: id.clone(),
                 };
                 builder.append(target.inbox()?, InboxRecord::Archive(control).encode()?);
-                let closed = target.closed()?;
-                if !builder.appends.contains_key(&closed) {
-                    builder.append(
-                        closed,
-                        Closed {
-                            by: sender.clone(),
-                            id: id.clone(),
-                        }
-                        .encode()?,
-                    );
-                }
+                // Unconditional: the first marker record closes the child; a
+                // cascade racing an independent archive adds a redundant one.
+                builder.append(
+                    target.closed()?,
+                    Closed {
+                        by: sender.clone(),
+                        id: id.clone(),
+                    }
+                    .encode()?,
+                );
             }
             Out::Spawn { .. } => {}
         }

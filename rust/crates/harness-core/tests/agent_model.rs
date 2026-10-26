@@ -7,7 +7,7 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt;
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     sync::Mutex,
 };
 
@@ -264,7 +264,7 @@ async fn spawn_child(
     exclude: bool,
 ) -> Result<Step> {
     let step = spawning(state.clone(), name);
-    let mut request = lower(&step, 1, &BTreeMap::new(), delivery_key(&step.state, name)?)?;
+    let mut request = lower(&step, 1, delivery_key(&step.state, name)?)?;
     for mutation in &mut request.mutations {
         if let CommitMutation::Fork { exclude: names, .. } = mutation
             && !exclude
@@ -305,7 +305,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
         state,
     } = seeded().await?;
     let step = spawning(state, "s1");
-    let request = lower(&step, 1, &BTreeMap::new(), delivery_key(&step.state, "t1")?)?;
+    let request = lower(&step, 1, delivery_key(&step.state, "t1")?)?;
     let Submitted::Committed(first) = submit(&provider, request.clone()).await? else {
         panic!("spawn did not commit");
     };
@@ -348,7 +348,7 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
     } = seeded().await?;
     state.conversation_tail = 3;
     let stale = spawning(state.clone(), "s1");
-    let request = lower(&stale, 1, &BTreeMap::new(), delivery_key(&stale.state, "t1")?)?;
+    let request = lower(&stale, 1, delivery_key(&stale.state, "t1")?)?;
     assert!(matches!(
         submit(&provider, request).await?,
         Submitted::Conflict(_)
@@ -360,7 +360,7 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
     // Spawn s2 normally, then s3 from the advanced parent.
     state.conversation_tail = 2;
     let first = spawning(state, "s2");
-    let request = lower(&first, 1, &BTreeMap::new(), delivery_key(&first.state, "t2")?)?;
+    let request = lower(&first, 1, delivery_key(&first.state, "t2")?)?;
     assert!(matches!(submit(&provider, request).await?, Submitted::Committed(_)));
     let s2 = AgentId::derive(&parent.id(), "s2");
     let s3 = spawn_child(&provider, &first.state, "s3", true).await?;
@@ -385,7 +385,7 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
                 volumes: Vec::new(),
             },
             Out::Send {
-                to: child.clone(),
+                to: child,
                 record: cancel("c1"),
             },
         ],
@@ -393,8 +393,7 @@ fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
         state,
         alarm: Alarm::Clear,
     };
-    let tails = BTreeMap::from([(child, 1)]);
-    assert!(lower(&step, 1, &tails, delivery_key(&step.state, "t")?).is_err());
+    assert!(lower(&step, 1, delivery_key(&step.state, "t")?).is_err());
     Ok(())
 }
 

@@ -371,6 +371,7 @@ impl Opening {
             agent: owner.agent,
             agent_authority: Some(issuer.clone()),
             agents: tokio::sync::OnceCell::new(),
+            #[cfg(feature = "grpc")]
             session: tokio::sync::OnceCell::new(),
             task_files,
             project: owner.project.clone(),

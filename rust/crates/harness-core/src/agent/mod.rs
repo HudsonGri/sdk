@@ -8,7 +8,10 @@
 
 mod commit;
 mod driver;
+// The A4 runtime is native-only, and its guest futures are `Send`.
+#[cfg(not(target_arch = "wasm32"))]
 mod handler;
+#[cfg(not(target_arch = "wasm32"))]
 mod host;
 pub mod kernel;
 mod machine;
@@ -21,14 +24,16 @@ pub use machine::{
     Alarm, AgentState, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step,
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, step,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use handler::{AgentHandler, INBOX};
+#[cfg(not(target_arch = "wasm32"))]
 pub use host::{AgentHost, Delivered};
 pub use driver::{
     ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, approval_intent, model_input, turn_id,
 };
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
-pub use lower::{delivery_key, lower, recipients};
+pub use lower::{delivery_key, lower};
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
     ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,

@@ -37,7 +37,7 @@ pub struct OpenTurn {
 }
 
 /// Host binding of agent turns to an executor and journal.
-pub trait TurnHost: Send + Sync {
+pub trait TurnHost: acyclic_stream::ProviderPlatform {
     /// Opens `turn` for `agent`, whose model-visible input is `input`.
     fn open<'a>(
         &'a self,
