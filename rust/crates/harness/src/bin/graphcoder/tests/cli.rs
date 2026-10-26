@@ -5,6 +5,7 @@ mod goal_review;
 #[cfg(unix)]
 mod host_workspace_shutdown;
 mod input_review;
+mod agent_smoke;
 mod instruction_review;
 #[cfg(test)]
 #[cfg(unix)]
