@@ -1,6 +1,7 @@
 use super::*;
 use acyclic_native_runtime::{
-    CaptureInput, ExecutableSearch, ProcessInput, ProcessTree, run_blocking_io, shell_command,
+    CaptureHandler, CaptureSchedule, ExecutableSearch, OwnedCaptureInput, ProcessInput,
+    ProcessOutput, ProcessTree, run_blocking_io, shell_command,
 };
 use std::{
     path::{Path, PathBuf},
@@ -65,6 +66,10 @@ impl Hooks {
     }
 }
 
+/// How often a running hook rechecks its owner and cancellation while it is
+/// otherwise quiet; output, exit and its deadline wake it at once.
+const HOOK_CHECK_INTERVAL: Duration = Duration::from_millis(25);
+
 pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
@@ -73,20 +78,23 @@ pub(super) async fn run_hook(
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = HookCancellation::new();
-    let cancelled = Arc::clone(&cancellation.0);
-    run_blocking_io(
+    let handler = HookHandler {
+        cancelled: Arc::clone(&cancellation.0),
+        owner_check,
+    };
+    let timeout = Duration::from_millis(hook.timeout_ms);
+    let input = request.2.clone();
+    // Spawning may block; the running hook then holds no worker.
+    let (tree, handler) = run_blocking_io(
         move || {
+            let mut handler = handler;
             if maximum_bytes == 0 {
                 return Err(Error::Process(crate::ProcessError::OutputLimit {
                     exit_code: None,
                     message: "hook capture budget exhausted".into(),
                 }));
             }
-            let check = || {
-                check_cancelled(&cancelled)?;
-                owner_check()
-            };
-            check().map_err(Error::process_io)?;
+            handler.check().map_err(Error::process_io)?;
             let mut command = hook_command(
                 &hook,
                 &request.0,
@@ -99,31 +107,51 @@ pub(super) async fn run_hook(
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            check().map_err(Error::process_io)?;
-            let mut tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
-            let output = tree
-                .wait_with_output(
-                    Duration::from_millis(hook.timeout_ms),
-                    maximum_bytes,
-                    Some(CaptureInput::Literal(&request.2)),
-                    check,
-                    |_| Ok(ProcessInput::default()),
-                    None,
-                    None,
-                )
-                .map_err(|failure| {
-                    Error::process_exit(
-                        failure.error,
-                        failure.status.and_then(|status| status.code()),
-                    )
-                })?;
-            Ok((output.status.code(), output.stdout, output.stderr))
+            handler.check().map_err(Error::process_io)?;
+            let tree = ProcessTree::spawn(&mut command).map_err(Error::process_io)?;
+            Ok((tree, handler))
         },
         None,
     )
     .map_err(Error::process_io)?
     .await
-    .map_err(Error::process_io)?
+    .map_err(Error::process_io)??;
+    // The spawned capture keeps ownership of the tree until its cleanup
+    // finishes, even if this hook's caller is cancelled.
+    let outcome = acyclic_native_runtime::spawn(tree.capture(
+        CaptureSchedule::new(timeout).checking_every(HOOK_CHECK_INTERVAL),
+        maximum_bytes,
+        Some(OwnedCaptureInput::Literal(input)),
+        handler,
+    ))
+    .await
+    .and_then(|outcome| outcome)
+    .map_err(Error::process_io)?;
+    let output = outcome.result.map_err(|failure| {
+        Error::process_exit(
+            failure.error,
+            failure.status.and_then(|status| status.code()),
+        )
+    })?;
+    drop(cancellation);
+    Ok((output.status.code(), output.stdout, output.stderr))
+}
+
+/// A running hook's checks: its caller's cancellation, then its owner.
+struct HookHandler {
+    cancelled: Arc<AtomicBool>,
+    owner_check: HookCheck,
+}
+
+impl CaptureHandler for HookHandler {
+    fn check(&mut self) -> std::io::Result<()> {
+        check_cancelled(&self.cancelled)?;
+        (self.owner_check)()
+    }
+
+    fn observe(&mut self, _: ProcessOutput<'_>) -> std::io::Result<ProcessInput> {
+        Ok(ProcessInput::default())
+    }
 }
 
 fn hook_command(

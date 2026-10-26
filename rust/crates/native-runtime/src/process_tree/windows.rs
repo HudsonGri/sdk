@@ -1,22 +1,27 @@
 use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
+use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
 use std::os::windows::process::CommandExt as _;
 #[cfg(test)]
 use std::process::Child;
 use std::process::Command;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, HANDLE, NTSTATUS, RtlNtStatusToDosError,
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, HANDLE, NTSTATUS, RtlNtStatusToDosError,
+    WAIT_TIMEOUT,
 };
+use windows_sys::Win32::Storage::FileSystem::ReadFile;
+use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
     QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
-use windows_sys::Win32::System::Pipes::{PIPE_NOWAIT, PeekNamedPipe, SetNamedPipeHandleState};
+use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW, OpenProcess,
+    PROCESS_SYNCHRONIZE, WaitForSingleObject,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
@@ -31,83 +36,100 @@ pub(super) fn wait_without_reaping(child: &std::process::Child) -> io::Result<()
 #[cfg(test)]
 pub(super) use wait::wait_for_exit_coarse;
 
+/// The one overlapped stdin write a capture keeps in flight.
+#[derive(Default)]
+pub(super) struct Writer(pub(super) Option<std::sync::Arc<super::events::PipeOperation>>);
+
+/// Writes a prefix of `bytes` as one overlapped write. `Some(n)` reports `n`
+/// bytes the pipe took, either now or by a write that was pending until the
+/// child read; `None` while a write is still pending; `Some(0)` once the
+/// child's end is closed.
 pub(super) fn write_pipe(
     pipe: &mut (impl Write + Pipe),
+    writer: &mut Writer,
     bytes: &[u8],
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<(Option<usize>, io::Result<()>)> {
-    let mode = PIPE_NOWAIT;
-    let (changed, recorded) =
-        super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
-            // SAFETY: this exclusively owned byte pipe has no pending I/O.
-            if unsafe {
-                SetNamedPipeHandleState(
-                    pipe.as_raw_handle().cast(),
-                    &mode,
-                    std::ptr::null(),
-                    std::ptr::null(),
-                )
-            } == 0
-            {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })?;
-    if let Err(error) = changed {
-        if error.kind() == io::ErrorKind::BrokenPipe {
-            return Ok((Some(0), recorded));
-        }
-        recorded?;
-        return Err(error);
-    }
-    recorded?;
-    let mut candidate = bytes;
-    loop {
-        let mut actual = 0;
-        let (written, recorded) =
-            super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
-                // SAFETY: synchronous WriteFile borrows the existing input
-                // only for this call and reports its physical prefix.
-                if unsafe {
-                    windows_sys::Win32::Storage::FileSystem::WriteFile(
-                        pipe.as_raw_handle().cast(),
-                        candidate.as_ptr(),
-                        u32::try_from(candidate.len()).unwrap_or(u32::MAX),
-                        &raw mut actual,
-                        std::ptr::null_mut(),
-                    )
-                } == 0
-                {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(actual as usize)
-                }
+    let operation = if let Some(operation) = &writer.0 {
+        std::sync::Arc::clone(operation)
+    } else {
+        let operation =
+            super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
+                super::events::PipeOperation::writer(pipe)
             })?;
-        if actual != 0 {
-            return Ok((Some(actual as usize), recorded.and(written.map(|_| ()))));
+        writer.0 = Some(std::sync::Arc::clone(&operation));
+        operation
+    };
+    match operation.take_written() {
+        Some(Ok(written)) => return Ok((Some(written), Ok(()))),
+        Some(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe => {
+            return Ok((Some(0), Ok(())));
         }
-        match written {
-            Ok(0) if candidate.len() > 1 => {
-                recorded?;
-                candidate = candidate
-                    .get(..candidate.len() / 2)
-                    .ok_or_else(|| io::Error::other("invalid process write prefix"))?;
-            }
-            Ok(0) => return Ok((None, recorded)),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                return Ok((None, recorded));
-            }
-            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
-                return Ok((Some(0), recorded));
-            }
-            Err(error) => {
-                recorded?;
-                return Err(error);
-            }
-            Ok(written) => return Ok((Some(written), recorded)),
+        Some(Err(error)) => return Err(error),
+        None if operation.pending() => return Ok((None, Ok(()))),
+        None => {}
+    }
+    let (written, recorded) =
+        super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
+            operation.write(bytes)
+        })?;
+    match written {
+        Ok(written) => Ok((written, recorded)),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok((Some(0), recorded)),
+        Err(error) => {
+            recorded?;
+            Err(error)
         }
     }
+}
+
+/// Reads bytes the pipe already holds. The OVERLAPPED's event, with its low
+/// bit set, keeps the read off the completion port that the capture's
+/// zero-byte readiness reads use.
+fn read_available(pipe: &impl Pipe, buffer: &mut [std::mem::MaybeUninit<u8>]) -> io::Result<usize> {
+    // SAFETY: an unnamed manual-reset event, owned on success.
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a successful creation transfers one owned event handle.
+    let event = unsafe { OwnedHandle::from_raw_handle(event) };
+    // SAFETY: an all-zero OVERLAPPED is its documented initial value.
+    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
+    overlapped.hEvent = event.as_raw_handle().map_addr(|address| address | 1);
+    let length = u32::try_from(buffer.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
+    // SAFETY: the buffer and OVERLAPPED outlive the transfer, which this
+    // frame waits for below before either is released.
+    if unsafe {
+        ReadFile(
+            pipe.as_raw_handle().cast(),
+            buffer.as_mut_ptr().cast(),
+            length,
+            std::ptr::null_mut(),
+            &raw mut overlapped,
+        )
+    } == 0
+    {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_IO_PENDING.cast_signed()) {
+            return Err(error);
+        }
+    }
+    let mut actual = 0;
+    // SAFETY: the transfer started above on this live pipe; waiting keeps
+    // its buffer and OVERLAPPED borrowed until it completes.
+    if unsafe {
+        GetOverlappedResult(
+            pipe.as_raw_handle().cast(),
+            &raw const overlapped,
+            &raw mut actual,
+            1,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(actual as usize)
 }
 
 pub(super) fn read_pipe(
@@ -150,28 +172,15 @@ pub(super) fn read_pipe(
     }
     recorded?;
     let length = buffer.len().min(available as usize).min(u32::MAX as usize);
-    let mut actual = 0;
+    let buffer = buffer
+        .get_mut(..length)
+        .ok_or(io::ErrorKind::InvalidInput)?;
     let (read, recorded) =
         super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
-            // SAFETY: synchronous ReadFile initializes only the returned
-            // prefix of this exclusively borrowed writable allocation.
-            if unsafe {
-                windows_sys::Win32::Storage::FileSystem::ReadFile(
-                    pipe.as_raw_handle().cast(),
-                    buffer.as_mut_ptr().cast(),
-                    u32::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?,
-                    &raw mut actual,
-                    std::ptr::null_mut(),
-                )
-            } == 0
-            {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
+            read_available(pipe, buffer)
         })?;
-    let recorded = recorded.and(read);
-    Ok((Some(actual as usize), recorded))
+    let actual = read.as_ref().map_or(0, |actual| *actual);
+    Ok((Some(actual), recorded.and(read.map(drop))))
 }
 
 pub(super) struct Guard {
@@ -199,45 +208,70 @@ pub(super) fn spawn_controlled(
 /// Spawns into a Job created under `name`, which must not already exist.
 pub(super) fn spawn_named(
     command: &mut Command,
+    meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
     name: &[u16],
-    record: &mut super::custody::Record,
+    record: super::custody::Record,
+    recorded: io::Result<()>,
+    events: super::events::Events,
 ) -> io::Result<()> {
     let job = name.strip_suffix(&[0]).ok_or(io::ErrorKind::InvalidInput)?;
     command.env(
         "ACYCLIC_PROCESS_CUSTODY_JOB",
         String::from_utf16(job).map_err(|_| io::ErrorKind::InvalidInput)?,
     );
-    spawn_in_job(command, None, custody, Some((name, record)))
+    spawn_in_job(
+        command,
+        meter,
+        custody,
+        Some((name, record, recorded, events)),
+    )
 }
 
 fn spawn_in_job(
     command: &mut Command,
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
-    mut named: Option<(&[u16], &mut super::custody::Record)>,
+    named: Option<(
+        &[u16],
+        super::custody::Record,
+        io::Result<()>,
+        super::events::Events,
+    )>,
 ) -> io::Result<()> {
+    let (name, record, recorded, events) = match named {
+        Some((name, record, recorded, events)) => (Some(name), Some(record), recorded, events),
+        None => (None, None, Ok(()), super::events::Events::start()?),
+    };
     *custody = Some(super::ProcessTree {
         child: None,
         guard: Guard::empty(meter.is_none()),
         output_taken: false,
         cleanup_on_drop: meter.is_none(),
-        custody: None,
+        custody: record,
+        writer: Writer::default(),
+        queued_stdin: None,
+        _events: events,
     });
+    // The physical record may already exist when completion accounting fails.
+    // Put its recovery authority in the caller's slot before propagating that
+    // failure, just as for later Job initialization or process admission.
+    recorded?;
     let initialized = custody
         .as_mut()
         .ok_or(io::ErrorKind::NotFound)?
         .guard
-        .initialize(meter, named.as_ref().map(|(name, _)| *name));
+        .initialize(meter, name);
     if initialized.is_err() && custody.as_ref().is_some_and(super::ProcessTree::is_reaped) {
         custody.take();
     }
     initialized?;
     let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
     // A named tree's custodian holds its Job until every member has exited.
-    let mut custodian = named
+    let mut custodian = tree
+        .custody
         .as_mut()
-        .map(|(_, record)| super::custodian::launch(tree.guard.job, record))
+        .map(|record| super::custodian::launch(tree.guard.job, record))
         .transpose()?;
     if let Some(custodian) = &custodian {
         command.env(super::custodian_admission::ENV, &custodian.endpoint);
@@ -261,7 +295,7 @@ fn start_in_job(
 ) -> io::Result<()> {
     command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-        tree.child = Some(command.spawn()?);
+        tree.child = Some(super::spawner::spawn(command)?);
         Ok(())
     })?;
     let child = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
@@ -332,6 +366,22 @@ fn failed_admission(child: &mut Child, guard: &mut Guard, admission: io::Error) 
 }
 
 impl Guard {
+    pub(super) const fn needs_kill(&self) -> bool {
+        self.active && !self.termination_sent
+    }
+
+    pub(super) fn kill(&mut self) -> io::Result<()> {
+        if !self.active || self.termination_sent {
+            return Ok(());
+        }
+        // SAFETY: the exclusively owned live Job contains this tree.
+        if unsafe { TerminateJobObject(self.job, 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        self.termination_sent = true;
+        Ok(())
+    }
+
     const fn empty(cleanup_on_drop: bool) -> Self {
         Self {
             job: std::ptr::null_mut(),
@@ -432,12 +482,7 @@ impl Guard {
         }
         if !self.termination_sent {
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-                // SAFETY: the exclusively owned live Job contains this tree.
-                if unsafe { TerminateJobObject(self.job, 1) } == 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                self.termination_sent = true;
-                Ok(())
+                self.kill()
             })?;
         }
         let deadline = std::time::Instant::now() + super::ProcessTree::TERMINATION_TIMEOUT;
@@ -471,12 +516,49 @@ impl Guard {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                std::thread::sleep(super::ProcessTree::TERMINATION_POLL_INTERVAL);
-                Ok(())
+                self.await_member_exit(deadline)
             })?;
         }
     }
+
+    /// Waits until one live member of the Job exits, or `deadline`. A member
+    /// stops counting as active before its process signals, so while the
+    /// Job counts any active member, some listed member is still unsignaled.
+    fn await_member_exit(&self, deadline: std::time::Instant) -> io::Result<()> {
+        use std::os::windows::io::AsHandle as _;
+        for pid in super::custody::members(self.job)? {
+            // SAFETY: opening a handle to a listed PID; owned below.
+            let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+            if process.is_null() {
+                // The member exited and its PID is gone.
+                continue;
+            }
+            // SAFETY: a successful open returns one owned process handle.
+            let process = unsafe { OwnedHandle::from_raw_handle(process) };
+            let mut member = 0;
+            // SAFETY: owned process and Job handles and a writable result.
+            let listed =
+                unsafe { IsProcessInJob(process.as_raw_handle(), self.job, &raw mut member) } != 0;
+            // SAFETY: a zero-timeout probe of the owned process handle.
+            let exited = unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_TIMEOUT;
+            // A reused PID names a process outside the Job; an exited
+            // member has already left the active count.
+            if !listed || member == 0 || exited {
+                continue;
+            }
+            super::events::arm(
+                &[super::events::Source::Exit(process.as_handle())],
+                Some(deadline),
+            )?
+            .block();
+            return Ok(());
+        }
+        Ok(())
+    }
 }
+
+// Kill the Job, kill an unassigned partial child, and release the Job handle.
+pub(super) const RETIREMENT_WRITES: u64 = 3;
 
 impl Drop for Guard {
     fn drop(&mut self) {
@@ -607,4 +689,47 @@ fn denied_admission_still_observes_unassigned_child_exit() {
     );
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(!temporary.path().join("tree-ready").exists());
+}
+
+/// Trees started from several threads are all created on the one spawner
+/// thread, none on a caller's: process creation's per-thread state (RPC's,
+/// for an app execution alias) is then held once, not once per caller thread.
+#[test]
+fn trees_started_from_many_threads_are_created_on_one() -> io::Result<()> {
+    let callers = (0..4)
+        .map(|_| {
+            std::thread::spawn(|| -> io::Result<std::thread::ThreadId> {
+                let mut command = Command::new("cmd.exe");
+                command
+                    .args(["/d", "/c", "exit 0"])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                let mut tree = super::ProcessTree::spawn(&mut command)?;
+                while tree.try_wait(None)?.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Ok(std::thread::current().id())
+            })
+        })
+        .collect::<Vec<_>>();
+    let callers = callers
+        .into_iter()
+        .map(|caller| {
+            caller
+                .join()
+                .map_err(|_| io::Error::other("caller panicked"))?
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let created = super::spawner::CREATED_ON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(created.len() >= callers.len(), "{created:?}");
+    assert!(
+        created.iter().all(|thread| *thread == created[0]),
+        "every process is created on one thread: {created:?}"
+    );
+    assert!(!callers.contains(&created[0]), "and on none of its callers");
+    Ok(())
 }

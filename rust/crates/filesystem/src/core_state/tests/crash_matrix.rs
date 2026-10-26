@@ -67,8 +67,11 @@ fn run_cut(
     }
     let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut child).unwrap();
     let mut cut_reached = false;
+    // The published cut is a report file, which raises no capture event, so
+    // the check also runs on its own schedule.
     let outcome = tree.wait_with_output(
-        std::time::Duration::from_secs(120),
+        acyclic_native_runtime::CaptureSchedule::new(std::time::Duration::from_secs(120))
+            .checking_every(std::time::Duration::from_millis(1)),
         0,
         None,
         || {

@@ -54,6 +54,14 @@ impl CoreLog {
         } else {
             residents
         };
+        let meter = work.map(crate::materializer::NativeMaterializationWork::runtime_meter);
+        let file = acyclic_native_runtime::CachedFile::new_metered(
+            file,
+            &paths.current,
+            true,
+            true,
+            meter.as_deref(),
+        )?;
         let length = image.bytes.len() as u64;
         let mut log = Self {
             file,
