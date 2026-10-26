@@ -9,6 +9,7 @@
 mod commit;
 mod driver;
 mod handler;
+mod host;
 pub mod kernel;
 mod machine;
 mod layout;
@@ -21,6 +22,7 @@ pub use machine::{
     TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, step,
 };
 pub use handler::{AgentHandler, INBOX};
+pub use host::{AgentHost, Delivered};
 pub use driver::{ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, approval_intent, turn_id};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, VOLUMES};
@@ -49,6 +51,9 @@ pub enum Error {
     /// Streams failure.
     #[error(transparent)]
     Stream(acyclic_stream::StreamError),
+    /// Actor runtime failure.
+    #[error(transparent)]
+    Actor(Box<acyclic_actors::local::Error>),
     /// Turn driver failure.
     #[error(transparent)]
     Turn(Box<crate::Error>),

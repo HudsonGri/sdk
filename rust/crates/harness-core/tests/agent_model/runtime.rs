@@ -1,11 +1,10 @@
-//! The agent handler on the A4 runtime: create, wake on inbox append, spawn.
+//! The agent host on the A4 runtime: create, wake on inbox append, spawn, archive.
 
 use super::{Result, adopted, id, intent, user, values};
 use acyclic_actors::{
     addressing::ActorReference,
     domain::ActorLimits,
-    guest::Handler,
-    local::{Runtime, Store, SystemClock},
+    local::{Snapshot, Store, SystemClock},
 };
 use acyclic_harness_core::agent::*;
 use acyclic_stream::{MemoryStream, StreamPath};
@@ -51,49 +50,44 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 #[tokio::test]
 async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor() -> Result {
     let provider = Arc::new(MemoryStream::default());
-    let limits = ActorLimits::new(10_000, 1 << 20, 1 << 16)?;
-    let handler = Arc::new(AgentHandler::new(store(&provider)?, Spawner::default(), limits)?);
-    let runtime = Runtime::new(
-        store(&provider)?,
-        handler.clone() as Arc<dyn Handler>,
+    let host = AgentHost::new(
+        provider.clone(),
+        Spawner::default(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
         Arc::new(SystemClock),
-    );
-    let within = ActorReference::new(b"account", b"agents", b"owner")?;
-    let created = handler.create_root(&within, &intent("create"), adopted(id(1)))?;
-    let root = created.child.clone();
-    assert!(matches!(
-        submit(&*provider, created.request).await?,
-        Submitted::Committed(_)
-    ));
-    let root_actor = AgentHandler::<MemoryStream, Spawner>::actor(&within, &root.id())?;
-    runtime.track(root_actor.clone())?;
-    runtime.wake(&root_actor);
-    assert!(runtime.drain().await.is_empty());
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    assert_eq!(host.create(&intent("create"), adopted(id(1))).await?, root);
+    assert!(host.runtime().drain().await.is_empty());
     let actors = store(&provider)?;
-    assert_eq!(actors.load(&root_actor).await?.state().and_then(|s| s.cursor(INBOX)), Some(1));
+    let cursor = |state: &Snapshot| state.state().and_then(|s| s.cursor(INBOX));
+    assert_eq!(cursor(&actors.load(&host.actor(&root)?).await?), Some(1));
 
     let child = root.child(&AgentId::derive(&root.id(), "c"))?;
     let record = InboxRecord::ApprovalRequested(ApprovalRequested {
         child: child.clone(),
         id: intent("q"),
     });
-    let tail = inbox_tail(&*provider, &root).await?;
-    assert!(matches!(
-        submit(&*provider, send(&root, tail, &user(), &record)?).await?,
-        Submitted::Committed(_)
-    ));
+    assert_eq!(host.send(&root, &user(), &record).await?, Delivered::Committed);
     // The root's pending inbox follow holds its waker: the append alone wakes it.
-    assert!(runtime.drain().await.is_empty());
-    let child_actor = AgentHandler::<MemoryStream, Spawner>::actor(&within, &child.id())?;
-    let state = actors.load(&child_actor).await?;
-    assert_eq!(state.state().and_then(|s| s.cursor(INBOX)), Some(2));
+    assert!(host.runtime().drain().await.is_empty());
+    let state = actors.load(&host.actor(&child)?).await?;
+    assert_eq!(cursor(&state), Some(2));
     assert_eq!(values(&provider, child.inbox()?).await?.len(), 3);
 
-    runtime.track(child_actor.clone())?;
-    runtime.wake(&child_actor);
-    assert!(runtime.drain().await.is_empty());
-    let state = actors.load(&child_actor).await?;
-    assert_eq!(state.state().and_then(|s| s.cursor(INBOX)), Some(3));
+    host.host(&child)?;
+    assert!(host.runtime().drain().await.is_empty());
+    let state = actors.load(&host.actor(&child)?).await?;
+    assert_eq!(cursor(&state), Some(3));
     assert!(state.state().and_then(|s| s.checkpoint()).is_some());
+
+    let by = intent("archive");
+    assert_eq!(host.archive(&root, &user(), &by).await?, Delivered::Committed);
+    let late = InboxRecord::ApprovalRequested(ApprovalRequested {
+        child,
+        id: intent("late"),
+    });
+    assert_eq!(host.send(&root, &user(), &late).await?, Delivered::Closed);
     Ok(())
 }
